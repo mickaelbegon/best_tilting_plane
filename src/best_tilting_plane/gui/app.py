@@ -64,6 +64,9 @@ class BestTiltingPlaneApp:
         self._scales: dict[str, tk.Scale] = {}
         self._last_simulation = None
         self._last_model_path: Path | None = None
+        self._result_figure = None
+        self._animation_figure = None
+        self._animation = None
 
         frame = ttk.Frame(root, padding=12)
         frame.grid(sticky="nsew")
@@ -166,7 +169,6 @@ class BestTiltingPlaneApp:
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
         variables = _variables_from_gui(self._current_values())
-        project_root = Path(__file__).resolve().parents[3]
         model_path = self._model_path()
 
         simulator = PredictiveAerialTwistSimulator.from_builder(model_path, variables)
@@ -178,7 +180,12 @@ class BestTiltingPlaneApp:
 
         trajectories = marker_trajectories(simulator.model_path, result.q)
 
-        result_figure, result_axis = plt.subplots(figsize=(7, 4))
+        if self._result_figure is not None:
+            plt.close(self._result_figure)
+        if self._animation_figure is not None:
+            plt.close(self._animation_figure)
+
+        self._result_figure, result_axis = plt.subplots(figsize=(7, 4))
         result_axis.plot(
             result.time, result.q[:, 5] / (2.0 * np.pi), color="tab:blue", linewidth=2.0
         )
@@ -187,8 +194,8 @@ class BestTiltingPlaneApp:
         result_axis.set_title(f"Vrilles finales: {result.final_twist_turns:.2f} tours")
         result_axis.grid(True, alpha=0.3)
 
-        figure = plt.figure(figsize=(8, 7))
-        axis = figure.add_subplot(111, projection="3d")
+        self._animation_figure = plt.figure(figsize=(8, 7))
+        axis = self._animation_figure.add_subplot(111, projection="3d")
         axis.set_title("Animation 3D")
         axis.set_xlabel("Mediolat.")
         axis.set_ylabel("Ant.-post.")
@@ -233,8 +240,13 @@ class BestTiltingPlaneApp:
             )
             return tuple(line_artists) + (() if plane_artist is None else (plane_artist,))
 
-        animation.FuncAnimation(
-            figure, update, frames=result.time.size, interval=35, blit=False, repeat=True
+        self._animation = animation.FuncAnimation(
+            self._animation_figure,
+            update,
+            frames=result.time.size,
+            interval=35,
+            blit=False,
+            repeat=True,
         )
         plt.show()
 
