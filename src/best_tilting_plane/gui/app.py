@@ -10,6 +10,7 @@ from tkinter import ttk
 import numpy as np
 
 from best_tilting_plane.modeling import ReducedAerialBiomod
+from best_tilting_plane.optimization import TwistStrategyOptimizer
 from best_tilting_plane.simulation import PredictiveAerialTwistSimulator, TwistOptimizationVariables
 from best_tilting_plane.visualization import (
     SKELETON_CONNECTIONS,
@@ -117,10 +118,13 @@ class BestTiltingPlaneApp:
         ttk.Button(frame, text="Simulate", command=self._run_simulation).grid(
             row=len(SLIDER_DEFINITIONS) + 1, column=0, sticky="w", pady=(6, 0)
         )
+        ttk.Button(frame, text="Optimize", command=self._optimize_strategy).grid(
+            row=len(SLIDER_DEFINITIONS) + 1, column=1, sticky="w", pady=(6, 0)
+        )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(frame, textvariable=self.result_var).grid(
-            row=len(SLIDER_DEFINITIONS) + 1, column=1, columnspan=2, sticky="w", pady=(6, 0)
+            row=len(SLIDER_DEFINITIONS) + 1, column=2, sticky="w", pady=(6, 0)
         )
 
     def _sync_entry(self, _name: str, variable: tk.StringVar, value: str) -> None:
@@ -141,6 +145,19 @@ class BestTiltingPlaneApp:
 
         return {name: float(variable.get()) for name, variable in self._entries.items()}
 
+    def _set_values(self, values: dict[str, float]) -> None:
+        """Write a new set of values back to the sliders and entry boxes."""
+
+        for name, value in values.items():
+            self._scales[name].set(float(value))
+            self._entries[name].set(f"{float(value):.2f}")
+
+    def _model_path(self) -> Path:
+        """Return the generated-model path used by the simulator and optimizer."""
+
+        project_root = Path(__file__).resolve().parents[3]
+        return project_root / "generated" / "reduced_aerial_model.bioMod"
+
     def _run_simulation(self) -> None:
         """Simulate the current strategy and open the result windows."""
 
@@ -150,7 +167,7 @@ class BestTiltingPlaneApp:
 
         variables = _variables_from_gui(self._current_values())
         project_root = Path(__file__).resolve().parents[3]
-        model_path = project_root / "generated" / "reduced_aerial_model.bioMod"
+        model_path = self._model_path()
 
         simulator = PredictiveAerialTwistSimulator.from_builder(model_path, variables)
         result = simulator.simulate()
@@ -220,6 +237,30 @@ class BestTiltingPlaneApp:
             figure, update, frames=result.time.size, interval=35, blit=False, repeat=True
         )
         plt.show()
+
+    def _optimize_strategy(self) -> None:
+        """Optimize the current strategy with IPOPT, then update the GUI and rerun the simulation."""
+
+        current_values = self._current_values()
+        initial_guess = _variables_from_gui(current_values)
+        self.result_var.set("Optimisation en cours...")
+        self.root.update_idletasks()
+
+        optimizer = TwistStrategyOptimizer.from_builder(self._model_path())
+        result = optimizer.optimize(initial_guess, max_iter=25, print_level=0)
+
+        optimized_values = {
+            "right_arm_start": result.variables.right_arm_start,
+            "left_plane_initial": np.rad2deg(result.variables.left_plane_initial),
+            "left_plane_final": np.rad2deg(result.variables.left_plane_final),
+            "right_plane_initial": np.rad2deg(result.variables.right_plane_initial),
+            "right_plane_final": np.rad2deg(result.variables.right_plane_final),
+        }
+        self._set_values(optimized_values)
+        self.result_var.set(
+            f"Optimum IPOPT: {result.final_twist_turns:.2f} tours ({result.solver_status})"
+        )
+        self._run_simulation()
 
 
 def launch_gui() -> None:

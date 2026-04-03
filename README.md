@@ -67,6 +67,7 @@ The current GUI provides:
 
 - sliders and numeric entry boxes for the decision variables
 - a `Simulate` button
+- an `Optimize` button backed by IPOPT
 - a result label with the final number of twists
 - a result window with the twist history
 - a 3D `matplotlib` animation window with an optional best-tilting-plane overlay
