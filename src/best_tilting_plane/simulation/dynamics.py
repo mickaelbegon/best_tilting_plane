@@ -59,11 +59,12 @@ class PredictiveAerialTwistSimulator:
         prescribed_motion: PrescribedArmMotion,
         *,
         configuration: SimulationConfiguration | None = None,
+        model: biorbd.Model | None = None,
     ) -> None:
         """Load the `biorbd` model and store the simulation settings."""
 
         self.model_path = str(model_path)
-        self.model = biorbd.Model(self.model_path)
+        self.model = model if model is not None else biorbd.Model(self.model_path)
         self.prescribed_motion = prescribed_motion
         self.configuration = configuration or SimulationConfiguration()
 
