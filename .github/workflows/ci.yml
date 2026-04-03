@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  lint-and-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[test]
+
+      - name: Run isort --check-only
+        id: isort
+        continue-on-error: true
+        run: isort . --check-only --profile black
+
+      - name: Run black --check
+        id: black
+        continue-on-error: true
+        run: black . --check
+
+      - name: Run flake8
+        id: flake8
+        continue-on-error: true
+        run: flake8 .
+
+      - name: Run test suite
+        id: pytest
+        continue-on-error: true
+        run: pytest -q
+
+      - name: Summarize check outcomes
+        if: always()
+        run: |
+          echo "isort:  ${{ steps.isort.outcome }}"
+          echo "black:  ${{ steps.black.outcome }}"
+          echo "flake8: ${{ steps.flake8.outcome }}"
+          echo "pytest: ${{ steps.pytest.outcome }}"
+          {
+            echo "## CI check outcomes"
+            echo ""
+            echo "- isort: \`${{ steps.isort.outcome }}\`"
+            echo "- black: \`${{ steps.black.outcome }}\`"
+            echo "- flake8: \`${{ steps.flake8.outcome }}\`"
+            echo "- pytest: \`${{ steps.pytest.outcome }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          failed_checks=()
+          [ "${{ steps.isort.outcome }}" = "success" ] || failed_checks+=("isort")
+          [ "${{ steps.black.outcome }}" = "success" ] || failed_checks+=("black")
+          [ "${{ steps.flake8.outcome }}" = "success" ] || failed_checks+=("flake8")
+          [ "${{ steps.pytest.outcome }}" = "success" ] || failed_checks+=("pytest")
+          if [ ${#failed_checks[@]} -gt 0 ]; then
+            echo "Failed checks: ${failed_checks[*]}"
+            exit 1
+          fi

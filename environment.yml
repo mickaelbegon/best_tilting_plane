@@ -1,0 +1,21 @@
+name: best-tilting-plane
+channels:
+  - conda-forge
+  - opensim-org
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy=1.25
+  - scipy=1.15
+  - matplotlib
+  - biorbd=1.11.2
+  - casadi
+  - bioviz
+  - black
+  - isort
+  - flake8
+  - pytest
+  - pip:
+      - -e ../GIT/biobuddy
+      - -e .
