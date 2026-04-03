@@ -49,6 +49,28 @@ pip install -e .[test,opt]
 pytest -q
 ```
 
+## Launch The GUI
+
+You can now launch the first interactive GUI with either:
+
+```bash
+python best_tilting_plane_gui.py
+```
+
+or:
+
+```bash
+python -m best_tilting_plane
+```
+
+The current GUI provides:
+
+- sliders and numeric entry boxes for the decision variables
+- a `Simulate` button
+- a result label with the final number of twists
+- a result window with the twist history
+- a 3D `matplotlib` animation window with an optional best-tilting-plane overlay
+
 ## Initial Roadmap
 
 1. Scaffold the repository and quality tooling.
