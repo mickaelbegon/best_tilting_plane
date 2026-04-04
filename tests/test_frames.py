@@ -35,8 +35,8 @@ def test_default_optimization_bounds_match_requested_right_arm_start_constraint(
     assert RIGHT_ARM_START_BOUNDS == (0.0, 0.7)
     assert LEFT_ARM_PLANE_BOUNDS_DEG == (-135.0, 0.0)
     assert RIGHT_ARM_PLANE_BOUNDS_DEG == (0.0, 135.0)
-    assert LEFT_ARM_ELEVATION_BOUNDS_DEG == (0.0, 180.0)
-    assert RIGHT_ARM_ELEVATION_BOUNDS_DEG == (-180.0, 0.0)
+    assert LEFT_ARM_ELEVATION_BOUNDS_DEG == (-180.0, 0.0)
+    assert RIGHT_ARM_ELEVATION_BOUNDS_DEG == (0.0, 180.0)
     assert bounds.lower[0] == pytest.approx(0.0)
     assert bounds.upper[0] == pytest.approx(0.7)
     np.testing.assert_allclose(

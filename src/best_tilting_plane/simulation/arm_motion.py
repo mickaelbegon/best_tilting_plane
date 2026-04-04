@@ -43,7 +43,7 @@ class PrescribedArmMotion:
 
     The left arm always moves from 0.0 s to 0.3 s.
     The right arm starts at the decision-variable time and lasts 0.3 s.
-    Elevation is imposed from +180 to 0 degrees on the left arm and from -180 to 0 degrees
+    Elevation is imposed from -180 to 0 degrees on the left arm and from +180 to 0 degrees
     on the right arm so that the sign convention matches the biomod.
     """
 
@@ -53,9 +53,9 @@ class PrescribedArmMotion:
         *,
         left_start: float = 0.0,
         duration: float = 0.3,
-        left_elevation_initial: float = 3.141592653589793,
+        left_elevation_initial: float = -3.141592653589793,
         left_elevation_final: float = 0.0,
-        right_elevation_initial: float = -3.141592653589793,
+        right_elevation_initial: float = 3.141592653589793,
         right_elevation_final: float = 0.0,
     ) -> None:
         """Build the prescribed left/right arm trajectories."""

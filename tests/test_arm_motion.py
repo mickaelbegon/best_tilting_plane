@@ -24,7 +24,7 @@ def test_left_arm_uses_the_fixed_motion_window() -> None:
     final = motion.left(0.3)
 
     assert motion.left_end == pytest.approx(0.3)
-    assert initial.elevation.position == pytest.approx(math.pi)
+    assert initial.elevation.position == pytest.approx(-math.pi)
     assert final.elevation.position == pytest.approx(0.0)
     assert initial.elevation_plane.position == pytest.approx(math.radians(-20.0))
     assert final.elevation_plane.position == pytest.approx(math.radians(10.0))
@@ -48,7 +48,7 @@ def test_right_arm_uses_the_decision_variable_start_time() -> None:
     end = motion.right(0.5)
 
     assert motion.right_end == pytest.approx(0.5)
-    assert before.elevation.position == pytest.approx(-math.pi)
+    assert before.elevation.position == pytest.approx(math.pi)
     assert before.elevation.velocity == pytest.approx(0.0)
     assert start.elevation_plane.position == pytest.approx(math.radians(-45.0))
     assert end.elevation_plane.position == pytest.approx(math.radians(15.0))
