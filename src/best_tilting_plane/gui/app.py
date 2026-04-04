@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
@@ -106,6 +107,7 @@ ALL_FRAME_SEGMENTS = tuple(
 )
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
+OPTIMIZATION_CACHE_VERSION = 1
 
 
 def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
@@ -380,6 +382,92 @@ class BestTiltingPlaneApp:
         project_root = Path(__file__).resolve().parents[3]
         return project_root / "generated" / "reduced_aerial_model.bioMod"
 
+    def _standard_optimization_configuration(self) -> SimulationConfiguration:
+        """Return the fixed configuration shared by simulation and optimization in the GUI."""
+
+        return SimulationConfiguration(integrator="rk4", rk4_step=STANDARD_RK4_STEP)
+
+    def _optimization_cache_path(self) -> Path:
+        """Return the JSON cache path used to store optimal strategies."""
+
+        return self._model_path().with_name("optimization_cache.json")
+
+    def _optimization_cache_key(self) -> str:
+        """Return the cache key associated with the current optimization mode."""
+
+        return self.optimization_mode_var.get().lower().replace(" ", "_")
+
+    def _optimization_cache_signature(self) -> dict[str, float | int | str]:
+        """Describe the numerical setup that must match for a cached optimum to be reused."""
+
+        configuration = self._standard_optimization_configuration()
+        return {
+            "version": OPTIMIZATION_CACHE_VERSION,
+            "mode": self._optimization_cache_key(),
+            "final_time": float(configuration.final_time),
+            "steps": int(configuration.steps),
+            "somersault_rate": float(configuration.somersault_rate),
+            "integrator": configuration.integrator,
+            "rk4_step": float(configuration.rk4_step) if configuration.rk4_step is not None else None,
+        }
+
+    def _read_optimization_cache_file(self) -> dict[str, object]:
+        """Return the JSON cache content, or an empty structure if it does not exist."""
+
+        cache_path = self._optimization_cache_path()
+        if not cache_path.exists():
+            return {"records": {}}
+        try:
+            data = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {"records": {}}
+        if not isinstance(data, dict):
+            return {"records": {}}
+        records = data.get("records")
+        if not isinstance(records, dict):
+            return {"records": {}}
+        return {"records": records}
+
+    def _load_cached_optimized_values(self) -> dict[str, float] | None:
+        """Return cached optimized GUI values when the stored signature matches the current setup."""
+
+        cache = self._read_optimization_cache_file()
+        record = cache["records"].get(self._optimization_cache_key())
+        if not isinstance(record, dict):
+            return None
+        if record.get("signature") != self._optimization_cache_signature():
+            return None
+        values = record.get("values")
+        if not isinstance(values, dict):
+            return None
+        expected_names = {definition.name for definition in SLIDER_DEFINITIONS}
+        if set(values) != expected_names:
+            return None
+        try:
+            return {name: float(values[name]) for name in expected_names}
+        except (TypeError, ValueError):
+            return None
+
+    def _store_cached_optimized_values(
+        self,
+        optimized_values: dict[str, float],
+        *,
+        final_twist_turns: float,
+        solver_status: str,
+    ) -> None:
+        """Persist optimized GUI values for reuse in later GUI sessions."""
+
+        cache_path = self._optimization_cache_path()
+        cache = self._read_optimization_cache_file()
+        cache["records"][self._optimization_cache_key()] = {
+            "signature": self._optimization_cache_signature(),
+            "values": {name: float(value) for name, value in optimized_values.items()},
+            "final_twist_turns": float(final_twist_turns),
+            "solver_status": str(solver_status),
+        }
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+
     def _run_simulation(self) -> None:
         """Simulate the current strategy and refresh the embedded displays."""
 
@@ -387,7 +475,7 @@ class BestTiltingPlaneApp:
         simulator = PredictiveAerialTwistSimulator.from_builder(
             self._model_path(),
             variables,
-            configuration=SimulationConfiguration(integrator="rk4", rk4_step=STANDARD_RK4_STEP),
+            configuration=self._standard_optimization_configuration(),
         )
         result = simulator.simulate()
         self._last_simulation = result
@@ -844,12 +932,16 @@ class BestTiltingPlaneApp:
         self._prepare_animation_scene()
         self._sync_time_slider_to_frame(self._animation_frame_index)
 
-    def _apply_optimized_values(self, optimized_values: dict[str, float]) -> None:
+    def _apply_optimized_values(
+        self, optimized_values: dict[str, float], *, status_suffix: str | None = None
+    ) -> None:
         """Push optimized parameters to the GUI, rerun the simulation, and restart the animation."""
 
         self._set_values(optimized_values)
         self.root.update_idletasks()
         self._run_simulation()
+        if status_suffix is not None:
+            self.result_var.set(f"{self.result_var.get()} | {status_suffix}")
 
     def _optimize_strategy(self) -> None:
         """Optimize the current strategy with IPOPT, then update the GUI and rerun the simulation."""
@@ -860,9 +952,17 @@ class BestTiltingPlaneApp:
         self.result_var.set("Optimisation en cours... voir les iterations IPOPT dans le terminal.")
         self.root.update_idletasks()
 
+        cached_values = self._load_cached_optimized_values()
+        if cached_values is not None:
+            self._apply_optimized_values(
+                cached_values,
+                status_suffix="optimum charge depuis le cache",
+            )
+            return
+
         optimizer = TwistStrategyOptimizer.from_builder(
             self._model_path(),
-            configuration=SimulationConfiguration(integrator="rk4", rk4_step=STANDARD_RK4_STEP),
+            configuration=self._standard_optimization_configuration(),
         )
         if self.optimization_mode_var.get() == "Optimize 5D":
             result = optimizer.optimize(initial_guess, max_iter=25, print_level=5, print_time=True)
@@ -881,7 +981,15 @@ class BestTiltingPlaneApp:
             "right_plane_initial": np.rad2deg(result.variables.right_plane_initial),
             "right_plane_final": np.rad2deg(result.variables.right_plane_final),
         }
-        self._apply_optimized_values(optimized_values)
+        self._store_cached_optimized_values(
+            optimized_values,
+            final_twist_turns=result.final_twist_turns,
+            solver_status=result.solver_status,
+        )
+        self._apply_optimized_values(
+            optimized_values,
+            status_suffix=f"optimum IPOPT: {result.final_twist_turns:.2f} tours ({result.solver_status})",
+        )
 
 
 def launch_gui() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -200,6 +201,7 @@ def test_apply_optimized_values_updates_sliders_and_reruns_simulation() -> None:
     scheduler = FakeScheduler()
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app.root = scheduler
+    app.result_var = FakeVar("Vrilles finales: 1.23 tours")
     calls: list[tuple[str, object]] = []
     app._set_values = lambda values: calls.append(("set", dict(values)))
     app._run_simulation = lambda: calls.append(("run", None))
@@ -209,7 +211,9 @@ def test_apply_optimized_values_updates_sliders_and_reruns_simulation() -> None:
     assert calls == [("set", {"right_arm_start": 0.25}), ("run", None)]
 
 
-def test_optimize_strategy_applies_optimized_values_and_reruns_animation(monkeypatch) -> None:
+def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
+    monkeypatch, tmp_path: Path
+) -> None:
     """The optimization button should push the optimum to the sliders before rerunning the simulation."""
 
     class FakeOptimizer:
@@ -230,6 +234,8 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(monkeyp
                             "right_plane_final": 0.0,
                         },
                     )(),
+                    "final_twist_turns": -0.75,
+                    "solver_status": "Solve_Succeeded",
                 },
             )()
 
@@ -250,19 +256,199 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(monkeyp
         "right_plane_initial": 0.0,
         "right_plane_final": 0.0,
     }
-    app._model_path = lambda: Path("/tmp/reduced.bioMod")
-    applied: list[dict[str, float]] = []
-    app._apply_optimized_values = lambda values: applied.append(dict(values))
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    applied: list[tuple[dict[str, float], str | None]] = []
+    app._apply_optimized_values = lambda values, status_suffix=None: applied.append(
+        (dict(values), status_suffix)
+    )
 
     app._optimize_strategy()
 
     assert app._auto_runner.cancelled
     assert applied == [
-        {
-            "right_arm_start": 0.35,
-            "left_plane_initial": 0.0,
-            "left_plane_final": 0.0,
-            "right_plane_initial": 0.0,
-            "right_plane_final": 0.0,
-        }
+        (
+            {
+                "right_arm_start": 0.35,
+                "left_plane_initial": 0.0,
+                "left_plane_final": 0.0,
+                "right_plane_initial": 0.0,
+                "right_plane_final": 0.0,
+            },
+            "optimum IPOPT: -0.75 tours (Solve_Succeeded)",
+        )
+    ]
+
+
+def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> None:
+    """A matching cache entry should be returned as GUI-ready float values."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.optimization_mode_var = FakeVar("Optimize 2D")
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+
+    cache_path = tmp_path / "optimization_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_2d": {
+                        "signature": app._optimization_cache_signature(),
+                        "values": {
+                            "right_arm_start": 0.35,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert app._load_cached_optimized_values() == {
+        "right_arm_start": 0.35,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+
+
+def test_optimize_strategy_uses_cache_without_running_ipopt(monkeypatch, tmp_path: Path) -> None:
+    """A cached optimum should be applied directly without rebuilding the optimizer."""
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.TwistStrategyOptimizer.from_builder",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("optimizer should not run")),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize 2D")
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_2d": {
+                        "signature": app._optimization_cache_signature(),
+                        "values": {
+                            "right_arm_start": 0.42,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    applied: list[tuple[dict[str, float], str | None]] = []
+    app._apply_optimized_values = lambda values, status_suffix=None: applied.append(
+        (dict(values), status_suffix)
+    )
+
+    app._optimize_strategy()
+
+    assert app._auto_runner.cancelled
+    assert applied == [
+        (
+            {
+                "right_arm_start": 0.42,
+                "left_plane_initial": 0.0,
+                "left_plane_final": 0.0,
+                "right_plane_initial": 0.0,
+                "right_plane_final": 0.0,
+            },
+            "optimum charge depuis le cache",
+        )
+    ]
+
+
+def test_optimize_strategy_writes_cache_after_ipopt(monkeypatch, tmp_path: Path) -> None:
+    """A newly optimized strategy should be persisted for later GUI sessions."""
+
+    class FakeOptimizer:
+        def optimize_right_arm_start_only(self, initial_right_arm_start, **_kwargs):
+            assert initial_right_arm_start == 0.1
+            return type(
+                "OptimizationResult",
+                (),
+                {
+                    "variables": type(
+                        "Variables",
+                        (),
+                        {
+                            "right_arm_start": 0.35,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    )(),
+                    "final_twist_turns": -0.75,
+                    "solver_status": "Solve_Succeeded",
+                },
+            )()
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.TwistStrategyOptimizer.from_builder",
+        lambda *_args, **_kwargs: FakeOptimizer(),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize 2D")
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    applied: list[tuple[dict[str, float], str | None]] = []
+    app._apply_optimized_values = lambda values, status_suffix=None: applied.append(
+        (dict(values), status_suffix)
+    )
+
+    app._optimize_strategy()
+
+    stored = json.loads((tmp_path / "optimization_cache.json").read_text(encoding="utf-8"))
+    record = stored["records"]["optimize_2d"]
+    assert record["values"] == {
+        "right_arm_start": 0.35,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    assert record["final_twist_turns"] == -0.75
+    assert record["solver_status"] == "Solve_Succeeded"
+    assert applied == [
+        (
+            {
+                "right_arm_start": 0.35,
+                "left_plane_initial": 0.0,
+                "left_plane_final": 0.0,
+                "right_plane_initial": 0.0,
+                "right_plane_final": 0.0,
+            },
+            "optimum IPOPT: -0.75 tours (Solve_Succeeded)",
+        )
     ]
