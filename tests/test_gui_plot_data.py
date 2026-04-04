@@ -119,8 +119,8 @@ def test_plot_data_returns_twist_against_somersault() -> None:
 
     x_data, y_data, x_label, y_label, title = app._plot_data()
 
-    np.testing.assert_allclose(x_data, np.rad2deg(np.array([0.0, 0.3, 0.8])))
-    np.testing.assert_allclose(y_data, np.rad2deg(np.array([0.0, 0.3, 0.8])))
+    np.testing.assert_allclose(x_data, np.rad2deg(np.array([0.1, 0.4, 0.9])))
+    np.testing.assert_allclose(y_data, np.rad2deg(np.array([0.3, 0.6, 1.1])))
     assert x_label == "Somersault (deg)"
     assert y_label == "Twist (deg)"
     assert title == "Twist en fonction de somersault"
@@ -155,20 +155,19 @@ def test_current_plot_frame_index_returns_last_drawn_frame_while_playing() -> No
 
 
 def test_top_view_plot_data_can_neutralize_root_orientation_for_arm_visualization() -> None:
-    """The `q racine(0)=0` mode should express the arms in the pelvis frame."""
+    """The `q racine(0)=0` mode should zero out the six root coordinates for display."""
 
     app = _build_app_for_plotting(root_mode=ROOT_INITIAL_OPTIONS[0])
-    rotation_z_90 = np.array(
+    app._visualization_data["result"].q = np.array(
         [
-            [0.0, -1.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
+            [1.0, 2.0, 3.0, 0.1, 0.2, 0.3, 11.0, 12.0],
+            [4.0, 5.0, 6.0, 0.4, 0.5, 0.6, 13.0, 14.0],
+            [7.0, 8.0, 9.0, 0.9, 1.0, 1.1, 15.0, 16.0],
         ],
         dtype=float,
     )
-    app._visualization_data["frames"]["pelvis"]["axes"][1] = rotation_z_90
 
-    top_view, _ = app._top_view_plot_data()
+    display_q = app._display_q_history(app._visualization_data["result"])
 
-    np.testing.assert_allclose(top_view["hand_left"][0], np.array([-0.5, 0.3]))
-    np.testing.assert_allclose(top_view["hand_left"][1], np.array([0.4, 0.5]))
+    np.testing.assert_allclose(display_q[:, :6], 0.0)
+    np.testing.assert_allclose(display_q[:, 6:], np.array([[11.0, 12.0], [13.0, 14.0], [15.0, 16.0]]))

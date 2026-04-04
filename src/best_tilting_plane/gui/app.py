@@ -96,6 +96,10 @@ PLOT_Y_OPTIONS = (
 ROOT_INITIAL_OPTIONS = ("Avec q racine(0)=0", "Sans q racine(0)=0")
 TOP_VIEW_LEFT_CHAIN = ("shoulder_left", "elbow_left", "wrist_left", "hand_left")
 TOP_VIEW_RIGHT_CHAIN = ("shoulder_right", "elbow_right", "wrist_right", "hand_right")
+DEFAULT_CAMERA_ELEVATION_DEG = 20.0
+DEFAULT_CAMERA_AZIMUTH_DEG = -60.0
+TOP_VIEW_CAMERA_ELEVATION_DEG = 90.0
+TOP_VIEW_CAMERA_AZIMUTH_DEG = -90.0
 ALL_FRAME_SEGMENTS = tuple(
     dict.fromkeys(ARM_SEGMENTS_FOR_VISUALIZATION + ARM_SEGMENTS_FOR_DEVIATION)
 )
@@ -210,7 +214,7 @@ class BestTiltingPlaneApp:
         root_mode_box.grid(
             row=len(SLIDER_DEFINITIONS) + 1, column=1, columnspan=2, sticky="ew", pady=(8, 4)
         )
-        root_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
+        root_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._on_root_mode_change())
 
         ttk.Label(controls, text="Mode figure").grid(
             row=len(SLIDER_DEFINITIONS) + 2, column=0, sticky="w", pady=4
@@ -375,22 +379,7 @@ class BestTiltingPlaneApp:
         result = simulator.simulate()
         self._last_simulation = result
         self._last_model_path = Path(simulator.model_path)
-
-        trajectories = marker_trajectories(simulator.model_path, result.q)
-        frame_trajectories = segment_frame_trajectories(
-            simulator.model_path,
-            result.q,
-            ALL_FRAME_SEGMENTS,
-        )
-        observables = system_observables(simulator.model_path, result.q, result.qdot)
-        deviations = arm_deviation_from_frames(frame_trajectories, result.q[:, 3])
-        self._visualization_data = {
-            "result": result,
-            "trajectories": trajectories,
-            "frames": frame_trajectories,
-            "observables": observables,
-            "deviations": deviations,
-        }
+        self._refresh_visualization_data()
 
         integrator_label = result.integrator_method.upper()
         if result.rk4_step is not None:
@@ -406,6 +395,57 @@ class BestTiltingPlaneApp:
         self._refresh_plot()
         self._start_animation_loop()
 
+    def _display_q_history(self, result) -> np.ndarray:
+        """Return the generalized coordinates used for display."""
+
+        q_history = np.asarray(result.q, dtype=float).copy()
+        if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
+            q_history[:, :6] = 0.0
+        return q_history
+
+    def _display_qdot_history(self, result) -> np.ndarray:
+        """Return the generalized velocities used for display."""
+
+        qdot_history = np.asarray(result.qdot, dtype=float).copy()
+        if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
+            qdot_history[:, :6] = 0.0
+        return qdot_history
+
+    def _refresh_visualization_data(self) -> None:
+        """Rebuild the cached visualization data from the latest simulation."""
+
+        if self._last_simulation is None or self._last_model_path is None:
+            return
+
+        display_q = self._display_q_history(self._last_simulation)
+        display_qdot = self._display_qdot_history(self._last_simulation)
+        trajectories = marker_trajectories(self._last_model_path, display_q)
+        frame_trajectories = segment_frame_trajectories(
+            self._last_model_path,
+            display_q,
+            ALL_FRAME_SEGMENTS,
+        )
+        observables = system_observables(self._last_model_path, display_q, display_qdot)
+        deviations = arm_deviation_from_frames(frame_trajectories, display_q[:, 3])
+        self._visualization_data = {
+            "result": self._last_simulation,
+            "display_q": display_q,
+            "display_qdot": display_qdot,
+            "trajectories": trajectories,
+            "frames": frame_trajectories,
+            "observables": observables,
+            "deviations": deviations,
+        }
+
+    def _on_root_mode_change(self) -> None:
+        """Refresh the displays when toggling the `q(root)=0` mode."""
+
+        if self._last_simulation is None:
+            return
+        self._refresh_visualization_data()
+        self._prepare_animation_scene()
+        self._refresh_plot()
+
     def _prepare_animation_scene(self) -> None:
         """Prepare the 3D axis and artists for the current simulation result."""
 
@@ -418,6 +458,7 @@ class BestTiltingPlaneApp:
         self._animation_axis.set_ylabel("Ant.-post.")
         self._animation_axis.set_zlabel("Longitudinal")
         self._animation_axis.set_box_aspect((1.0, 1.0, 1.0))
+        self._apply_camera_view()
 
         all_points = np.concatenate(list(trajectories.values()), axis=0)
         span = np.max(all_points, axis=0) - np.min(all_points, axis=0)
@@ -457,6 +498,20 @@ class BestTiltingPlaneApp:
         self._animation_playing = True
         self.play_pause_label.set("Pause")
         self._animate_next_frame()
+
+    def _apply_camera_view(self) -> None:
+        """Apply the default or top-down camera depending on the root display mode."""
+
+        if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
+            self._animation_axis.view_init(
+                elev=TOP_VIEW_CAMERA_ELEVATION_DEG,
+                azim=TOP_VIEW_CAMERA_AZIMUTH_DEG,
+            )
+            return
+        self._animation_axis.view_init(
+            elev=DEFAULT_CAMERA_ELEVATION_DEG,
+            azim=DEFAULT_CAMERA_AZIMUTH_DEG,
+        )
 
     def _stop_animation_loop(self) -> None:
         """Cancel the currently scheduled animation callback, if any."""
@@ -556,6 +611,7 @@ class BestTiltingPlaneApp:
             return
 
         result = self._visualization_data["result"]
+        display_q = self._visualization_data["display_q"]
         trajectories = self._visualization_data["trajectories"]
         frame_trajectories = self._visualization_data["frames"]
         observables = self._visualization_data["observables"]
@@ -585,26 +641,25 @@ class BestTiltingPlaneApp:
         if self._plane_artist is not None:
             corners = best_tilting_plane_corners(
                 trajectories["pelvis_origin"][frame_index],
-                somersault_angle=result.q[frame_index, 3],
+                somersault_angle=display_q[frame_index, 3],
             )
             self._plane_artist.set_verts([corners])
 
         self._animation_axis.set_title(
             "Animation 3D | "
             f"t = {result.time[frame_index]:.2f} s | "
-            f"vrilles = {result.q[frame_index, 5] / (2*np.pi):.2f} | "
+            f"vrilles = {display_q[frame_index, 5] / (2*np.pi):.2f} | "
             f"H(CoM) = {np.array2string(angular_momentum, precision=2)} | "
             f"axes: {GLOBAL_AXIS_LABELS}"
         )
         self._animation_canvas.draw_idle()
 
     def _root_series(self, result, root_index: int) -> np.ndarray:
-        """Return one root-angle series, with optional subtraction of the initial value."""
+        """Return one root-angle series from the currently displayed configurations."""
 
-        series = np.asarray(result.q[:, 3 + root_index], dtype=float)
-        if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
-            series = series - series[0]
-        return series
+        if self._visualization_data is not None and "display_q" in self._visualization_data:
+            return np.asarray(self._visualization_data["display_q"][:, 3 + root_index], dtype=float)
+        return np.asarray(result.q[:, 3 + root_index], dtype=float)
 
     def _plot_data(self) -> tuple[np.ndarray, np.ndarray, str, str, str]:
         """Return the currently selected x/y data and corresponding labels."""
@@ -667,13 +722,7 @@ class BestTiltingPlaneApp:
         if self._visualization_data is None:
             raise RuntimeError("No simulation available for plotting.")
 
-        pelvis_axes = None
-        if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
-            pelvis_axes = np.asarray(self._visualization_data["frames"]["pelvis"]["axes"], dtype=float)
-        top_view = arm_top_view_trajectories(
-            self._visualization_data["trajectories"],
-            reference_axes=pelvis_axes,
-        )
+        top_view = arm_top_view_trajectories(self._visualization_data["trajectories"])
         return top_view, self._current_plot_frame_index()
 
     def _refresh_top_view_plot(self) -> None:
@@ -741,9 +790,9 @@ class BestTiltingPlaneApp:
         self._plot_axis.set_ylim(center[1] - radius, center[1] + radius)
         self._plot_axis.set_aspect("equal", adjustable="box")
         if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
-            x_label = "x mediolateral dans le repere pelvis (m)"
-            y_label = "y anteroposterior dans le repere pelvis (m)"
-            title_suffix = " | racine neutralisee"
+            x_label = "x mediolateral avec q(root)=0 (m)"
+            y_label = "y anteroposterior avec q(root)=0 (m)"
+            title_suffix = " | q(root)=0"
         else:
             x_label = "x mediolateral relatif pelvis (m)"
             y_label = "y anteroposterior relatif pelvis (m)"

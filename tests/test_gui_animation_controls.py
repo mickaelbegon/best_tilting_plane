@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import numpy as np
 
-from best_tilting_plane.gui.app import BestTiltingPlaneApp
+from best_tilting_plane.gui.app import (
+    DEFAULT_CAMERA_AZIMUTH_DEG,
+    DEFAULT_CAMERA_ELEVATION_DEG,
+    ROOT_INITIAL_OPTIONS,
+    TOP_VIEW_CAMERA_AZIMUTH_DEG,
+    TOP_VIEW_CAMERA_ELEVATION_DEG,
+    BestTiltingPlaneApp,
+)
 
 
 class FakeScheduler:
@@ -58,6 +65,18 @@ class FakeScale:
         self.options.update(kwargs)
 
 
+class FakeAxis:
+    """Minimal 3D axis stub exposing only `view_init` for camera tests."""
+
+    def __init__(self) -> None:
+        self.camera: tuple[float, float] | None = None
+
+    def view_init(self, *, elev: float, azim: float) -> None:
+        """Store the requested camera orientation."""
+
+        self.camera = (elev, azim)
+
+
 def _build_app_for_animation() -> tuple[BestTiltingPlaneApp, list[int], FakeScheduler]:
     """Create a minimal app instance for animation-control tests."""
 
@@ -67,6 +86,7 @@ def _build_app_for_animation() -> tuple[BestTiltingPlaneApp, list[int], FakeSche
     app.root = scheduler
     app.play_pause_label = FakeVar("Play")
     app.plot_mode_var = FakeVar("Courbe")
+    app.root_initial_mode = FakeVar(ROOT_INITIAL_OPTIONS[1])
     app.time_slider_var = FakeVar(0.0)
     app.time_value_var = FakeVar("0.00 s")
     app.time_slider = FakeScale()
@@ -126,3 +146,32 @@ def test_configure_time_slider_uses_simulation_time_bounds() -> None:
     assert app.time_slider.options == {"from_": 0.0, "to": 1.0}
     assert app.time_slider_var.get() == 1.0
     assert app.time_value_var.get() == "1.00 s"
+
+
+def test_apply_camera_view_uses_top_view_when_root_is_zeroed() -> None:
+    """The `q(root)=0` display mode should orient the camera on the `xOy` plane."""
+
+    app, _drawn_frames, _scheduler = _build_app_for_animation()
+    app._animation_axis = FakeAxis()
+    app.root_initial_mode = FakeVar(ROOT_INITIAL_OPTIONS[0])
+
+    app._apply_camera_view()
+
+    assert app._animation_axis.camera == (
+        TOP_VIEW_CAMERA_ELEVATION_DEG,
+        TOP_VIEW_CAMERA_AZIMUTH_DEG,
+    )
+
+
+def test_apply_camera_view_uses_default_perspective_otherwise() -> None:
+    """The standard display mode should keep the default 3D perspective."""
+
+    app, _drawn_frames, _scheduler = _build_app_for_animation()
+    app._animation_axis = FakeAxis()
+
+    app._apply_camera_view()
+
+    assert app._animation_axis.camera == (
+        DEFAULT_CAMERA_ELEVATION_DEG,
+        DEFAULT_CAMERA_AZIMUTH_DEG,
+    )
