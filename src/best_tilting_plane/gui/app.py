@@ -89,6 +89,7 @@ SLIDER_DEFINITIONS = (
 PLOT_X_OPTIONS = ("Temps", "Somersault")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
+ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Best tilting plane")
 OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 5D")
 PLOT_Y_OPTIONS = (
     "Somersault",
@@ -208,40 +209,30 @@ class BestTiltingPlaneApp:
             command=self._refresh_animation_scene,
         ).grid(row=len(SLIDER_DEFINITIONS), column=0, columnspan=3, sticky="w", pady=(8, 4))
 
-        ttk.Label(controls, text="Mode conditions initiales").grid(
+        ttk.Label(controls, text="Repere animation").grid(
             row=len(SLIDER_DEFINITIONS) + 1, column=0, sticky="w", pady=(8, 4)
         )
-        self.root_initial_mode = tk.StringVar(value=ROOT_INITIAL_OPTIONS[0])
-        root_mode_box = ttk.Combobox(
+        self.root_initial_mode = tk.StringVar(value=ROOT_INITIAL_OPTIONS[1])
+        self.animation_mode_var = tk.StringVar(value=ANIMATION_MODE_OPTIONS[0])
+        self.animation_reference_var = tk.StringVar(value=ANIMATION_REFERENCE_OPTIONS[0])
+        animation_reference_box = ttk.Combobox(
             controls,
-            textvariable=self.root_initial_mode,
-            values=ROOT_INITIAL_OPTIONS,
+            textvariable=self.animation_reference_var,
+            values=ANIMATION_REFERENCE_OPTIONS,
             state="readonly",
             width=24,
         )
-        root_mode_box.grid(
+        animation_reference_box.grid(
             row=len(SLIDER_DEFINITIONS) + 1, column=1, columnspan=2, sticky="ew", pady=(8, 4)
         )
-        root_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._on_root_mode_change())
-
-        ttk.Label(controls, text="Mode animation").grid(
-            row=len(SLIDER_DEFINITIONS) + 2, column=0, sticky="w", pady=4
+        animation_reference_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._on_animation_reference_change(),
         )
-        self.animation_mode_var = tk.StringVar(value=ANIMATION_MODE_OPTIONS[0])
-        animation_mode_box = ttk.Combobox(
-            controls,
-            textvariable=self.animation_mode_var,
-            values=ANIMATION_MODE_OPTIONS,
-            state="readonly",
-            width=24,
-        )
-        animation_mode_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 2, column=1, columnspan=2, sticky="ew", pady=4
-        )
-        animation_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._on_animation_mode_change())
+        self._apply_animation_reference(self.animation_reference_var.get())
 
         ttk.Label(controls, text="Mode figure").grid(
-            row=len(SLIDER_DEFINITIONS) + 3, column=0, sticky="w", pady=4
+            row=len(SLIDER_DEFINITIONS) + 2, column=0, sticky="w", pady=4
         )
         self.plot_mode_var = tk.StringVar(value=PLOT_MODE_OPTIONS[0])
         plot_mode_box = ttk.Combobox(
@@ -252,12 +243,12 @@ class BestTiltingPlaneApp:
             width=24,
         )
         plot_mode_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 3, column=1, columnspan=2, sticky="ew", pady=4
+            row=len(SLIDER_DEFINITIONS) + 2, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Label(controls, text="Figure x").grid(
-            row=len(SLIDER_DEFINITIONS) + 4, column=0, sticky="w", pady=4
+            row=len(SLIDER_DEFINITIONS) + 3, column=0, sticky="w", pady=4
         )
         self.plot_x_var = tk.StringVar(value=PLOT_X_OPTIONS[0])
         plot_x_box = ttk.Combobox(
@@ -268,12 +259,12 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_x_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 4, column=1, columnspan=2, sticky="ew", pady=4
+            row=len(SLIDER_DEFINITIONS) + 3, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_x_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Label(controls, text="Figure y").grid(
-            row=len(SLIDER_DEFINITIONS) + 5, column=0, sticky="w", pady=4
+            row=len(SLIDER_DEFINITIONS) + 4, column=0, sticky="w", pady=4
         )
         self.plot_y_var = tk.StringVar(value="Twist")
         plot_y_box = ttk.Combobox(
@@ -284,12 +275,12 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_y_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 5, column=1, columnspan=2, sticky="ew", pady=4
+            row=len(SLIDER_DEFINITIONS) + 4, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_y_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Button(controls, text="Simulate", command=self._run_simulation).grid(
-            row=len(SLIDER_DEFINITIONS) + 6, column=0, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 5, column=0, sticky="w", pady=(10, 0)
         )
         self.optimization_mode_var = tk.StringVar(value=OPTIMIZATION_MODE_OPTIONS[0])
         optimization_mode_box = ttk.Combobox(
@@ -300,15 +291,15 @@ class BestTiltingPlaneApp:
             width=18,
         )
         optimization_mode_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 6, column=1, sticky="ew", pady=(10, 0), padx=(0, 8)
+            row=len(SLIDER_DEFINITIONS) + 5, column=1, sticky="ew", pady=(10, 0), padx=(0, 8)
         )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=len(SLIDER_DEFINITIONS) + 6, column=2, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 5, column=2, sticky="w", pady=(10, 0)
         )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 7, column=0, columnspan=3, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 6, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.sequence_var = tk.StringVar(
             value=(
@@ -320,7 +311,7 @@ class BestTiltingPlaneApp:
             )
         )
         ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 8, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=len(SLIDER_DEFINITIONS) + 7, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
         self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
@@ -523,7 +514,7 @@ class BestTiltingPlaneApp:
         """Return the generalized coordinates used for display."""
 
         q_history = np.asarray(result.q, dtype=float).copy()
-        if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
+        if self._animation_reference() == ANIMATION_REFERENCE_OPTIONS[1]:
             q_history[:, :6] = 0.0
         return q_history
 
@@ -531,9 +522,33 @@ class BestTiltingPlaneApp:
         """Return the generalized velocities used for display."""
 
         qdot_history = np.asarray(result.qdot, dtype=float).copy()
-        if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
+        if self._animation_reference() == ANIMATION_REFERENCE_OPTIONS[1]:
             qdot_history[:, :6] = 0.0
         return qdot_history
+
+    def _animation_reference(self) -> str:
+        """Return the currently selected animation reference frame."""
+
+        if hasattr(self, "animation_reference_var"):
+            return self.animation_reference_var.get()
+        if hasattr(self, "animation_mode_var") and self.animation_mode_var.get() == ANIMATION_MODE_OPTIONS[1]:
+            return ANIMATION_REFERENCE_OPTIONS[2]
+        if hasattr(self, "root_initial_mode") and self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
+            return ANIMATION_REFERENCE_OPTIONS[1]
+        return ANIMATION_REFERENCE_OPTIONS[0]
+
+    def _apply_animation_reference(self, reference: str) -> None:
+        """Map the user-facing animation reference to the internal display settings."""
+
+        if reference == ANIMATION_REFERENCE_OPTIONS[2]:
+            self.root_initial_mode.set(ROOT_INITIAL_OPTIONS[1])
+            self.animation_mode_var.set(ANIMATION_MODE_OPTIONS[1])
+        elif reference == ANIMATION_REFERENCE_OPTIONS[1]:
+            self.root_initial_mode.set(ROOT_INITIAL_OPTIONS[0])
+            self.animation_mode_var.set(ANIMATION_MODE_OPTIONS[0])
+        else:
+            self.root_initial_mode.set(ROOT_INITIAL_OPTIONS[1])
+            self.animation_mode_var.set(ANIMATION_MODE_OPTIONS[0])
 
     def _animation_mode(self) -> str:
         """Return the currently selected animation mode."""
@@ -570,21 +585,15 @@ class BestTiltingPlaneApp:
             "deviations": deviations,
         }
 
-    def _on_root_mode_change(self) -> None:
-        """Refresh the displays when toggling the `q(root)=0` mode."""
+    def _on_animation_reference_change(self) -> None:
+        """Refresh the displays when toggling the animation reference frame."""
 
-        if self._last_simulation is None:
+        self._apply_animation_reference(self.animation_reference_var.get())
+        if self._visualization_data is None:
             return
         self._refresh_visualization_data()
         self._prepare_animation_scene()
         self._refresh_plot()
-
-    def _on_animation_mode_change(self) -> None:
-        """Refresh the animation panel when toggling the animation mode."""
-
-        if self._visualization_data is None:
-            return
-        self._prepare_animation_scene()
         self._sync_time_slider_to_frame(self._current_plot_frame_index())
 
     def _prepare_animation_scene(self) -> None:
@@ -709,7 +718,7 @@ class BestTiltingPlaneApp:
     def _apply_camera_view(self) -> None:
         """Apply the default or top-down camera depending on the root display mode."""
 
-        if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
+        if self._animation_reference() == ANIMATION_REFERENCE_OPTIONS[1]:
             self._animation_axis.view_init(
                 elev=TOP_VIEW_CAMERA_ELEVATION_DEG,
                 azim=TOP_VIEW_CAMERA_AZIMUTH_DEG,
@@ -1040,7 +1049,7 @@ class BestTiltingPlaneApp:
         self._plot_axis.set_xlim(center[0] - radius, center[0] + radius)
         self._plot_axis.set_ylim(center[1] - radius, center[1] + radius)
         self._plot_axis.set_aspect("equal", adjustable="box")
-        if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
+        if self._animation_reference() == ANIMATION_REFERENCE_OPTIONS[1]:
             x_label = "x mediolateral avec q(root)=0 (m)"
             y_label = "y anteroposterior avec q(root)=0 (m)"
             title_suffix = " | q(root)=0"

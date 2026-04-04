@@ -9,6 +9,7 @@ import numpy as np
 
 from best_tilting_plane.gui.app import (
     ANIMATION_MODE_OPTIONS,
+    ANIMATION_REFERENCE_OPTIONS,
     DEFAULT_CAMERA_AZIMUTH_DEG,
     DEFAULT_CAMERA_ELEVATION_DEG,
     ROOT_INITIAL_OPTIONS,
@@ -195,6 +196,26 @@ def test_apply_camera_view_uses_default_perspective_otherwise() -> None:
         DEFAULT_CAMERA_ELEVATION_DEG,
         DEFAULT_CAMERA_AZIMUTH_DEG,
     )
+
+
+def test_apply_animation_reference_maps_popup_choices_to_internal_modes() -> None:
+    """The single animation popup should drive the internal global/root/BTP display settings."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root_initial_mode = FakeVar(ROOT_INITIAL_OPTIONS[1])
+    app.animation_mode_var = FakeVar(ANIMATION_MODE_OPTIONS[0])
+
+    app._apply_animation_reference(ANIMATION_REFERENCE_OPTIONS[0])
+    assert app.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[1]
+    assert app.animation_mode_var.get() == ANIMATION_MODE_OPTIONS[0]
+
+    app._apply_animation_reference(ANIMATION_REFERENCE_OPTIONS[1])
+    assert app.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]
+    assert app.animation_mode_var.get() == ANIMATION_MODE_OPTIONS[0]
+
+    app._apply_animation_reference(ANIMATION_REFERENCE_OPTIONS[2])
+    assert app.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[1]
+    assert app.animation_mode_var.get() == ANIMATION_MODE_OPTIONS[1]
 
 
 def test_draw_animation_frame_dispatches_to_btp_animation_mode() -> None:
