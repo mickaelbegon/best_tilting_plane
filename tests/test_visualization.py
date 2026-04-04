@@ -52,3 +52,31 @@ def test_arm_top_view_trajectories_are_relative_to_the_pelvis_and_keep_xy() -> N
 
     np.testing.assert_allclose(top_view["hand_left"], np.array([[-0.8, 0.8], [-0.8, 0.7]]))
     np.testing.assert_allclose(top_view["hand_right"], np.array([[0.8, 0.8], [0.8, 0.7]]))
+
+
+def test_arm_top_view_trajectories_can_be_expressed_in_the_pelvis_frame() -> None:
+    """Providing pelvis axes should neutralize the root orientation in the top view."""
+
+    trajectories = {
+        "pelvis_origin": np.array([[1.0, 2.0, 5.0], [1.5, 2.5, 5.5]]),
+        "shoulder_left": np.array([[0.8, 2.2, 5.0], [1.3, 2.8, 5.5]]),
+        "elbow_left": np.array([[0.6, 2.4, 5.1], [1.1, 3.0, 5.6]]),
+        "wrist_left": np.array([[0.4, 2.6, 5.2], [0.9, 3.1, 5.7]]),
+        "hand_left": np.array([[0.2, 2.8, 5.3], [0.7, 3.2, 5.8]]),
+        "shoulder_right": np.array([[1.2, 2.2, 5.0], [1.7, 2.8, 5.5]]),
+        "elbow_right": np.array([[1.4, 2.4, 5.1], [1.9, 3.0, 5.6]]),
+        "wrist_right": np.array([[1.6, 2.6, 5.2], [2.1, 3.1, 5.7]]),
+        "hand_right": np.array([[1.8, 2.8, 5.3], [2.3, 3.2, 5.8]]),
+    }
+    reference_axes = np.array(
+        [
+            np.eye(3),
+            [[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        ],
+        dtype=float,
+    )
+
+    top_view = arm_top_view_trajectories(trajectories, reference_axes=reference_axes)
+
+    np.testing.assert_allclose(top_view["hand_left"][0], np.array([-0.8, 0.8]))
+    np.testing.assert_allclose(top_view["hand_left"][1], np.array([0.7, 0.8]))

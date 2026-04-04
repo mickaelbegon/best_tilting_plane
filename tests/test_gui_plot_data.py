@@ -65,6 +65,11 @@ def _build_app_for_plotting(
                 dtype=float,
             )
         },
+        "frames": {
+            "pelvis": {
+                "axes": np.repeat(np.eye(3)[None, :, :], 3, axis=0),
+            }
+        },
         "trajectories": {
             "pelvis_origin": np.array(
                 [[1.0, 2.0, 0.0], [1.0, 2.1, 0.0], [1.0, 2.2, 0.0]],
@@ -107,32 +112,18 @@ def _build_app_for_plotting(
     return app
 
 
-def test_plot_data_returns_selected_angular_momentum_component() -> None:
-    """The GUI plot selector should expose the chosen angular-momentum component."""
+def test_plot_data_returns_twist_against_somersault() -> None:
+    """The standard plot mode should still expose root-angle curves."""
 
-    app = _build_app_for_plotting(plot_x="Temps", plot_y="Moment cinetique y")
-
-    x_data, y_data, x_label, y_label, title = app._plot_data()
-
-    np.testing.assert_allclose(x_data, np.array([0.0, 0.5, 1.0]))
-    np.testing.assert_allclose(y_data, np.array([2.0, 4.0, 12.0]))
-    assert x_label == "Temps (s)"
-    assert y_label == "H_y au CoM"
-    assert title == "Moment cinetique y en fonction de temps"
-
-
-def test_plot_data_returns_angular_momentum_norm_against_somersault() -> None:
-    """The norm of the angular momentum should be plottable against somersault."""
-
-    app = _build_app_for_plotting(plot_x="Somersault", plot_y="Norme moment cinetique")
+    app = _build_app_for_plotting(plot_x="Somersault", plot_y="Twist")
 
     x_data, y_data, x_label, y_label, title = app._plot_data()
 
     np.testing.assert_allclose(x_data, np.rad2deg(np.array([0.0, 0.3, 0.8])))
-    np.testing.assert_allclose(y_data, np.array([3.0, 5.0, 13.0]))
+    np.testing.assert_allclose(y_data, np.rad2deg(np.array([0.0, 0.3, 0.8])))
     assert x_label == "Somersault (deg)"
-    assert y_label == "||H(CoM)||"
-    assert title == "Norme moment cinetique en fonction de somersault"
+    assert y_label == "Twist (deg)"
+    assert title == "Twist en fonction de somersault"
 
 
 def test_top_view_plot_data_returns_relative_arm_trajectories_and_current_frame() -> None:
@@ -161,3 +152,23 @@ def test_current_plot_frame_index_returns_last_drawn_frame_while_playing() -> No
     app._animation_frame_index = 2
 
     assert app._current_plot_frame_index() == 1
+
+
+def test_top_view_plot_data_can_neutralize_root_orientation_for_arm_visualization() -> None:
+    """The `q racine(0)=0` mode should express the arms in the pelvis frame."""
+
+    app = _build_app_for_plotting(root_mode=ROOT_INITIAL_OPTIONS[0])
+    rotation_z_90 = np.array(
+        [
+            [0.0, -1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=float,
+    )
+    app._visualization_data["frames"]["pelvis"]["axes"][1] = rotation_z_90
+
+    top_view, _ = app._top_view_plot_data()
+
+    np.testing.assert_allclose(top_view["hand_left"][0], np.array([-0.5, 0.3]))
+    np.testing.assert_allclose(top_view["hand_left"][1], np.array([0.4, 0.5]))
