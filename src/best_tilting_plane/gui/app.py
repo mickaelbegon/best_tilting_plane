@@ -12,6 +12,7 @@ import numpy as np
 from best_tilting_plane.modeling import ReducedAerialBiomod
 from best_tilting_plane.optimization import TwistStrategyOptimizer
 from best_tilting_plane.simulation import PredictiveAerialTwistSimulator, TwistOptimizationVariables
+from best_tilting_plane.gui.debounce import DebouncedRunner
 from best_tilting_plane.visualization import (
     SKELETON_CONNECTIONS,
     best_tilting_plane_corners,
@@ -67,6 +68,8 @@ class BestTiltingPlaneApp:
         self._result_figure = None
         self._animation_figure = None
         self._animation = None
+        self._auto_simulation_suspended = False
+        self._auto_runner = DebouncedRunner(self.root, self._run_simulation, delay_ms=250)
 
         frame = ttk.Frame(root, padding=12)
         frame.grid(sticky="nsew")
@@ -93,7 +96,7 @@ class BestTiltingPlaneApp:
             frame.columnconfigure(1, weight=1)
 
             scale.configure(
-                command=lambda value, name=definition.name, var=entry_var: self._sync_entry(
+                command=lambda value, name=definition.name, var=entry_var: self._on_slider_change(
                     name, var, value
                 )
             )
@@ -130,6 +133,16 @@ class BestTiltingPlaneApp:
             row=len(SLIDER_DEFINITIONS) + 1, column=2, sticky="w", pady=(6, 0)
         )
 
+        self._run_simulation()
+
+    def _on_slider_change(self, name: str, variable: tk.StringVar, value: str) -> None:
+        """Update the entry field and trigger a debounced simulation."""
+
+        self._sync_entry(name, variable, value)
+        if not self._auto_simulation_suspended:
+            self.result_var.set("Simulation automatique...")
+            self._auto_runner.schedule()
+
     def _sync_entry(self, _name: str, variable: tk.StringVar, value: str) -> None:
         """Update the entry field when the slider moves."""
 
@@ -151,9 +164,11 @@ class BestTiltingPlaneApp:
     def _set_values(self, values: dict[str, float]) -> None:
         """Write a new set of values back to the sliders and entry boxes."""
 
+        self._auto_simulation_suspended = True
         for name, value in values.items():
             self._scales[name].set(float(value))
             self._entries[name].set(f"{float(value):.2f}")
+        self._auto_simulation_suspended = False
 
     def _model_path(self) -> Path:
         """Return the generated-model path used by the simulator and optimizer."""
@@ -248,13 +263,15 @@ class BestTiltingPlaneApp:
             blit=False,
             repeat=True,
         )
-        plt.show()
+        plt.show(block=False)
+        plt.pause(0.001)
 
     def _optimize_strategy(self) -> None:
         """Optimize the current strategy with IPOPT, then update the GUI and rerun the simulation."""
 
         current_values = self._current_values()
         initial_guess = _variables_from_gui(current_values)
+        self._auto_runner.cancel()
         self.result_var.set("Optimisation en cours... voir les iterations IPOPT dans le terminal.")
         self.root.update_idletasks()
 
