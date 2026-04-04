@@ -18,8 +18,12 @@ from best_tilting_plane.modeling import (
     ReducedAerialBiomod,
 )
 from best_tilting_plane.optimization import TwistStrategyOptimizer
-from best_tilting_plane.simulation import PredictiveAerialTwistSimulator, TwistOptimizationVariables
 from best_tilting_plane.gui.debounce import DebouncedRunner
+from best_tilting_plane.simulation import (
+    PredictiveAerialTwistSimulator,
+    SimulationConfiguration,
+    TwistOptimizationVariables,
+)
 from best_tilting_plane.visualization import (
     SKELETON_CONNECTIONS,
     best_tilting_plane_corners,
@@ -204,12 +208,22 @@ class BestTiltingPlaneApp:
         variables = _variables_from_gui(self._current_values())
         model_path = self._model_path()
 
-        simulator = PredictiveAerialTwistSimulator.from_builder(model_path, variables)
+        simulator = PredictiveAerialTwistSimulator.from_builder(
+            model_path,
+            variables,
+            configuration=SimulationConfiguration(integrator="auto"),
+        )
         result = simulator.simulate()
         self._last_simulation = result
         self._last_model_path = Path(simulator.model_path)
 
-        self.result_var.set(f"Nombre de vrilles final: {result.final_twist_turns:.2f} tours")
+        integrator_label = result.integrator_method.upper()
+        if result.rk4_step is not None:
+            integrator_label += f" (dt={result.rk4_step:.4f} s)"
+        self.result_var.set(
+            f"Nombre de vrilles final: {result.final_twist_turns:.2f} tours | "
+            f"Integrateur: {integrator_label}"
+        )
 
         trajectories = marker_trajectories(simulator.model_path, result.q)
         frame_trajectories = segment_frame_trajectories(
@@ -231,7 +245,9 @@ class BestTiltingPlaneApp:
             result.time, result.q[:, 5] / (2.0 * np.pi), color="tab:blue", linewidth=2.0
         )
         result_axis.set_ylabel("Vrilles (tours)")
-        result_axis.set_title(f"Vrilles finales: {result.final_twist_turns:.2f} tours")
+        result_axis.set_title(
+            f"Vrilles finales: {result.final_twist_turns:.2f} tours | {integrator_label}"
+        )
         result_axis.grid(True, alpha=0.3)
         momentum_axis.plot(
             result.time,

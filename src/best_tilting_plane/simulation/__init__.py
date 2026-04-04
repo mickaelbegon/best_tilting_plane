@@ -3,6 +3,7 @@
 from .arm_motion import ArmJointKinematics, PrescribedArmMotion, TwistOptimizationVariables
 from .dynamics import (
     AerialSimulationResult,
+    IntegratorSelection,
     PredictiveAerialTwistSimulator,
     SimulationConfiguration,
 )
@@ -10,6 +11,7 @@ from .dynamics import (
 __all__ = [
     "AerialSimulationResult",
     "ArmJointKinematics",
+    "IntegratorSelection",
     "PredictiveAerialTwistSimulator",
     "PrescribedArmMotion",
     "SimulationConfiguration",
