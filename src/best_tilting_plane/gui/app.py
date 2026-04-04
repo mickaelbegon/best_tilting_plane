@@ -1,4 +1,4 @@
-"""A first interactive GUI for the predictive twisting simulation."""
+"""Interactive GUI for the predictive twisting simulation."""
 
 from __future__ import annotations
 
@@ -8,17 +8,24 @@ from pathlib import Path
 from tkinter import ttk
 
 import numpy as np
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
+from best_tilting_plane.gui.debounce import DebouncedRunner
 from best_tilting_plane.modeling import (
     ARM_ELEVATION_SEQUENCE,
     ARM_PLANE_SEQUENCE,
+    ARM_SEGMENTS_FOR_DEVIATION,
     ARM_SEGMENTS_FOR_VISUALIZATION,
     GLOBAL_AXIS_LABELS,
+    LEFT_ARM_ELEVATION_BOUNDS_DEG,
+    LEFT_ARM_PLANE_BOUNDS_DEG,
+    RIGHT_ARM_ELEVATION_BOUNDS_DEG,
+    RIGHT_ARM_PLANE_BOUNDS_DEG,
     ROOT_ROTATION_SEQUENCE,
-    ReducedAerialBiomod,
 )
 from best_tilting_plane.optimization import TwistStrategyOptimizer
-from best_tilting_plane.gui.debounce import DebouncedRunner
 from best_tilting_plane.simulation import (
     PredictiveAerialTwistSimulator,
     SimulationConfiguration,
@@ -26,6 +33,7 @@ from best_tilting_plane.simulation import (
 )
 from best_tilting_plane.visualization import (
     SKELETON_CONNECTIONS,
+    arm_deviation_from_frames,
     best_tilting_plane_corners,
     marker_trajectories,
     segment_frame_trajectories,
@@ -46,11 +54,48 @@ class SliderDefinition:
 
 SLIDER_DEFINITIONS = (
     SliderDefinition("right_arm_start", "Start bras droit (s)", 0.0, 0.7, 0.10),
-    SliderDefinition("left_plane_initial", "Plan init. gauche (deg)", -180.0, 180.0, 0.0),
-    SliderDefinition("left_plane_final", "Plan fin. gauche (deg)", -180.0, 180.0, 0.0),
-    SliderDefinition("right_plane_initial", "Plan init. droit (deg)", -180.0, 180.0, 0.0),
-    SliderDefinition("right_plane_final", "Plan fin. droit (deg)", -180.0, 180.0, 0.0),
+    SliderDefinition(
+        "left_plane_initial",
+        "Plan init. gauche (deg)",
+        LEFT_ARM_PLANE_BOUNDS_DEG[0],
+        LEFT_ARM_PLANE_BOUNDS_DEG[1],
+        0.0,
+    ),
+    SliderDefinition(
+        "left_plane_final",
+        "Plan fin. gauche (deg)",
+        LEFT_ARM_PLANE_BOUNDS_DEG[0],
+        LEFT_ARM_PLANE_BOUNDS_DEG[1],
+        0.0,
+    ),
+    SliderDefinition(
+        "right_plane_initial",
+        "Plan init. droit (deg)",
+        RIGHT_ARM_PLANE_BOUNDS_DEG[0],
+        RIGHT_ARM_PLANE_BOUNDS_DEG[1],
+        0.0,
+    ),
+    SliderDefinition(
+        "right_plane_final",
+        "Plan fin. droit (deg)",
+        RIGHT_ARM_PLANE_BOUNDS_DEG[0],
+        RIGHT_ARM_PLANE_BOUNDS_DEG[1],
+        0.0,
+    ),
 )
+PLOT_X_OPTIONS = ("Temps", "Somersault")
+PLOT_Y_OPTIONS = (
+    "Somersault",
+    "Tilt",
+    "Twist",
+    "Deviation bras gauche",
+    "Deviation bras droit",
+)
+ROOT_INITIAL_OPTIONS = ("Avec q racine(0)=0", "Sans q racine(0)=0")
+ALL_FRAME_SEGMENTS = tuple(
+    dict.fromkeys(ARM_SEGMENTS_FOR_VISUALIZATION + ARM_SEGMENTS_FOR_DEVIATION)
+)
+ANIMATION_INTERVAL_MS = 35
 
 
 def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
@@ -66,47 +111,54 @@ def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
 
 
 class BestTiltingPlaneApp:
-    """Simple Tkinter GUI that launches simulations and visualization windows."""
+    """Tkinter GUI with integrated controls, 3D animation, and configurable plots."""
 
     def __init__(self, root: tk.Tk) -> None:
         """Create the main window and its controls."""
 
         self.root = root
         self.root.title("Best Tilting Plane")
+        self.root.geometry("1500x900")
 
         self._entries: dict[str, tk.StringVar] = {}
         self._scales: dict[str, tk.Scale] = {}
         self._last_simulation = None
         self._last_model_path: Path | None = None
-        self._result_figure = None
-        self._animation_figure = None
-        self._animation = None
+        self._visualization_data: dict[str, object] | None = None
+        self._animation_after_id: str | None = None
+        self._animation_frame_index = 0
         self._auto_simulation_suspended = False
         self._auto_runner = DebouncedRunner(self.root, self._run_simulation, delay_ms=250)
 
-        frame = ttk.Frame(root, padding=12)
-        frame.grid(sticky="nsew")
-        root.columnconfigure(0, weight=1)
+        root.columnconfigure(1, weight=1)
         root.rowconfigure(0, weight=1)
 
+        controls = ttk.Frame(root, padding=12)
+        controls.grid(row=0, column=0, sticky="nsw")
+        display = ttk.Frame(root, padding=12)
+        display.grid(row=0, column=1, sticky="nsew")
+        display.columnconfigure(0, weight=1)
+        display.rowconfigure(0, weight=3)
+        display.rowconfigure(1, weight=2)
+
         for row, definition in enumerate(SLIDER_DEFINITIONS):
-            ttk.Label(frame, text=definition.label).grid(
+            ttk.Label(controls, text=definition.label).grid(
                 row=row, column=0, sticky="w", padx=(0, 8), pady=4
             )
             scale = tk.Scale(
-                frame,
+                controls,
                 orient=tk.HORIZONTAL,
                 from_=definition.minimum,
                 to=definition.maximum,
                 resolution=0.01,
-                length=320,
+                length=280,
             )
             scale.set(definition.default)
             scale.grid(row=row, column=1, sticky="ew", pady=4)
             entry_var = tk.StringVar(value=f"{definition.default:.2f}")
-            entry = ttk.Entry(frame, textvariable=entry_var, width=10)
+            entry = ttk.Entry(controls, textvariable=entry_var, width=10)
             entry.grid(row=row, column=2, sticky="e", pady=4)
-            frame.columnconfigure(1, weight=1)
+            controls.columnconfigure(1, weight=1)
 
             scale.configure(
                 command=lambda value, name=definition.name, var=entry_var: self._on_slider_change(
@@ -130,45 +182,109 @@ class BestTiltingPlaneApp:
             self._scales[definition.name] = scale
 
         self.show_btp = tk.BooleanVar(value=True)
-        ttk.Checkbutton(frame, text="Afficher le best tilting plane", variable=self.show_btp).grid(
-            row=len(SLIDER_DEFINITIONS), column=0, columnspan=3, sticky="w", pady=(8, 6)
-        )
+        ttk.Checkbutton(
+            controls,
+            text="Afficher le best tilting plane",
+            variable=self.show_btp,
+            command=self._refresh_animation_scene,
+        ).grid(row=len(SLIDER_DEFINITIONS), column=0, columnspan=3, sticky="w", pady=(8, 4))
 
-        ttk.Button(frame, text="Simulate", command=self._run_simulation).grid(
-            row=len(SLIDER_DEFINITIONS) + 1, column=0, sticky="w", pady=(6, 0)
+        ttk.Label(controls, text="Mode conditions initiales").grid(
+            row=len(SLIDER_DEFINITIONS) + 1, column=0, sticky="w", pady=(8, 4)
         )
-        ttk.Button(frame, text="Optimize", command=self._optimize_strategy).grid(
-            row=len(SLIDER_DEFINITIONS) + 1, column=1, sticky="w", pady=(6, 0)
+        self.root_initial_mode = tk.StringVar(value=ROOT_INITIAL_OPTIONS[0])
+        root_mode_box = ttk.Combobox(
+            controls,
+            textvariable=self.root_initial_mode,
+            values=ROOT_INITIAL_OPTIONS,
+            state="readonly",
+            width=24,
+        )
+        root_mode_box.grid(
+            row=len(SLIDER_DEFINITIONS) + 1, column=1, columnspan=2, sticky="ew", pady=(8, 4)
+        )
+        root_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
+
+        ttk.Label(controls, text="Figure x").grid(
+            row=len(SLIDER_DEFINITIONS) + 2, column=0, sticky="w", pady=4
+        )
+        self.plot_x_var = tk.StringVar(value=PLOT_X_OPTIONS[0])
+        plot_x_box = ttk.Combobox(
+            controls,
+            textvariable=self.plot_x_var,
+            values=PLOT_X_OPTIONS,
+            state="readonly",
+            width=18,
+        )
+        plot_x_box.grid(
+            row=len(SLIDER_DEFINITIONS) + 2, column=1, columnspan=2, sticky="ew", pady=4
+        )
+        plot_x_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
+
+        ttk.Label(controls, text="Figure y").grid(
+            row=len(SLIDER_DEFINITIONS) + 3, column=0, sticky="w", pady=4
+        )
+        self.plot_y_var = tk.StringVar(value="Twist")
+        plot_y_box = ttk.Combobox(
+            controls,
+            textvariable=self.plot_y_var,
+            values=PLOT_Y_OPTIONS,
+            state="readonly",
+            width=18,
+        )
+        plot_y_box.grid(
+            row=len(SLIDER_DEFINITIONS) + 3, column=1, columnspan=2, sticky="ew", pady=4
+        )
+        plot_y_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
+
+        ttk.Button(controls, text="Simulate", command=self._run_simulation).grid(
+            row=len(SLIDER_DEFINITIONS) + 4, column=0, sticky="w", pady=(10, 0)
+        )
+        ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
+            row=len(SLIDER_DEFINITIONS) + 4, column=1, sticky="w", pady=(10, 0)
         )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
-        ttk.Label(frame, textvariable=self.result_var).grid(
-            row=len(SLIDER_DEFINITIONS) + 1, column=2, sticky="w", pady=(6, 0)
+        ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
+            row=len(SLIDER_DEFINITIONS) + 5, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.sequence_var = tk.StringVar(
             value=(
                 f"BioMod root: translations xyz, rotations {ROOT_ROTATION_SEQUENCE} = "
-                f"(somersault, tilt, twist) | Bras: plan {ARM_PLANE_SEQUENCE[0]}, elevation {ARM_ELEVATION_SEQUENCE[0]}"
+                f"(somersault, tilt, twist) | Bras: plan {ARM_PLANE_SEQUENCE[0]}, "
+                f"elevation {ARM_ELEVATION_SEQUENCE[0]} | "
+                f"Plan G {LEFT_ARM_PLANE_BOUNDS_DEG}, D {RIGHT_ARM_PLANE_BOUNDS_DEG} deg | "
+                f"Elevation G {LEFT_ARM_ELEVATION_BOUNDS_DEG}, D {RIGHT_ARM_ELEVATION_BOUNDS_DEG} deg"
             )
         )
-        ttk.Label(frame, textvariable=self.sequence_var, wraplength=720).grid(
-            row=len(SLIDER_DEFINITIONS) + 2, column=0, columnspan=3, sticky="w", pady=(8, 0)
+        ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
+            row=len(SLIDER_DEFINITIONS) + 6, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
+
+        self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
+        self._animation_axis = self._animation_figure.add_subplot(111, projection="3d")
+        self._animation_canvas = FigureCanvasTkAgg(self._animation_figure, master=display)
+        self._animation_canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+        self._plot_figure = Figure(figsize=(8.0, 3.5), tight_layout=True)
+        self._plot_axis = self._plot_figure.add_subplot(111)
+        self._plot_canvas = FigureCanvasTkAgg(self._plot_figure, master=display)
+        self._plot_canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
+
+        self._line_artists: tuple[object, ...] = ()
+        self._frame_artists: dict[str, tuple[object, object, object]] = {}
+        self._angular_momentum_artist = None
+        self._plane_artist: Poly3DCollection | None = None
 
         self._run_simulation()
 
-    def _on_slider_change(self, name: str, variable: tk.StringVar, value: str) -> None:
+    def _on_slider_change(self, _name: str, variable: tk.StringVar, value: str) -> None:
         """Update the entry field and trigger a debounced simulation."""
 
-        self._sync_entry(name, variable, value)
+        variable.set(f"{float(value):.2f}")
         if not self._auto_simulation_suspended:
             self.result_var.set("Simulation automatique...")
             self._auto_runner.schedule()
-
-    def _sync_entry(self, _name: str, variable: tk.StringVar, value: str) -> None:
-        """Update the entry field when the slider moves."""
-
-        variable.set(f"{float(value):.2f}")
 
     def _sync_scale_from_entry(self, name: str, variable: tk.StringVar) -> None:
         """Update the slider when the entry content changes."""
@@ -199,17 +315,11 @@ class BestTiltingPlaneApp:
         return project_root / "generated" / "reduced_aerial_model.bioMod"
 
     def _run_simulation(self) -> None:
-        """Simulate the current strategy and open the result windows."""
-
-        import matplotlib.pyplot as plt
-        from matplotlib import animation
-        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        """Simulate the current strategy and refresh the embedded displays."""
 
         variables = _variables_from_gui(self._current_values())
-        model_path = self._model_path()
-
         simulator = PredictiveAerialTwistSimulator.from_builder(
-            model_path,
+            self._model_path(),
             variables,
             configuration=SimulationConfiguration(integrator="auto"),
         )
@@ -217,157 +327,217 @@ class BestTiltingPlaneApp:
         self._last_simulation = result
         self._last_model_path = Path(simulator.model_path)
 
-        integrator_label = result.integrator_method.upper()
-        if result.rk4_step is not None:
-            integrator_label += f" (dt={result.rk4_step:.4f} s)"
-        self.result_var.set(
-            f"Nombre de vrilles final: {result.final_twist_turns:.2f} tours | "
-            f"Integrateur: {integrator_label}"
-        )
-
         trajectories = marker_trajectories(simulator.model_path, result.q)
         frame_trajectories = segment_frame_trajectories(
             simulator.model_path,
             result.q,
-            ARM_SEGMENTS_FOR_VISUALIZATION,
+            ALL_FRAME_SEGMENTS,
         )
         observables = system_observables(simulator.model_path, result.q, result.qdot)
+        deviations = arm_deviation_from_frames(frame_trajectories, result.q[:, 3])
+        self._visualization_data = {
+            "result": result,
+            "trajectories": trajectories,
+            "frames": frame_trajectories,
+            "observables": observables,
+            "deviations": deviations,
+        }
 
-        if self._result_figure is not None:
-            plt.close(self._result_figure)
-        if self._animation_figure is not None:
-            plt.close(self._animation_figure)
+        integrator_label = result.integrator_method.upper()
+        if result.rk4_step is not None:
+            integrator_label += f" (dt={result.rk4_step:.4f} s)"
+        self.result_var.set(
+            f"Vrilles finales: {result.final_twist_turns:.2f} tours | "
+            f"Integrateur: {integrator_label}"
+        )
 
-        self._result_figure, (result_axis, momentum_axis) = plt.subplots(
-            2, 1, figsize=(8, 7), sharex=True
-        )
-        result_axis.plot(
-            result.time, result.q[:, 5] / (2.0 * np.pi), color="tab:blue", linewidth=2.0
-        )
-        result_axis.set_ylabel("Vrilles (tours)")
-        result_axis.set_title(
-            f"Vrilles finales: {result.final_twist_turns:.2f} tours | {integrator_label}"
-        )
-        result_axis.grid(True, alpha=0.3)
-        momentum_axis.plot(
-            result.time,
-            observables["angular_momentum"][:, 0],
-            color="tab:red",
-            linewidth=1.5,
-            label="H_x",
-        )
-        momentum_axis.plot(
-            result.time,
-            observables["angular_momentum"][:, 1],
-            color="tab:green",
-            linewidth=1.5,
-            label="H_y",
-        )
-        momentum_axis.plot(
-            result.time,
-            observables["angular_momentum"][:, 2],
-            color="tab:blue",
-            linewidth=1.5,
-            label="H_z",
-        )
-        momentum_axis.set_xlabel("Temps (s)")
-        momentum_axis.set_ylabel("H au CoM")
-        momentum_axis.set_title("Moment cinetique du systeme au centre de masse")
-        momentum_axis.grid(True, alpha=0.3)
-        momentum_axis.legend(loc="upper right")
+        self._prepare_animation_scene()
+        self._refresh_plot()
+        self._animation_frame_index = 0
+        self._start_animation_loop()
 
-        self._animation_figure = plt.figure(figsize=(8, 7))
-        axis = self._animation_figure.add_subplot(111, projection="3d")
-        axis.set_title("Animation 3D")
-        axis.set_xlabel("Mediolat.")
-        axis.set_ylabel("Ant.-post.")
-        axis.set_zlabel("Longitudinal")
+    def _prepare_animation_scene(self) -> None:
+        """Prepare the 3D axis and artists for the current simulation result."""
+
+        if self._visualization_data is None:
+            return
+
+        trajectories = self._visualization_data["trajectories"]
+        self._animation_axis.clear()
+        self._animation_axis.set_xlabel("Mediolat.")
+        self._animation_axis.set_ylabel("Ant.-post.")
+        self._animation_axis.set_zlabel("Longitudinal")
+        self._animation_axis.set_box_aspect((1.0, 1.0, 1.0))
 
         all_points = np.concatenate(list(trajectories.values()), axis=0)
         span = np.max(all_points, axis=0) - np.min(all_points, axis=0)
         center = np.mean(all_points, axis=0)
         radius = 0.6 * np.max(span)
-        axis.set_xlim(center[0] - radius, center[0] + radius)
-        axis.set_ylim(center[1] - radius, center[1] + radius)
-        axis.set_zlim(center[2] - radius, center[2] + radius)
+        self._animation_axis.set_xlim(center[0] - radius, center[0] + radius)
+        self._animation_axis.set_ylim(center[1] - radius, center[1] + radius)
+        self._animation_axis.set_zlim(center[2] - radius, center[2] + radius)
 
-        line_artists = [
-            axis.plot([], [], [], color="black", linewidth=2.0)[0] for _ in SKELETON_CONNECTIONS
-        ]
-        frame_artists = {
+        self._line_artists = tuple(
+            self._animation_axis.plot([], [], [], color="black", linewidth=2.0)[0]
+            for _ in SKELETON_CONNECTIONS
+        )
+        self._frame_artists = {
             segment_name: tuple(
-                axis.plot([], [], [], color=color, linewidth=2.0)[0]
+                self._animation_axis.plot([], [], [], color=color, linewidth=2.0)[0]
                 for color in ("tab:red", "tab:green", "tab:blue")
             )
             for segment_name in ARM_SEGMENTS_FOR_VISUALIZATION
         }
-        angular_momentum_artist = axis.plot([], [], [], color="tab:orange", linewidth=3.0)[0]
-        plane_artist = None
-
+        self._angular_momentum_artist = self._animation_axis.plot(
+            [], [], [], color="tab:orange", linewidth=3.0
+        )[0]
+        self._plane_artist = None
         if self.show_btp.get():
-            plane_artist = Poly3DCollection(
+            self._plane_artist = Poly3DCollection(
                 [np.zeros((4, 3))], alpha=0.18, facecolor="tab:orange", edgecolor="none"
             )
-            axis.add_collection3d(plane_artist)
+            self._animation_axis.add_collection3d(self._plane_artist)
 
-        def update(frame_index: int):
-            for artist, (start_name, end_name) in zip(line_artists, SKELETON_CONNECTIONS):
-                segment = np.vstack(
-                    (trajectories[start_name][frame_index], trajectories[end_name][frame_index])
-                )
-                artist.set_data(segment[:, 0], segment[:, 1])
-                artist.set_3d_properties(segment[:, 2])
+        self._draw_animation_frame(self._animation_frame_index)
 
-            for segment_name, artists in frame_artists.items():
-                origin = frame_trajectories[segment_name]["origin"][frame_index]
-                axes_matrix = frame_trajectories[segment_name]["axes"][frame_index]
-                for axis_index, artist in enumerate(artists):
-                    endpoint = origin + 0.15 * axes_matrix[:, axis_index]
-                    points = np.vstack((origin, endpoint))
-                    artist.set_data(points[:, 0], points[:, 1])
-                    artist.set_3d_properties(points[:, 2])
+    def _start_animation_loop(self) -> None:
+        """Start or restart the embedded animation loop."""
 
-            com = observables["center_of_mass"][frame_index]
-            angular_momentum = observables["angular_momentum"][frame_index]
-            scale = 0.08
-            momentum_points = np.vstack((com, com + scale * angular_momentum))
-            angular_momentum_artist.set_data(momentum_points[:, 0], momentum_points[:, 1])
-            angular_momentum_artist.set_3d_properties(momentum_points[:, 2])
+        self._stop_animation_loop()
+        self._animate_next_frame()
 
-            if plane_artist is not None:
-                corners = best_tilting_plane_corners(
-                    trajectories["pelvis_origin"][frame_index],
-                    somersault_angle=result.q[frame_index, 3],
-                )
-                plane_artist.set_verts([corners])
+    def _stop_animation_loop(self) -> None:
+        """Cancel the currently scheduled animation callback, if any."""
 
-            axis.set_title(
-                "Animation 3D | "
-                f"t = {result.time[frame_index]:.2f} s | "
-                f"vrilles = {result.q[frame_index, 5] / (2*np.pi):.2f} | "
-                f"H(CoM) = {np.array2string(angular_momentum, precision=2)} | "
-                f"axes: {GLOBAL_AXIS_LABELS}"
+        if self._animation_after_id is not None:
+            self.root.after_cancel(self._animation_after_id)
+            self._animation_after_id = None
+
+    def _animate_next_frame(self) -> None:
+        """Advance the embedded animation by one frame."""
+
+        if self._visualization_data is None:
+            return
+
+        result = self._visualization_data["result"]
+        self._draw_animation_frame(self._animation_frame_index)
+        self._animation_frame_index = (self._animation_frame_index + 1) % result.time.size
+        self._animation_after_id = self.root.after(ANIMATION_INTERVAL_MS, self._animate_next_frame)
+
+    def _draw_animation_frame(self, frame_index: int) -> None:
+        """Draw one frame of the embedded 3D animation."""
+
+        if self._visualization_data is None or self._angular_momentum_artist is None:
+            return
+
+        result = self._visualization_data["result"]
+        trajectories = self._visualization_data["trajectories"]
+        frame_trajectories = self._visualization_data["frames"]
+        observables = self._visualization_data["observables"]
+
+        for artist, (start_name, end_name) in zip(self._line_artists, SKELETON_CONNECTIONS):
+            segment = np.vstack(
+                (trajectories[start_name][frame_index], trajectories[end_name][frame_index])
             )
-            flat_frame_artists = tuple(
-                artist for artists in frame_artists.values() for artist in artists
-            )
-            return (
-                tuple(line_artists)
-                + flat_frame_artists
-                + (angular_momentum_artist,)
-                + (() if plane_artist is None else (plane_artist,))
-            )
+            artist.set_data(segment[:, 0], segment[:, 1])
+            artist.set_3d_properties(segment[:, 2])
 
-        self._animation = animation.FuncAnimation(
-            self._animation_figure,
-            update,
-            frames=result.time.size,
-            interval=35,
-            blit=False,
-            repeat=True,
+        for segment_name, artists in self._frame_artists.items():
+            origin = frame_trajectories[segment_name]["origin"][frame_index]
+            axes_matrix = frame_trajectories[segment_name]["axes"][frame_index]
+            for axis_index, artist in enumerate(artists):
+                endpoint = origin + 0.15 * axes_matrix[:, axis_index]
+                points = np.vstack((origin, endpoint))
+                artist.set_data(points[:, 0], points[:, 1])
+                artist.set_3d_properties(points[:, 2])
+
+        com = observables["center_of_mass"][frame_index]
+        angular_momentum = observables["angular_momentum"][frame_index]
+        momentum_points = np.vstack((com, com + 0.08 * angular_momentum))
+        self._angular_momentum_artist.set_data(momentum_points[:, 0], momentum_points[:, 1])
+        self._angular_momentum_artist.set_3d_properties(momentum_points[:, 2])
+
+        if self._plane_artist is not None:
+            corners = best_tilting_plane_corners(
+                trajectories["pelvis_origin"][frame_index],
+                somersault_angle=result.q[frame_index, 3],
+            )
+            self._plane_artist.set_verts([corners])
+
+        self._animation_axis.set_title(
+            "Animation 3D | "
+            f"t = {result.time[frame_index]:.2f} s | "
+            f"vrilles = {result.q[frame_index, 5] / (2*np.pi):.2f} | "
+            f"H(CoM) = {np.array2string(angular_momentum, precision=2)} | "
+            f"axes: {GLOBAL_AXIS_LABELS}"
         )
-        plt.show(block=False)
-        plt.pause(0.001)
+        self._animation_canvas.draw_idle()
+
+    def _root_series(self, result, root_index: int) -> np.ndarray:
+        """Return one root-angle series, with optional subtraction of the initial value."""
+
+        series = np.asarray(result.q[:, 3 + root_index], dtype=float)
+        if self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
+            series = series - series[0]
+        return series
+
+    def _plot_data(self) -> tuple[np.ndarray, np.ndarray, str, str, str]:
+        """Return the currently selected x/y data and corresponding labels."""
+
+        if self._visualization_data is None:
+            raise RuntimeError("No simulation available for plotting.")
+
+        result = self._visualization_data["result"]
+        deviations = self._visualization_data["deviations"]
+
+        if self.plot_x_var.get() == "Somersault":
+            x_data = np.rad2deg(self._root_series(result, 0))
+            x_label = "Somersault (deg)"
+        else:
+            x_data = np.asarray(result.time, dtype=float)
+            x_label = "Temps (s)"
+
+        y_choice = self.plot_y_var.get()
+        if y_choice == "Somersault":
+            y_data = np.rad2deg(self._root_series(result, 0))
+            y_label = "Somersault (deg)"
+        elif y_choice == "Tilt":
+            y_data = np.rad2deg(self._root_series(result, 1))
+            y_label = "Tilt (deg)"
+        elif y_choice == "Twist":
+            y_data = np.rad2deg(self._root_series(result, 2))
+            y_label = "Twist (deg)"
+        elif y_choice == "Deviation bras gauche":
+            y_data = np.rad2deg(deviations["left"])
+            y_label = "Deviation bras gauche / BTP (deg)"
+        else:
+            y_data = np.rad2deg(deviations["right"])
+            y_label = "Deviation bras droit / BTP (deg)"
+
+        title = f"{y_choice} en fonction de {self.plot_x_var.get().lower()}"
+        return x_data, y_data, x_label, y_label, title
+
+    def _refresh_plot(self) -> None:
+        """Refresh the embedded 2D plot using the latest simulation result."""
+
+        if self._visualization_data is None:
+            return
+
+        x_data, y_data, x_label, y_label, title = self._plot_data()
+        self._plot_axis.clear()
+        self._plot_axis.plot(x_data, y_data, color="tab:blue", linewidth=2.0)
+        self._plot_axis.set_xlabel(x_label)
+        self._plot_axis.set_ylabel(y_label)
+        self._plot_axis.set_title(title)
+        self._plot_axis.grid(True, alpha=0.3)
+        self._plot_canvas.draw_idle()
+
+    def _refresh_animation_scene(self) -> None:
+        """Refresh the 3D scene without rerunning the simulation."""
+
+        if self._visualization_data is None:
+            return
+        self._prepare_animation_scene()
 
     def _optimize_strategy(self) -> None:
         """Optimize the current strategy with IPOPT, then update the GUI and rerun the simulation."""
