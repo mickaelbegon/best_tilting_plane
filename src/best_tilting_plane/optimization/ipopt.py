@@ -19,6 +19,9 @@ from best_tilting_plane.simulation import (
     TwistOptimizationVariables,
 )
 
+RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
+ANGLE_BOUNDS = (-np.pi, np.pi)
+
 
 @dataclass(frozen=True)
 class IpoptBounds:
@@ -181,8 +184,26 @@ class TwistStrategyOptimizer:
         """Return the default bounds for the five decision variables."""
 
         return IpoptBounds(
-            lower=np.array([0.0, -np.pi, -np.pi, -np.pi, -np.pi], dtype=float),
-            upper=np.array([0.7, np.pi, np.pi, np.pi, np.pi], dtype=float),
+            lower=np.array(
+                [
+                    RIGHT_ARM_START_BOUNDS[0],
+                    ANGLE_BOUNDS[0],
+                    ANGLE_BOUNDS[0],
+                    ANGLE_BOUNDS[0],
+                    ANGLE_BOUNDS[0],
+                ],
+                dtype=float,
+            ),
+            upper=np.array(
+                [
+                    RIGHT_ARM_START_BOUNDS[1],
+                    ANGLE_BOUNDS[1],
+                    ANGLE_BOUNDS[1],
+                    ANGLE_BOUNDS[1],
+                    ANGLE_BOUNDS[1],
+                ],
+                dtype=float,
+            ),
         )
 
     @staticmethod

@@ -9,7 +9,14 @@ from tkinter import ttk
 
 import numpy as np
 
-from best_tilting_plane.modeling import ReducedAerialBiomod
+from best_tilting_plane.modeling import (
+    ARM_ELEVATION_SEQUENCE,
+    ARM_PLANE_SEQUENCE,
+    ARM_SEGMENTS_FOR_VISUALIZATION,
+    GLOBAL_AXIS_LABELS,
+    ROOT_ROTATION_SEQUENCE,
+    ReducedAerialBiomod,
+)
 from best_tilting_plane.optimization import TwistStrategyOptimizer
 from best_tilting_plane.simulation import PredictiveAerialTwistSimulator, TwistOptimizationVariables
 from best_tilting_plane.gui.debounce import DebouncedRunner
@@ -17,6 +24,7 @@ from best_tilting_plane.visualization import (
     SKELETON_CONNECTIONS,
     best_tilting_plane_corners,
     marker_trajectories,
+    segment_frame_trajectories,
 )
 
 
@@ -132,6 +140,15 @@ class BestTiltingPlaneApp:
         ttk.Label(frame, textvariable=self.result_var).grid(
             row=len(SLIDER_DEFINITIONS) + 1, column=2, sticky="w", pady=(6, 0)
         )
+        self.sequence_var = tk.StringVar(
+            value=(
+                f"BioMod root: translations xyz, rotations {ROOT_ROTATION_SEQUENCE} = "
+                f"(somersault, tilt, twist) | Bras: plan {ARM_PLANE_SEQUENCE[0]}, elevation {ARM_ELEVATION_SEQUENCE[0]}"
+            )
+        )
+        ttk.Label(frame, textvariable=self.sequence_var, wraplength=720).grid(
+            row=len(SLIDER_DEFINITIONS) + 2, column=0, columnspan=3, sticky="w", pady=(8, 0)
+        )
 
         self._run_simulation()
 
@@ -194,6 +211,11 @@ class BestTiltingPlaneApp:
         self.result_var.set(f"Nombre de vrilles final: {result.final_twist_turns:.2f} tours")
 
         trajectories = marker_trajectories(simulator.model_path, result.q)
+        frame_trajectories = segment_frame_trajectories(
+            simulator.model_path,
+            result.q,
+            ARM_SEGMENTS_FOR_VISUALIZATION,
+        )
 
         if self._result_figure is not None:
             plt.close(self._result_figure)
@@ -227,6 +249,13 @@ class BestTiltingPlaneApp:
         line_artists = [
             axis.plot([], [], [], color="black", linewidth=2.0)[0] for _ in SKELETON_CONNECTIONS
         ]
+        frame_artists = {
+            segment_name: tuple(
+                axis.plot([], [], [], color=color, linewidth=2.0)[0]
+                for color in ("tab:red", "tab:green", "tab:blue")
+            )
+            for segment_name in ARM_SEGMENTS_FOR_VISUALIZATION
+        }
         plane_artist = None
 
         if self.show_btp.get():
@@ -243,6 +272,15 @@ class BestTiltingPlaneApp:
                 artist.set_data(segment[:, 0], segment[:, 1])
                 artist.set_3d_properties(segment[:, 2])
 
+            for segment_name, artists in frame_artists.items():
+                origin = frame_trajectories[segment_name]["origin"][frame_index]
+                axes_matrix = frame_trajectories[segment_name]["axes"][frame_index]
+                for axis_index, artist in enumerate(artists):
+                    endpoint = origin + 0.15 * axes_matrix[:, axis_index]
+                    points = np.vstack((origin, endpoint))
+                    artist.set_data(points[:, 0], points[:, 1])
+                    artist.set_3d_properties(points[:, 2])
+
             if plane_artist is not None:
                 corners = best_tilting_plane_corners(
                     trajectories["pelvis_origin"][frame_index],
@@ -251,9 +289,16 @@ class BestTiltingPlaneApp:
                 plane_artist.set_verts([corners])
 
             axis.set_title(
-                f"Animation 3D | t = {result.time[frame_index]:.2f} s | vrilles = {result.q[frame_index, 5] / (2*np.pi):.2f}"
+                f"Animation 3D | t = {result.time[frame_index]:.2f} s | vrilles = {result.q[frame_index, 5] / (2*np.pi):.2f} | axes: {GLOBAL_AXIS_LABELS}"
             )
-            return tuple(line_artists) + (() if plane_artist is None else (plane_artist,))
+            flat_frame_artists = tuple(
+                artist for artists in frame_artists.values() for artist in artists
+            )
+            return (
+                tuple(line_artists)
+                + flat_frame_artists
+                + (() if plane_artist is None else (plane_artist,))
+            )
 
         self._animation = animation.FuncAnimation(
             self._animation_figure,
