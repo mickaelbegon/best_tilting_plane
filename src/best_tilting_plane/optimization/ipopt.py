@@ -154,7 +154,7 @@ def optimize_black_box_ipopt(
 
 
 class TwistStrategyOptimizer:
-    """Optimize the arm strategy that maximizes the final number of twists."""
+    """Optimize the arm strategy that minimizes the final number of twists."""
 
     def __init__(
         self,
@@ -166,7 +166,10 @@ class TwistStrategyOptimizer:
         """Store the reusable model and simulation settings."""
 
         self.model_path = str(model_path)
-        self.configuration = configuration or SimulationConfiguration()
+        self.configuration = configuration or SimulationConfiguration(
+            integrator="rk4",
+            rk4_step=0.005,
+        )
         self.model = model if model is not None else biorbd.Model(self.model_path)
         self._cache: dict[tuple[float, ...], tuple[float, AerialSimulationResult]] = {}
 
@@ -257,14 +260,43 @@ class TwistStrategyOptimizer:
             model=self.model,
         )
         result = simulator.simulate()
-        objective = -result.final_twist_angle
+        objective = result.final_twist_angle
         self._cache[point] = (objective, result)
         return objective, result
 
     def objective(self, vector: np.ndarray) -> float:
-        """Return the IPOPT scalar objective, i.e. minus the final twist angle."""
+        """Return the IPOPT scalar objective, i.e. the final twist angle."""
 
         return self.evaluate(vector)[0]
+
+    @staticmethod
+    def zero_plane_variables(right_arm_start: float) -> TwistOptimizationVariables:
+        """Return a reduced strategy where both arm planes stay at zero."""
+
+        return TwistOptimizationVariables(
+            right_arm_start=float(right_arm_start),
+            left_plane_initial=0.0,
+            left_plane_final=0.0,
+            right_plane_initial=0.0,
+            right_plane_final=0.0,
+        )
+
+    @staticmethod
+    def right_arm_start_only_bounds() -> IpoptBounds:
+        """Return the 1D bounds used by the reduced optimization mode."""
+
+        return IpoptBounds(
+            lower=np.array([RIGHT_ARM_START_BOUNDS[0]], dtype=float),
+            upper=np.array([RIGHT_ARM_START_BOUNDS[1]], dtype=float),
+        )
+
+    def evaluate_right_arm_start_only(
+        self, right_arm_start: float
+    ) -> tuple[float, AerialSimulationResult]:
+        """Evaluate the reduced 1D optimization mode with both arm planes fixed at zero."""
+
+        variables = self.zero_plane_variables(right_arm_start)
+        return self.evaluate(self.to_vector(variables))
 
     def optimize(
         self,
@@ -288,6 +320,43 @@ class TwistStrategyOptimizer:
         )
         variables = self.from_vector(raw_result.solution)
         _, simulation = self.evaluate(raw_result.solution)
+        return TwistOptimizationResult(
+            variables=variables,
+            final_twist_angle=simulation.final_twist_angle,
+            final_twist_turns=simulation.final_twist_turns,
+            objective=raw_result.objective,
+            solver_status=raw_result.solver_status,
+            success=raw_result.success,
+        )
+
+    def optimize_right_arm_start_only(
+        self,
+        initial_right_arm_start: float,
+        *,
+        bounds: IpoptBounds | None = None,
+        max_iter: int = 50,
+        print_level: int = 0,
+        print_time: bool = False,
+    ) -> TwistOptimizationResult:
+        """Optimize only the right-arm start time with both arm planes kept at zero."""
+
+        chosen_bounds = bounds or self.right_arm_start_only_bounds()
+
+        def evaluator(vector: np.ndarray) -> float:
+            return self.evaluate_right_arm_start_only(float(np.asarray(vector, dtype=float).reshape(-1)[0]))[
+                0
+            ]
+
+        raw_result = optimize_black_box_ipopt(
+            evaluator,
+            np.array([initial_right_arm_start], dtype=float),
+            chosen_bounds,
+            max_iter=max_iter,
+            print_level=print_level,
+            print_time=print_time,
+        )
+        variables = self.zero_plane_variables(raw_result.solution[0])
+        _, simulation = self.evaluate(self.to_vector(variables))
         return TwistOptimizationResult(
             variables=variables,
             final_twist_angle=simulation.final_twist_angle,

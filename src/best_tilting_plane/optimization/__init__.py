@@ -1,4 +1,4 @@
-"""IPOPT-based optimization helpers for twist maximization."""
+"""IPOPT-based optimization helpers for twist minimization."""
 
 from .ipopt import (
     IpoptBounds,

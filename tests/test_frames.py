@@ -18,6 +18,7 @@ from best_tilting_plane.modeling import (
     RIGHT_ARM_PLANE_BOUNDS_DEG,
     ReducedAerialBiomod,
 )
+from best_tilting_plane.gui.app import SLIDER_DEFINITIONS
 from best_tilting_plane.optimization.ipopt import (
     LEFT_ARM_PLANE_BOUNDS,
     RIGHT_ARM_START_BOUNDS,
@@ -64,6 +65,23 @@ def test_rotation_sequences_are_exposed_for_root_and_arms() -> None:
     assert ARM_PLANE_SEQUENCE == ("z",)
     assert ARM_ELEVATION_SEQUENCE == ("y",)
     assert GLOBAL_AXIS_LABELS == ("x_mediolateral", "y_anteroposterior", "z_longitudinal")
+
+
+def test_gui_slider_bounds_match_the_validated_constraints() -> None:
+    """The GUI sliders should expose exactly the same validated bounds as the model."""
+
+    slider_by_name = {definition.name: definition for definition in SLIDER_DEFINITIONS}
+
+    assert slider_by_name["right_arm_start"].minimum == RIGHT_ARM_START_BOUNDS[0]
+    assert slider_by_name["right_arm_start"].maximum == RIGHT_ARM_START_BOUNDS[1]
+    assert slider_by_name["left_plane_initial"].minimum == LEFT_ARM_PLANE_BOUNDS_DEG[0]
+    assert slider_by_name["left_plane_initial"].maximum == LEFT_ARM_PLANE_BOUNDS_DEG[1]
+    assert slider_by_name["left_plane_final"].minimum == LEFT_ARM_PLANE_BOUNDS_DEG[0]
+    assert slider_by_name["left_plane_final"].maximum == LEFT_ARM_PLANE_BOUNDS_DEG[1]
+    assert slider_by_name["right_plane_initial"].minimum == RIGHT_ARM_PLANE_BOUNDS_DEG[0]
+    assert slider_by_name["right_plane_initial"].maximum == RIGHT_ARM_PLANE_BOUNDS_DEG[1]
+    assert slider_by_name["right_plane_final"].minimum == RIGHT_ARM_PLANE_BOUNDS_DEG[0]
+    assert slider_by_name["right_plane_final"].maximum == RIGHT_ARM_PLANE_BOUNDS_DEG[1]
 
 
 def test_segment_frame_trajectories_extract_trunk_and_arm_frames(tmp_path: Path) -> None:

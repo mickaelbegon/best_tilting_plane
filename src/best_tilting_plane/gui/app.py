@@ -86,6 +86,7 @@ SLIDER_DEFINITIONS = (
 )
 PLOT_X_OPTIONS = ("Temps", "Somersault")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
+OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 5D")
 PLOT_Y_OPTIONS = (
     "Somersault",
     "Tilt",
@@ -104,6 +105,7 @@ ALL_FRAME_SEGMENTS = tuple(
     dict.fromkeys(ARM_SEGMENTS_FOR_VISUALIZATION + ARM_SEGMENTS_FOR_DEVIATION)
 )
 ANIMATION_INTERVAL_MS = 35
+STANDARD_RK4_STEP = 0.005
 
 
 def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
@@ -267,8 +269,19 @@ class BestTiltingPlaneApp:
         ttk.Button(controls, text="Simulate", command=self._run_simulation).grid(
             row=len(SLIDER_DEFINITIONS) + 5, column=0, sticky="w", pady=(10, 0)
         )
+        self.optimization_mode_var = tk.StringVar(value=OPTIMIZATION_MODE_OPTIONS[0])
+        optimization_mode_box = ttk.Combobox(
+            controls,
+            textvariable=self.optimization_mode_var,
+            values=OPTIMIZATION_MODE_OPTIONS,
+            state="readonly",
+            width=18,
+        )
+        optimization_mode_box.grid(
+            row=len(SLIDER_DEFINITIONS) + 5, column=1, sticky="ew", pady=(10, 0), padx=(0, 8)
+        )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=len(SLIDER_DEFINITIONS) + 5, column=1, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 5, column=2, sticky="w", pady=(10, 0)
         )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
@@ -374,7 +387,7 @@ class BestTiltingPlaneApp:
         simulator = PredictiveAerialTwistSimulator.from_builder(
             self._model_path(),
             variables,
-            configuration=SimulationConfiguration(integrator="auto"),
+            configuration=SimulationConfiguration(integrator="rk4", rk4_step=STANDARD_RK4_STEP),
         )
         result = simulator.simulate()
         self._last_simulation = result
@@ -840,8 +853,19 @@ class BestTiltingPlaneApp:
         self.result_var.set("Optimisation en cours... voir les iterations IPOPT dans le terminal.")
         self.root.update_idletasks()
 
-        optimizer = TwistStrategyOptimizer.from_builder(self._model_path())
-        result = optimizer.optimize(initial_guess, max_iter=25, print_level=5, print_time=True)
+        optimizer = TwistStrategyOptimizer.from_builder(
+            self._model_path(),
+            configuration=SimulationConfiguration(integrator="rk4", rk4_step=STANDARD_RK4_STEP),
+        )
+        if self.optimization_mode_var.get() == "Optimize 5D":
+            result = optimizer.optimize(initial_guess, max_iter=25, print_level=5, print_time=True)
+        else:
+            result = optimizer.optimize_right_arm_start_only(
+                initial_guess.right_arm_start,
+                max_iter=25,
+                print_level=5,
+                print_time=True,
+            )
 
         optimized_values = {
             "right_arm_start": result.variables.right_arm_start,
@@ -852,7 +876,7 @@ class BestTiltingPlaneApp:
         }
         self._set_values(optimized_values)
         self.result_var.set(
-            f"Optimum IPOPT: {result.final_twist_turns:.2f} tours ({result.solver_status})"
+            f"Minimum IPOPT: {result.final_twist_turns:.2f} tours ({result.solver_status})"
         )
         self._run_simulation()
 

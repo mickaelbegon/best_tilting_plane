@@ -90,3 +90,37 @@ def test_twist_strategy_objective_returns_a_finite_value(tmp_path: Path) -> None
 
     assert np.isfinite(objective)
     assert np.isfinite(result.final_twist_angle)
+
+
+def test_twist_strategy_objective_now_matches_the_final_twist_angle(tmp_path: Path) -> None:
+    """The minimization objective should directly equal the final twist angle."""
+
+    optimizer = TwistStrategyOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.08, steps=9, integrator="rk4", rk4_step=0.005),
+    )
+
+    objective, result = optimizer.evaluate(np.zeros(5))
+
+    assert objective == pytest.approx(result.final_twist_angle)
+
+
+def test_right_arm_start_only_optimizer_keeps_both_arm_planes_at_zero(
+    tmp_path: Path,
+) -> None:
+    """The reduced 2D mode should only optimize the second-arm start time."""
+
+    optimizer = TwistStrategyOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.08, steps=9, integrator="rk4", rk4_step=0.005),
+    )
+
+    result = optimizer.optimize_right_arm_start_only(0.2, max_iter=5)
+
+    assert result.variables.left_plane_initial == pytest.approx(0.0)
+    assert result.variables.left_plane_final == pytest.approx(0.0)
+    assert result.variables.right_plane_initial == pytest.approx(0.0)
+    assert result.variables.right_plane_final == pytest.approx(0.0)
+    assert 0.0 <= result.variables.right_arm_start <= 0.7
