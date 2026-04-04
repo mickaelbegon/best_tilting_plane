@@ -20,6 +20,22 @@ def _rotation_x(angle: float) -> np.ndarray:
     )
 
 
+def best_tilting_plane_axes(somersault_angle: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return the two unit directions spanning the best tilting plane."""
+
+    somersault_axis = np.array([1.0, 0.0, 0.0], dtype=float)
+    twist_axis = _rotation_x(somersault_angle) @ np.array([0.0, 0.0, 1.0], dtype=float)
+    return somersault_axis, twist_axis
+
+
+def best_tilting_plane_normal(somersault_angle: float) -> np.ndarray:
+    """Return the unit normal to the best tilting plane."""
+
+    somersault_axis, twist_axis = best_tilting_plane_axes(somersault_angle)
+    normal = np.cross(somersault_axis, twist_axis)
+    return normal / np.linalg.norm(normal)
+
+
 def best_tilting_plane_corners(
     origin: np.ndarray,
     somersault_angle: float,
@@ -33,8 +49,7 @@ def best_tilting_plane_corners(
     """
 
     origin = np.asarray(origin, dtype=float).reshape(3)
-    somersault_axis = np.array([1.0, 0.0, 0.0], dtype=float)
-    twist_axis = _rotation_x(somersault_angle) @ np.array([0.0, 0.0, 1.0], dtype=float)
+    somersault_axis, twist_axis = best_tilting_plane_axes(somersault_angle)
 
     return np.vstack(
         [

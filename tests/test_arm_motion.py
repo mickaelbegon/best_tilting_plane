@@ -48,7 +48,7 @@ def test_right_arm_uses_the_decision_variable_start_time() -> None:
     end = motion.right(0.5)
 
     assert motion.right_end == pytest.approx(0.5)
-    assert before.elevation.position == pytest.approx(math.pi)
+    assert before.elevation.position == pytest.approx(-math.pi)
     assert before.elevation.velocity == pytest.approx(0.0)
     assert start.elevation_plane.position == pytest.approx(math.radians(-45.0))
     assert end.elevation_plane.position == pytest.approx(math.radians(15.0))

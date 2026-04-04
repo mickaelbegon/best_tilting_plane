@@ -8,14 +8,20 @@ import pytest
 from best_tilting_plane.modeling import (
     ARM_ELEVATION_SEQUENCE,
     ARM_PLANE_SEQUENCE,
+    ARM_SEGMENTS_FOR_DEVIATION,
     ARM_SEGMENTS_FOR_VISUALIZATION,
     GLOBAL_AXIS_LABELS,
+    LEFT_ARM_ELEVATION_BOUNDS_DEG,
+    LEFT_ARM_PLANE_BOUNDS_DEG,
     ROOT_ROTATION_SEQUENCE,
+    RIGHT_ARM_ELEVATION_BOUNDS_DEG,
+    RIGHT_ARM_PLANE_BOUNDS_DEG,
     ReducedAerialBiomod,
 )
 from best_tilting_plane.optimization.ipopt import (
-    ANGLE_BOUNDS,
+    LEFT_ARM_PLANE_BOUNDS,
     RIGHT_ARM_START_BOUNDS,
+    RIGHT_ARM_PLANE_BOUNDS,
     TwistStrategyOptimizer,
 )
 from best_tilting_plane.visualization import segment_frame_trajectories
@@ -27,9 +33,28 @@ def test_default_optimization_bounds_match_requested_right_arm_start_constraint(
     bounds = TwistStrategyOptimizer.default_bounds()
 
     assert RIGHT_ARM_START_BOUNDS == (0.0, 0.7)
+    assert LEFT_ARM_PLANE_BOUNDS_DEG == (-135.0, 0.0)
+    assert RIGHT_ARM_PLANE_BOUNDS_DEG == (0.0, 135.0)
+    assert LEFT_ARM_ELEVATION_BOUNDS_DEG == (0.0, 180.0)
+    assert RIGHT_ARM_ELEVATION_BOUNDS_DEG == (-180.0, 0.0)
     assert bounds.lower[0] == pytest.approx(0.0)
     assert bounds.upper[0] == pytest.approx(0.7)
-    assert ANGLE_BOUNDS == (-np.pi, np.pi)
+    np.testing.assert_allclose(
+        LEFT_ARM_PLANE_BOUNDS,
+        np.deg2rad(np.array(LEFT_ARM_PLANE_BOUNDS_DEG)),
+    )
+    np.testing.assert_allclose(
+        RIGHT_ARM_PLANE_BOUNDS,
+        np.deg2rad(np.array(RIGHT_ARM_PLANE_BOUNDS_DEG)),
+    )
+    np.testing.assert_allclose(
+        bounds.lower[1:],
+        np.deg2rad(np.array([-135.0, -135.0, 0.0, 0.0])),
+    )
+    np.testing.assert_allclose(
+        bounds.upper[1:],
+        np.deg2rad(np.array([0.0, 0.0, 135.0, 135.0])),
+    )
 
 
 def test_rotation_sequences_are_exposed_for_root_and_arms() -> None:
@@ -57,3 +82,6 @@ def test_segment_frame_trajectories_extract_trunk_and_arm_frames(tmp_path: Path)
             np.eye(3),
             atol=1e-10,
         )
+
+    deviation_frames = segment_frame_trajectories(model_path, q_history, ARM_SEGMENTS_FOR_DEVIATION)
+    assert set(deviation_frames) == set(ARM_SEGMENTS_FOR_DEVIATION)

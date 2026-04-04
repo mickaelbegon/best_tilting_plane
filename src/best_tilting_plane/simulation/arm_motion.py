@@ -43,7 +43,8 @@ class PrescribedArmMotion:
 
     The left arm always moves from 0.0 s to 0.3 s.
     The right arm starts at the decision-variable time and lasts 0.3 s.
-    Elevation is imposed from 180 degrees to 0 degrees for both arms.
+    Elevation is imposed from +180 to 0 degrees on the left arm and from -180 to 0 degrees
+    on the right arm so that the sign convention matches the biomod.
     """
 
     def __init__(
@@ -52,8 +53,10 @@ class PrescribedArmMotion:
         *,
         left_start: float = 0.0,
         duration: float = 0.3,
-        elevation_initial: float = 3.141592653589793,
-        elevation_final: float = 0.0,
+        left_elevation_initial: float = 3.141592653589793,
+        left_elevation_final: float = 0.0,
+        right_elevation_initial: float = -3.141592653589793,
+        right_elevation_final: float = 0.0,
     ) -> None:
         """Build the prescribed left/right arm trajectories."""
 
@@ -63,8 +66,10 @@ class PrescribedArmMotion:
         self.variables = variables
         self.left_start = left_start
         self.duration = duration
-        self.elevation_initial = elevation_initial
-        self.elevation_final = elevation_final
+        self.left_elevation_initial = left_elevation_initial
+        self.left_elevation_final = left_elevation_final
+        self.right_elevation_initial = right_elevation_initial
+        self.right_elevation_final = right_elevation_final
 
         self._left_plane = QuinticBoundaryTrajectory(
             t0=left_start,
@@ -75,8 +80,8 @@ class PrescribedArmMotion:
         self._left_elevation = QuinticBoundaryTrajectory(
             t0=left_start,
             t1=left_start + duration,
-            q0=elevation_initial,
-            q1=elevation_final,
+            q0=left_elevation_initial,
+            q1=left_elevation_final,
         )
         self._right_plane = QuinticBoundaryTrajectory(
             t0=variables.right_arm_start,
@@ -87,8 +92,8 @@ class PrescribedArmMotion:
         self._right_elevation = QuinticBoundaryTrajectory(
             t0=variables.right_arm_start,
             t1=variables.right_arm_start + duration,
-            q0=elevation_initial,
-            q1=elevation_final,
+            q0=right_elevation_initial,
+            q1=right_elevation_final,
         )
 
     @property

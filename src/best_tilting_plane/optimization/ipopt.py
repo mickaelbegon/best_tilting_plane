@@ -10,7 +10,11 @@ import biorbd
 import casadi as ca
 import numpy as np
 
-from best_tilting_plane.modeling import ReducedAerialBiomod
+from best_tilting_plane.modeling import (
+    LEFT_ARM_PLANE_BOUNDS_DEG,
+    RIGHT_ARM_PLANE_BOUNDS_DEG,
+    ReducedAerialBiomod,
+)
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
     PredictiveAerialTwistSimulator,
@@ -20,7 +24,8 @@ from best_tilting_plane.simulation import (
 )
 
 RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
-ANGLE_BOUNDS = (-np.pi, np.pi)
+LEFT_ARM_PLANE_BOUNDS = tuple(np.deg2rad(LEFT_ARM_PLANE_BOUNDS_DEG))
+RIGHT_ARM_PLANE_BOUNDS = tuple(np.deg2rad(RIGHT_ARM_PLANE_BOUNDS_DEG))
 
 
 @dataclass(frozen=True)
@@ -187,20 +192,20 @@ class TwistStrategyOptimizer:
             lower=np.array(
                 [
                     RIGHT_ARM_START_BOUNDS[0],
-                    ANGLE_BOUNDS[0],
-                    ANGLE_BOUNDS[0],
-                    ANGLE_BOUNDS[0],
-                    ANGLE_BOUNDS[0],
+                    LEFT_ARM_PLANE_BOUNDS[0],
+                    LEFT_ARM_PLANE_BOUNDS[0],
+                    RIGHT_ARM_PLANE_BOUNDS[0],
+                    RIGHT_ARM_PLANE_BOUNDS[0],
                 ],
                 dtype=float,
             ),
             upper=np.array(
                 [
                     RIGHT_ARM_START_BOUNDS[1],
-                    ANGLE_BOUNDS[1],
-                    ANGLE_BOUNDS[1],
-                    ANGLE_BOUNDS[1],
-                    ANGLE_BOUNDS[1],
+                    LEFT_ARM_PLANE_BOUNDS[1],
+                    LEFT_ARM_PLANE_BOUNDS[1],
+                    RIGHT_ARM_PLANE_BOUNDS[1],
+                    RIGHT_ARM_PLANE_BOUNDS[1],
                 ],
                 dtype=float,
             ),
