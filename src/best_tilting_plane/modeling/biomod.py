@@ -152,7 +152,7 @@ class ReducedAerialBiomod:
         )
 
         foot_mass = self.mass * table["foot"].mass_fraction
-        foot_com = (0.5 * dims.foot_length, 0.0, 0.0)
+        foot_com = (0.0, 0.5 * dims.foot_length, 0.0)
         foot_inertia = _diag_inertia(foot_mass, dims.foot_length, table["foot"].radii_of_gyration)
 
         parts = [
@@ -279,7 +279,7 @@ class ReducedAerialBiomod:
                     _marker_block(f"hip_{side}", "pelvis", (sign * dims.hip_half_width, 0.0, 0.0)),
                     _marker_block(f"knee_{side}", f"thigh_{side}", (0.0, 0.0, -dims.thigh_length)),
                     _marker_block(f"ankle_{side}", f"shank_{side}", (0.0, 0.0, -dims.shank_length)),
-                    _marker_block(f"toe_{side}", f"foot_{side}", (dims.foot_length, 0.0, 0.0)),
+                    _marker_block(f"toe_{side}", f"foot_{side}", (0.0, dims.foot_length, 0.0)),
                 ]
             )
 

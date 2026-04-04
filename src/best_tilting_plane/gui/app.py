@@ -25,6 +25,7 @@ from best_tilting_plane.visualization import (
     best_tilting_plane_corners,
     marker_trajectories,
     segment_frame_trajectories,
+    system_observables,
 )
 
 
@@ -216,20 +217,48 @@ class BestTiltingPlaneApp:
             result.q,
             ARM_SEGMENTS_FOR_VISUALIZATION,
         )
+        observables = system_observables(simulator.model_path, result.q, result.qdot)
 
         if self._result_figure is not None:
             plt.close(self._result_figure)
         if self._animation_figure is not None:
             plt.close(self._animation_figure)
 
-        self._result_figure, result_axis = plt.subplots(figsize=(7, 4))
+        self._result_figure, (result_axis, momentum_axis) = plt.subplots(
+            2, 1, figsize=(8, 7), sharex=True
+        )
         result_axis.plot(
             result.time, result.q[:, 5] / (2.0 * np.pi), color="tab:blue", linewidth=2.0
         )
-        result_axis.set_xlabel("Temps (s)")
         result_axis.set_ylabel("Vrilles (tours)")
         result_axis.set_title(f"Vrilles finales: {result.final_twist_turns:.2f} tours")
         result_axis.grid(True, alpha=0.3)
+        momentum_axis.plot(
+            result.time,
+            observables["angular_momentum"][:, 0],
+            color="tab:red",
+            linewidth=1.5,
+            label="H_x",
+        )
+        momentum_axis.plot(
+            result.time,
+            observables["angular_momentum"][:, 1],
+            color="tab:green",
+            linewidth=1.5,
+            label="H_y",
+        )
+        momentum_axis.plot(
+            result.time,
+            observables["angular_momentum"][:, 2],
+            color="tab:blue",
+            linewidth=1.5,
+            label="H_z",
+        )
+        momentum_axis.set_xlabel("Temps (s)")
+        momentum_axis.set_ylabel("H au CoM")
+        momentum_axis.set_title("Moment cinetique du systeme au centre de masse")
+        momentum_axis.grid(True, alpha=0.3)
+        momentum_axis.legend(loc="upper right")
 
         self._animation_figure = plt.figure(figsize=(8, 7))
         axis = self._animation_figure.add_subplot(111, projection="3d")
@@ -256,6 +285,7 @@ class BestTiltingPlaneApp:
             )
             for segment_name in ARM_SEGMENTS_FOR_VISUALIZATION
         }
+        angular_momentum_artist = axis.plot([], [], [], color="tab:orange", linewidth=3.0)[0]
         plane_artist = None
 
         if self.show_btp.get():
@@ -281,6 +311,13 @@ class BestTiltingPlaneApp:
                     artist.set_data(points[:, 0], points[:, 1])
                     artist.set_3d_properties(points[:, 2])
 
+            com = observables["center_of_mass"][frame_index]
+            angular_momentum = observables["angular_momentum"][frame_index]
+            scale = 0.08
+            momentum_points = np.vstack((com, com + scale * angular_momentum))
+            angular_momentum_artist.set_data(momentum_points[:, 0], momentum_points[:, 1])
+            angular_momentum_artist.set_3d_properties(momentum_points[:, 2])
+
             if plane_artist is not None:
                 corners = best_tilting_plane_corners(
                     trajectories["pelvis_origin"][frame_index],
@@ -289,7 +326,11 @@ class BestTiltingPlaneApp:
                 plane_artist.set_verts([corners])
 
             axis.set_title(
-                f"Animation 3D | t = {result.time[frame_index]:.2f} s | vrilles = {result.q[frame_index, 5] / (2*np.pi):.2f} | axes: {GLOBAL_AXIS_LABELS}"
+                "Animation 3D | "
+                f"t = {result.time[frame_index]:.2f} s | "
+                f"vrilles = {result.q[frame_index, 5] / (2*np.pi):.2f} | "
+                f"H(CoM) = {np.array2string(angular_momentum, precision=2)} | "
+                f"axes: {GLOBAL_AXIS_LABELS}"
             )
             flat_frame_artists = tuple(
                 artist for artists in frame_artists.values() for artist in artists
@@ -297,6 +338,7 @@ class BestTiltingPlaneApp:
             return (
                 tuple(line_artists)
                 + flat_frame_artists
+                + (angular_momentum_artist,)
                 + (() if plane_artist is None else (plane_artist,))
             )
 
