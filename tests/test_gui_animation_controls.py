@@ -66,6 +66,7 @@ def _build_app_for_animation() -> tuple[BestTiltingPlaneApp, list[int], FakeSche
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app.root = scheduler
     app.play_pause_label = FakeVar("Play")
+    app.plot_mode_var = FakeVar("Courbe")
     app.time_slider_var = FakeVar(0.0)
     app.time_value_var = FakeVar("0.00 s")
     app.time_slider = FakeScale()

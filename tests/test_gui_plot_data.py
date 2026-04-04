@@ -30,7 +30,11 @@ def _build_app_for_plotting(
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app.plot_x_var = _FakeVar(plot_x)
     app.plot_y_var = _FakeVar(plot_y)
+    app.plot_mode_var = _FakeVar("Courbe")
     app.root_initial_mode = _FakeVar(root_mode)
+    app._animation_playing = False
+    app._animation_after_id = None
+    app._animation_frame_index = 0
     app._visualization_data = {
         "result": type(
             "Result",
@@ -60,6 +64,44 @@ def _build_app_for_plotting(
                 ],
                 dtype=float,
             )
+        },
+        "trajectories": {
+            "pelvis_origin": np.array(
+                [[1.0, 2.0, 0.0], [1.0, 2.1, 0.0], [1.0, 2.2, 0.0]],
+                dtype=float,
+            ),
+            "shoulder_left": np.array(
+                [[0.8, 2.0, 0.0], [0.8, 2.1, 0.0], [0.8, 2.2, 0.0]],
+                dtype=float,
+            ),
+            "elbow_left": np.array(
+                [[0.7, 2.1, 0.0], [0.7, 2.3, 0.0], [0.7, 2.4, 0.0]],
+                dtype=float,
+            ),
+            "wrist_left": np.array(
+                [[0.6, 2.2, 0.0], [0.6, 2.4, 0.0], [0.6, 2.6, 0.0]],
+                dtype=float,
+            ),
+            "hand_left": np.array(
+                [[0.5, 2.3, 0.0], [0.5, 2.5, 0.0], [0.5, 2.7, 0.0]],
+                dtype=float,
+            ),
+            "shoulder_right": np.array(
+                [[1.2, 2.0, 0.0], [1.2, 2.1, 0.0], [1.2, 2.2, 0.0]],
+                dtype=float,
+            ),
+            "elbow_right": np.array(
+                [[1.3, 2.1, 0.0], [1.3, 2.3, 0.0], [1.3, 2.4, 0.0]],
+                dtype=float,
+            ),
+            "wrist_right": np.array(
+                [[1.4, 2.2, 0.0], [1.4, 2.4, 0.0], [1.4, 2.6, 0.0]],
+                dtype=float,
+            ),
+            "hand_right": np.array(
+                [[1.5, 2.3, 0.0], [1.5, 2.5, 0.0], [1.5, 2.7, 0.0]],
+                dtype=float,
+            ),
         },
     }
     return app
@@ -91,3 +133,31 @@ def test_plot_data_returns_angular_momentum_norm_against_somersault() -> None:
     assert x_label == "Somersault (deg)"
     assert y_label == "||H(CoM)||"
     assert title == "Norme moment cinetique en fonction de somersault"
+
+
+def test_top_view_plot_data_returns_relative_arm_trajectories_and_current_frame() -> None:
+    """The top-view mode should expose pelvis-relative arm trajectories."""
+
+    app = _build_app_for_plotting()
+    app._animation_frame_index = 2
+
+    top_view, frame_index = app._top_view_plot_data()
+
+    np.testing.assert_allclose(
+        top_view["hand_left"], np.array([[-0.5, 0.3], [-0.5, 0.4], [-0.5, 0.5]])
+    )
+    np.testing.assert_allclose(
+        top_view["hand_right"], np.array([[0.5, 0.3], [0.5, 0.4], [0.5, 0.5]])
+    )
+    assert frame_index == 2
+
+
+def test_current_plot_frame_index_returns_last_drawn_frame_while_playing() -> None:
+    """While the animation is playing, the highlighted 2D frame should match the displayed 3D frame."""
+
+    app = _build_app_for_plotting()
+    app._animation_playing = True
+    app._animation_after_id = 123
+    app._animation_frame_index = 2
+
+    assert app._current_plot_frame_index() == 1

@@ -5,15 +5,18 @@ from .arm_deviation import (
     arm_deviation_trajectories,
     signed_deviation_from_plane,
 )
+from .arm_top_view import ARM_TOP_VIEW_MARKERS, arm_top_view_trajectories
 from .btp import best_tilting_plane_axes, best_tilting_plane_corners, best_tilting_plane_normal
 from .dynamics import system_observables
 from .frames import segment_frame_trajectories
 from .markers import SKELETON_CONNECTIONS, marker_trajectories
 
 __all__ = [
+    "ARM_TOP_VIEW_MARKERS",
     "SKELETON_CONNECTIONS",
     "arm_deviation_from_frames",
     "arm_deviation_trajectories",
+    "arm_top_view_trajectories",
     "best_tilting_plane_axes",
     "best_tilting_plane_corners",
     "best_tilting_plane_normal",

@@ -34,6 +34,7 @@ from best_tilting_plane.simulation import (
 from best_tilting_plane.visualization import (
     SKELETON_CONNECTIONS,
     arm_deviation_from_frames,
+    arm_top_view_trajectories,
     best_tilting_plane_corners,
     marker_trajectories,
     segment_frame_trajectories,
@@ -84,6 +85,7 @@ SLIDER_DEFINITIONS = (
     ),
 )
 PLOT_X_OPTIONS = ("Temps", "Somersault")
+PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 PLOT_Y_OPTIONS = (
     "Somersault",
     "Tilt",
@@ -96,6 +98,8 @@ PLOT_Y_OPTIONS = (
     "Norme moment cinetique",
 )
 ROOT_INITIAL_OPTIONS = ("Avec q racine(0)=0", "Sans q racine(0)=0")
+TOP_VIEW_LEFT_CHAIN = ("shoulder_left", "elbow_left", "wrist_left", "hand_left")
+TOP_VIEW_RIGHT_CHAIN = ("shoulder_right", "elbow_right", "wrist_right", "hand_right")
 ALL_FRAME_SEGMENTS = tuple(
     dict.fromkeys(ARM_SEGMENTS_FOR_VISUALIZATION + ARM_SEGMENTS_FOR_DEVIATION)
 )
@@ -212,8 +216,24 @@ class BestTiltingPlaneApp:
         )
         root_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
-        ttk.Label(controls, text="Figure x").grid(
+        ttk.Label(controls, text="Mode figure").grid(
             row=len(SLIDER_DEFINITIONS) + 2, column=0, sticky="w", pady=4
+        )
+        self.plot_mode_var = tk.StringVar(value=PLOT_MODE_OPTIONS[0])
+        plot_mode_box = ttk.Combobox(
+            controls,
+            textvariable=self.plot_mode_var,
+            values=PLOT_MODE_OPTIONS,
+            state="readonly",
+            width=24,
+        )
+        plot_mode_box.grid(
+            row=len(SLIDER_DEFINITIONS) + 2, column=1, columnspan=2, sticky="ew", pady=4
+        )
+        plot_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
+
+        ttk.Label(controls, text="Figure x").grid(
+            row=len(SLIDER_DEFINITIONS) + 3, column=0, sticky="w", pady=4
         )
         self.plot_x_var = tk.StringVar(value=PLOT_X_OPTIONS[0])
         plot_x_box = ttk.Combobox(
@@ -224,12 +244,12 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_x_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 2, column=1, columnspan=2, sticky="ew", pady=4
+            row=len(SLIDER_DEFINITIONS) + 3, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_x_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Label(controls, text="Figure y").grid(
-            row=len(SLIDER_DEFINITIONS) + 3, column=0, sticky="w", pady=4
+            row=len(SLIDER_DEFINITIONS) + 4, column=0, sticky="w", pady=4
         )
         self.plot_y_var = tk.StringVar(value="Twist")
         plot_y_box = ttk.Combobox(
@@ -240,20 +260,20 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_y_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 3, column=1, columnspan=2, sticky="ew", pady=4
+            row=len(SLIDER_DEFINITIONS) + 4, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_y_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Button(controls, text="Simulate", command=self._run_simulation).grid(
-            row=len(SLIDER_DEFINITIONS) + 4, column=0, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 5, column=0, sticky="w", pady=(10, 0)
         )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=len(SLIDER_DEFINITIONS) + 4, column=1, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 5, column=1, sticky="w", pady=(10, 0)
         )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 5, column=0, columnspan=3, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 6, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.sequence_var = tk.StringVar(
             value=(
@@ -265,7 +285,7 @@ class BestTiltingPlaneApp:
             )
         )
         ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 6, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=len(SLIDER_DEFINITIONS) + 7, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
         self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
@@ -471,6 +491,8 @@ class BestTiltingPlaneApp:
         current_index = self._animation_frame_index
         self._draw_animation_frame(current_index)
         self._sync_time_slider_to_frame(current_index)
+        if self._plot_requires_frame_sync():
+            self._refresh_plot()
         self._animation_frame_index = (current_index + 1) % result.time.size
         self._animation_after_id = self.root.after(ANIMATION_INTERVAL_MS, self._animate_next_frame)
 
@@ -528,6 +550,8 @@ class BestTiltingPlaneApp:
         self._animation_frame_index = frame_index
         self._draw_animation_frame(frame_index)
         self._sync_time_slider_to_frame(frame_index)
+        if self._plot_requires_frame_sync():
+            self._refresh_plot()
 
     def _draw_animation_frame(self, frame_index: int) -> None:
         """Draw one frame of the embedded 3D animation."""
@@ -636,10 +660,110 @@ class BestTiltingPlaneApp:
         title = f"{y_choice} en fonction de {self.plot_x_var.get().lower()}"
         return x_data, y_data, x_label, y_label, title
 
+    def _plot_requires_frame_sync(self) -> bool:
+        """Return whether the current 2D figure depends on the animation frame."""
+
+        return self.plot_mode_var.get() == PLOT_MODE_OPTIONS[1]
+
+    def _current_plot_frame_index(self) -> int:
+        """Return the frame currently displayed to the user."""
+
+        if self._visualization_data is None:
+            raise RuntimeError("No simulation available for plotting.")
+
+        frame_count = np.asarray(self._visualization_data["result"].time, dtype=float).size
+        if self._animation_playing and self._animation_after_id is not None:
+            return (self._animation_frame_index - 1) % frame_count
+        return int(np.clip(self._animation_frame_index, 0, frame_count - 1))
+
+    def _top_view_plot_data(self) -> tuple[dict[str, np.ndarray], int]:
+        """Return the top-view arm trajectories and the highlighted frame index."""
+
+        if self._visualization_data is None:
+            raise RuntimeError("No simulation available for plotting.")
+
+        top_view = arm_top_view_trajectories(self._visualization_data["trajectories"])
+        return top_view, self._current_plot_frame_index()
+
+    def _refresh_top_view_plot(self) -> None:
+        """Draw the dedicated top-view visualization of the arm motion."""
+
+        if self._visualization_data is None:
+            return
+
+        top_view, frame_index = self._top_view_plot_data()
+        current_time = float(self._visualization_data["result"].time[frame_index])
+        self._plot_axis.clear()
+
+        all_points = np.concatenate(list(top_view.values()), axis=0)
+        minimum = np.min(all_points, axis=0)
+        maximum = np.max(all_points, axis=0)
+        center = 0.5 * (minimum + maximum)
+        radius = max(0.25, 0.6 * float(np.max(maximum - minimum)))
+
+        self._plot_axis.axhline(0.0, color="0.7", linestyle="--", linewidth=1.0)
+        self._plot_axis.plot(
+            top_view["hand_left"][:, 0],
+            top_view["hand_left"][:, 1],
+            color="tab:red",
+            alpha=0.45,
+            linewidth=1.8,
+            label="Main gauche",
+        )
+        self._plot_axis.plot(
+            top_view["hand_right"][:, 0],
+            top_view["hand_right"][:, 1],
+            color="tab:blue",
+            alpha=0.45,
+            linewidth=1.8,
+            label="Main droite",
+        )
+
+        left_chain = np.vstack(
+            [top_view[marker_name][frame_index] for marker_name in TOP_VIEW_LEFT_CHAIN]
+        )
+        right_chain = np.vstack(
+            [top_view[marker_name][frame_index] for marker_name in TOP_VIEW_RIGHT_CHAIN]
+        )
+        self._plot_axis.plot(
+            left_chain[:, 0],
+            left_chain[:, 1],
+            color="tab:red",
+            linewidth=2.5,
+            marker="o",
+        )
+        self._plot_axis.plot(
+            right_chain[:, 0],
+            right_chain[:, 1],
+            color="tab:blue",
+            linewidth=2.5,
+            marker="o",
+        )
+        self._plot_axis.scatter(
+            [left_chain[-1, 0], right_chain[-1, 0]],
+            [left_chain[-1, 1], right_chain[-1, 1]],
+            color=["tab:red", "tab:blue"],
+            s=45,
+            zorder=3,
+        )
+        self._plot_axis.set_xlim(center[0] - radius, center[0] + radius)
+        self._plot_axis.set_ylim(center[1] - radius, center[1] + radius)
+        self._plot_axis.set_aspect("equal", adjustable="box")
+        self._plot_axis.set_xlabel("x mediolateral relatif pelvis (m)")
+        self._plot_axis.set_ylabel("y anteroposterior relatif pelvis (m)")
+        self._plot_axis.set_title(f"Bras hors BTP (dessus) | t = {current_time:.2f} s")
+        self._plot_axis.grid(True, alpha=0.3)
+        self._plot_axis.legend(loc="upper right")
+        self._plot_canvas.draw_idle()
+
     def _refresh_plot(self) -> None:
         """Refresh the embedded 2D plot using the latest simulation result."""
 
         if self._visualization_data is None:
+            return
+
+        if self.plot_mode_var.get() == PLOT_MODE_OPTIONS[1]:
+            self._refresh_top_view_plot()
             return
 
         x_data, y_data, x_label, y_label, title = self._plot_data()
