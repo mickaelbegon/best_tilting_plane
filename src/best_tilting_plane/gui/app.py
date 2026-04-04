@@ -90,6 +90,10 @@ PLOT_Y_OPTIONS = (
     "Twist",
     "Deviation bras gauche",
     "Deviation bras droit",
+    "Moment cinetique x",
+    "Moment cinetique y",
+    "Moment cinetique z",
+    "Norme moment cinetique",
 )
 ROOT_INITIAL_OPTIONS = ("Avec q racine(0)=0", "Sans q racine(0)=0")
 ALL_FRAME_SEGMENTS = tuple(
@@ -489,6 +493,8 @@ class BestTiltingPlaneApp:
 
         result = self._visualization_data["result"]
         deviations = self._visualization_data["deviations"]
+        observables = self._visualization_data["observables"]
+        angular_momentum = np.asarray(observables["angular_momentum"], dtype=float)
 
         if self.plot_x_var.get() == "Somersault":
             x_data = np.rad2deg(self._root_series(result, 0))
@@ -510,9 +516,21 @@ class BestTiltingPlaneApp:
         elif y_choice == "Deviation bras gauche":
             y_data = np.rad2deg(deviations["left"])
             y_label = "Deviation bras gauche / BTP (deg)"
-        else:
+        elif y_choice == "Deviation bras droit":
             y_data = np.rad2deg(deviations["right"])
             y_label = "Deviation bras droit / BTP (deg)"
+        elif y_choice == "Moment cinetique x":
+            y_data = angular_momentum[:, 0]
+            y_label = "H_x au CoM"
+        elif y_choice == "Moment cinetique y":
+            y_data = angular_momentum[:, 1]
+            y_label = "H_y au CoM"
+        elif y_choice == "Moment cinetique z":
+            y_data = angular_momentum[:, 2]
+            y_label = "H_z au CoM"
+        else:
+            y_data = np.linalg.norm(angular_momentum, axis=1)
+            y_label = "||H(CoM)||"
 
         title = f"{y_choice} en fonction de {self.plot_x_var.get().lower()}"
         return x_data, y_data, x_label, y_label, title
