@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import casadi as ca
 import numpy as np
 import pytest
 
@@ -11,6 +12,7 @@ from best_tilting_plane.optimization import (
     TwistStrategyOptimizer,
     optimize_black_box_ipopt,
 )
+from best_tilting_plane.optimization import ipopt as ipopt_module
 from best_tilting_plane.simulation import SimulationConfiguration, TwistOptimizationVariables
 
 
@@ -31,6 +33,39 @@ def test_black_box_ipopt_solves_a_simple_quadratic_problem() -> None:
     np.testing.assert_allclose(result.solution, np.array([1.5, -2.0]), atol=1e-4)
     assert result.objective == pytest.approx(0.0, abs=1e-8)
     assert result.success
+
+
+def test_black_box_ipopt_forwards_iteration_display_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The IPOPT wrapper should forward the iteration-display options to CasADi."""
+
+    captured_options = {}
+
+    class FakeSolver:
+        def __call__(self, **_kwargs):
+            return {"x": ca.DM([[0.0], [0.0]]), "f": ca.DM([[0.0]])}
+
+        @staticmethod
+        def stats():
+            return {"return_status": "Solve_Succeeded"}
+
+    def fake_nlpsol(_name, _solver_name, _problem, options):
+        captured_options.update(options)
+        return FakeSolver()
+
+    monkeypatch.setattr(ipopt_module.ca, "nlpsol", fake_nlpsol)
+
+    optimize_black_box_ipopt(
+        lambda vector: float(np.sum(vector**2)),
+        initial_guess=np.array([0.0, 0.0]),
+        bounds=IpoptBounds(lower=np.array([-1.0, -1.0]), upper=np.array([1.0, 1.0])),
+        print_level=5,
+        print_time=True,
+    )
+
+    assert captured_options["ipopt.print_level"] == 5
+    assert captured_options["print_time"] == 1
 
 
 def test_twist_strategy_optimizer_vector_round_trip() -> None:

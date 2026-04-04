@@ -107,6 +107,7 @@ def optimize_black_box_ipopt(
     *,
     max_iter: int = 50,
     print_level: int = 0,
+    print_time: bool = False,
 ) -> IpoptResult:
     """Optimize a scalar black-box objective with IPOPT and finite-difference derivatives."""
 
@@ -123,7 +124,7 @@ def optimize_black_box_ipopt(
         {
             "ipopt.max_iter": int(max_iter),
             "ipopt.print_level": int(print_level),
-            "print_time": 0,
+            "print_time": int(bool(print_time)),
         },
     )
     solution = solver(
@@ -246,6 +247,7 @@ class TwistStrategyOptimizer:
         bounds: IpoptBounds | None = None,
         max_iter: int = 50,
         print_level: int = 0,
+        print_time: bool = False,
     ) -> TwistOptimizationResult:
         """Optimize the decision variables and return the best twist strategy."""
 
@@ -256,6 +258,7 @@ class TwistStrategyOptimizer:
             chosen_bounds,
             max_iter=max_iter,
             print_level=print_level,
+            print_time=print_time,
         )
         variables = self.from_vector(raw_result.solution)
         _, simulation = self.evaluate(raw_result.solution)

@@ -255,11 +255,11 @@ class BestTiltingPlaneApp:
 
         current_values = self._current_values()
         initial_guess = _variables_from_gui(current_values)
-        self.result_var.set("Optimisation en cours...")
+        self.result_var.set("Optimisation en cours... voir les iterations IPOPT dans le terminal.")
         self.root.update_idletasks()
 
         optimizer = TwistStrategyOptimizer.from_builder(self._model_path())
-        result = optimizer.optimize(initial_guess, max_iter=25, print_level=0)
+        result = optimizer.optimize(initial_guess, max_iter=25, print_level=5, print_time=True)
 
         optimized_values = {
             "right_arm_start": result.variables.right_arm_start,
