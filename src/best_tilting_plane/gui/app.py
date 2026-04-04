@@ -844,6 +844,13 @@ class BestTiltingPlaneApp:
         self._prepare_animation_scene()
         self._sync_time_slider_to_frame(self._animation_frame_index)
 
+    def _apply_optimized_values(self, optimized_values: dict[str, float]) -> None:
+        """Push optimized parameters to the GUI, rerun the simulation, and restart the animation."""
+
+        self._set_values(optimized_values)
+        self.root.update_idletasks()
+        self._run_simulation()
+
     def _optimize_strategy(self) -> None:
         """Optimize the current strategy with IPOPT, then update the GUI and rerun the simulation."""
 
@@ -874,11 +881,7 @@ class BestTiltingPlaneApp:
             "right_plane_initial": np.rad2deg(result.variables.right_plane_initial),
             "right_plane_final": np.rad2deg(result.variables.right_plane_final),
         }
-        self._set_values(optimized_values)
-        self.result_var.set(
-            f"Minimum IPOPT: {result.final_twist_turns:.2f} tours ({result.solver_status})"
-        )
-        self._run_simulation()
+        self._apply_optimized_values(optimized_values)
 
 
 def launch_gui() -> None:

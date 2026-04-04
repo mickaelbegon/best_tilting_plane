@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from best_tilting_plane.gui.app import (
@@ -35,6 +37,9 @@ class FakeScheduler:
         self.cancelled.append(handle)
         self.pending.pop(handle, None)
 
+    def update_idletasks(self) -> None:
+        """Mirror the Tk API used by the GUI during optimization."""
+
 
 class FakeVar:
     """Tiny variable stub exposing `get` and `set`."""
@@ -63,6 +68,18 @@ class FakeScale:
         """Record the latest configuration values."""
 
         self.options.update(kwargs)
+
+
+class FakeRunner:
+    """Minimal debounced-runner stub exposing `cancel`."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        """Record that pending automatic simulations were cancelled."""
+
+        self.cancelled = True
 
 
 class FakeAxis:
@@ -175,3 +192,77 @@ def test_apply_camera_view_uses_default_perspective_otherwise() -> None:
         DEFAULT_CAMERA_ELEVATION_DEG,
         DEFAULT_CAMERA_AZIMUTH_DEG,
     )
+
+
+def test_apply_optimized_values_updates_sliders_and_reruns_simulation() -> None:
+    """Applying an optimized strategy should refresh the controls, then rerun the simulation."""
+
+    scheduler = FakeScheduler()
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = scheduler
+    calls: list[tuple[str, object]] = []
+    app._set_values = lambda values: calls.append(("set", dict(values)))
+    app._run_simulation = lambda: calls.append(("run", None))
+
+    app._apply_optimized_values({"right_arm_start": 0.25})
+
+    assert calls == [("set", {"right_arm_start": 0.25}), ("run", None)]
+
+
+def test_optimize_strategy_applies_optimized_values_and_reruns_animation(monkeypatch) -> None:
+    """The optimization button should push the optimum to the sliders before rerunning the simulation."""
+
+    class FakeOptimizer:
+        def optimize_right_arm_start_only(self, initial_right_arm_start, **_kwargs):
+            assert initial_right_arm_start == 0.1
+            return type(
+                "OptimizationResult",
+                (),
+                {
+                    "variables": type(
+                        "Variables",
+                        (),
+                        {
+                            "right_arm_start": 0.35,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    )(),
+                },
+            )()
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.TwistStrategyOptimizer.from_builder",
+        lambda *_args, **_kwargs: FakeOptimizer(),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize 2D")
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: Path("/tmp/reduced.bioMod")
+    applied: list[dict[str, float]] = []
+    app._apply_optimized_values = lambda values: applied.append(dict(values))
+
+    app._optimize_strategy()
+
+    assert app._auto_runner.cancelled
+    assert applied == [
+        {
+            "right_arm_start": 0.35,
+            "left_plane_initial": 0.0,
+            "left_plane_final": 0.0,
+            "right_plane_initial": 0.0,
+            "right_plane_final": 0.0,
+        }
+    ]
