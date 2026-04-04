@@ -131,6 +131,8 @@ class BestTiltingPlaneApp:
         self._visualization_data: dict[str, object] | None = None
         self._animation_after_id: str | None = None
         self._animation_frame_index = 0
+        self._animation_playing = False
+        self._time_slider_updating = False
         self._auto_simulation_suspended = False
         self._auto_runner = DebouncedRunner(self.root, self._run_simulation, delay_ms=250)
 
@@ -143,7 +145,8 @@ class BestTiltingPlaneApp:
         display.grid(row=0, column=1, sticky="nsew")
         display.columnconfigure(0, weight=1)
         display.rowconfigure(0, weight=3)
-        display.rowconfigure(1, weight=2)
+        display.rowconfigure(1, weight=0)
+        display.rowconfigure(2, weight=2)
 
         for row, definition in enumerate(SLIDER_DEFINITIONS):
             ttk.Label(controls, text=definition.label).grid(
@@ -270,10 +273,36 @@ class BestTiltingPlaneApp:
         self._animation_canvas = FigureCanvasTkAgg(self._animation_figure, master=display)
         self._animation_canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
+        playback_controls = ttk.Frame(display)
+        playback_controls.grid(row=1, column=0, sticky="ew", pady=(8, 8))
+        playback_controls.columnconfigure(1, weight=1)
+        self.play_pause_label = tk.StringVar(value="Pause")
+        ttk.Button(
+            playback_controls,
+            textvariable=self.play_pause_label,
+            command=self._toggle_animation_playback,
+            width=8,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.time_value_var = tk.StringVar(value="0.00 s")
+        self.time_slider_var = tk.DoubleVar(value=0.0)
+        ttk.Label(playback_controls, text="Temps animation").grid(row=0, column=1, sticky="w")
+        self.time_slider = ttk.Scale(
+            playback_controls,
+            orient=tk.HORIZONTAL,
+            from_=0.0,
+            to=1.0,
+            variable=self.time_slider_var,
+            command=self._on_time_slider_change,
+        )
+        self.time_slider.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(0, 8))
+        ttk.Label(playback_controls, textvariable=self.time_value_var, width=10).grid(
+            row=1, column=2, sticky="e"
+        )
+
         self._plot_figure = Figure(figsize=(8.0, 3.5), tight_layout=True)
         self._plot_axis = self._plot_figure.add_subplot(111)
         self._plot_canvas = FigureCanvasTkAgg(self._plot_figure, master=display)
-        self._plot_canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
+        self._plot_canvas.get_tk_widget().grid(row=2, column=0, sticky="nsew")
 
         self._line_artists: tuple[object, ...] = ()
         self._frame_artists: dict[str, tuple[object, object, object]] = {}
@@ -355,9 +384,10 @@ class BestTiltingPlaneApp:
             f"Integrateur: {integrator_label}"
         )
 
+        self._animation_frame_index = 0
+        self._configure_time_slider()
         self._prepare_animation_scene()
         self._refresh_plot()
-        self._animation_frame_index = 0
         self._start_animation_loop()
 
     def _prepare_animation_scene(self) -> None:
@@ -408,6 +438,8 @@ class BestTiltingPlaneApp:
         """Start or restart the embedded animation loop."""
 
         self._stop_animation_loop()
+        self._animation_playing = True
+        self.play_pause_label.set("Pause")
         self._animate_next_frame()
 
     def _stop_animation_loop(self) -> None:
@@ -416,6 +448,18 @@ class BestTiltingPlaneApp:
         if self._animation_after_id is not None:
             self.root.after_cancel(self._animation_after_id)
             self._animation_after_id = None
+        self._animation_playing = False
+        self.play_pause_label.set("Play")
+
+    def _toggle_animation_playback(self) -> None:
+        """Toggle the embedded animation between play and pause."""
+
+        if self._visualization_data is None:
+            return
+        if self._animation_playing:
+            self._stop_animation_loop()
+            return
+        self._start_animation_loop()
 
     def _animate_next_frame(self) -> None:
         """Advance the embedded animation by one frame."""
@@ -424,9 +468,66 @@ class BestTiltingPlaneApp:
             return
 
         result = self._visualization_data["result"]
-        self._draw_animation_frame(self._animation_frame_index)
-        self._animation_frame_index = (self._animation_frame_index + 1) % result.time.size
+        current_index = self._animation_frame_index
+        self._draw_animation_frame(current_index)
+        self._sync_time_slider_to_frame(current_index)
+        self._animation_frame_index = (current_index + 1) % result.time.size
         self._animation_after_id = self.root.after(ANIMATION_INTERVAL_MS, self._animate_next_frame)
+
+    def _configure_time_slider(self) -> None:
+        """Match the time slider range and display to the current simulation."""
+
+        if self._visualization_data is None:
+            return
+
+        times = np.asarray(self._visualization_data["result"].time, dtype=float)
+        self.time_slider.configure(from_=float(times[0]), to=float(times[-1]))
+        self._sync_time_slider_to_frame(self._animation_frame_index)
+
+    def _frame_index_from_time(self, time_value: float) -> int:
+        """Return the closest frame index to the requested animation time."""
+
+        if self._visualization_data is None:
+            raise RuntimeError("No simulation available for animation.")
+
+        times = np.asarray(self._visualization_data["result"].time, dtype=float)
+        clipped_time = float(np.clip(time_value, times[0], times[-1]))
+        insertion_index = int(np.searchsorted(times, clipped_time, side="left"))
+        if insertion_index <= 0:
+            return 0
+        if insertion_index >= times.size:
+            return int(times.size - 1)
+        previous_time = times[insertion_index - 1]
+        next_time = times[insertion_index]
+        if abs(clipped_time - previous_time) <= abs(next_time - clipped_time):
+            return insertion_index - 1
+        return insertion_index
+
+    def _sync_time_slider_to_frame(self, frame_index: int) -> None:
+        """Update the time slider and label from the current animation frame."""
+
+        if self._visualization_data is None:
+            return
+
+        times = np.asarray(self._visualization_data["result"].time, dtype=float)
+        bounded_index = int(np.clip(frame_index, 0, times.size - 1))
+        time_value = float(times[bounded_index])
+        self._time_slider_updating = True
+        self.time_slider_var.set(time_value)
+        self._time_slider_updating = False
+        self.time_value_var.set(f"{time_value:.2f} s")
+
+    def _on_time_slider_change(self, value: str) -> None:
+        """Jump to the selected time and pause the animation for manual inspection."""
+
+        if self._visualization_data is None or self._time_slider_updating:
+            return
+
+        self._stop_animation_loop()
+        frame_index = self._frame_index_from_time(float(value))
+        self._animation_frame_index = frame_index
+        self._draw_animation_frame(frame_index)
+        self._sync_time_slider_to_frame(frame_index)
 
     def _draw_animation_frame(self, frame_index: int) -> None:
         """Draw one frame of the embedded 3D animation."""
@@ -556,6 +657,7 @@ class BestTiltingPlaneApp:
         if self._visualization_data is None:
             return
         self._prepare_animation_scene()
+        self._sync_time_slider_to_frame(self._animation_frame_index)
 
     def _optimize_strategy(self) -> None:
         """Optimize the current strategy with IPOPT, then update the GUI and rerun the simulation."""

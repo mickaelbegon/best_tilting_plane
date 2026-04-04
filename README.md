@@ -69,6 +69,7 @@ The current GUI provides:
 - auto-simulation on slider changes with debounce, plus a `Simulate` button
 - an `Optimize` button backed by IPOPT
 - a single integrated window with embedded 3D animation and 2D plotting
+- play/pause controls and a time slider to scrub through the animation
 - configurable 2D plots against time or somersault for root angles, arm deviations, and angular momentum
 - a mode with or without subtracting the initial root angles from plotted curves
 - automatic RK4 versus RK45 selection, with RK4 `dt=0.005 s` retained on the standard case
