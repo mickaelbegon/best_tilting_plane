@@ -124,3 +124,34 @@ def test_right_arm_start_only_optimizer_keeps_both_arm_planes_at_zero(
     assert result.variables.right_plane_initial == pytest.approx(0.0)
     assert result.variables.right_plane_final == pytest.approx(0.0)
     assert 0.0 <= result.variables.right_arm_start <= 0.7
+
+
+def test_symbolic_objective_matches_black_box_evaluation_for_5d_mode(tmp_path: Path) -> None:
+    """The symbolic RK4 objective should match the classic simulator-backed evaluation."""
+
+    optimizer = TwistStrategyOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.08, steps=9, integrator="rk4", rk4_step=0.01),
+    )
+    vector = np.array([0.2, -0.1, 0.0, 0.1, 0.0], dtype=float)
+
+    symbolic_value = float(optimizer._build_symbolic_objective_function(5)(vector))
+    objective, _result = optimizer.evaluate(vector)
+
+    assert symbolic_value == pytest.approx(objective, rel=1e-8, abs=1e-8)
+
+
+def test_symbolic_objective_matches_black_box_evaluation_for_1d_mode(tmp_path: Path) -> None:
+    """The reduced symbolic RK4 objective should match the reduced classic evaluation."""
+
+    optimizer = TwistStrategyOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.08, steps=9, integrator="rk4", rk4_step=0.01),
+    )
+
+    symbolic_value = float(optimizer._build_symbolic_objective_function(1)(np.array([0.2], dtype=float)))
+    objective, _result = optimizer.evaluate_right_arm_start_only(0.2)
+
+    assert symbolic_value == pytest.approx(objective, rel=1e-8, abs=1e-8)

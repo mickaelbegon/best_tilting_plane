@@ -9,6 +9,7 @@ from typing import Callable
 import biorbd
 import casadi as ca
 import numpy as np
+import biorbd_casadi as biorbd_ca
 
 from best_tilting_plane.modeling import (
     LEFT_ARM_PLANE_BOUNDS_DEG,
@@ -26,6 +27,7 @@ from best_tilting_plane.simulation import (
 RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
 LEFT_ARM_PLANE_BOUNDS = tuple(np.deg2rad(LEFT_ARM_PLANE_BOUNDS_DEG))
 RIGHT_ARM_PLANE_BOUNDS = tuple(np.deg2rad(RIGHT_ARM_PLANE_BOUNDS_DEG))
+SYMBOLIC_RK4_TOLERANCE = 1e-12
 
 
 @dataclass(frozen=True)
@@ -171,7 +173,9 @@ class TwistStrategyOptimizer:
             rk4_step=0.005,
         )
         self.model = model if model is not None else biorbd.Model(self.model_path)
+        self.symbolic_model = biorbd_ca.Model(self.model_path)
         self._cache: dict[tuple[float, ...], tuple[float, AerialSimulationResult]] = {}
+        self._symbolic_objectives: dict[int, ca.Function] = {}
 
     @classmethod
     def from_builder(
@@ -298,6 +302,244 @@ class TwistStrategyOptimizer:
         variables = self.zero_plane_variables(right_arm_start)
         return self.evaluate(self.to_vector(variables))
 
+    @staticmethod
+    def _quintic_profile(phase: ca.MX) -> tuple[ca.MX, ca.MX, ca.MX]:
+        """Return the quintic profile and its first two derivatives."""
+
+        phase2 = phase * phase
+        phase3 = phase2 * phase
+        phase4 = phase3 * phase
+        phase5 = phase4 * phase
+        profile = 6.0 * phase5 - 15.0 * phase4 + 10.0 * phase3
+        velocity = 30.0 * phase4 - 60.0 * phase3 + 30.0 * phase2
+        acceleration = 120.0 * phase3 - 180.0 * phase2 + 60.0 * phase
+        return profile, velocity, acceleration
+
+    @staticmethod
+    def _clipped_phase(time: ca.MX, start: ca.MX, duration: float) -> ca.MX:
+        """Return the symbolic motion phase clipped to `[0, 1]`."""
+
+        return ca.fmin(1.0, ca.fmax(0.0, (time - start) / duration))
+
+    @staticmethod
+    def _active_motion_mask(time: ca.MX, start: ca.MX, end: ca.MX) -> ca.MX:
+        """Return `1` while the motion is active and `0` otherwise."""
+
+        return ca.if_else(ca.logic_and(time >= start, time <= end), 1.0, 0.0)
+
+    def _symbolic_joint_kinematics(
+        self, variables: ca.MX, time: ca.MX
+    ) -> tuple[ca.MX, ca.MX, ca.MX]:
+        """Return symbolic prescribed arm kinematics."""
+
+        duration = 0.3
+        left_start = 0.0
+        right_start = variables[0]
+        left_end = left_start + duration
+        right_end = right_start + duration
+
+        left_phase = self._clipped_phase(time, left_start, duration)
+        right_phase = self._clipped_phase(time, right_start, duration)
+        left_profile, left_velocity_profile, left_acceleration_profile = self._quintic_profile(
+            left_phase
+        )
+        right_profile, right_velocity_profile, right_acceleration_profile = self._quintic_profile(
+            right_phase
+        )
+        left_active = self._active_motion_mask(time, left_start, left_end)
+        right_active = self._active_motion_mask(time, right_start, right_end)
+
+        def position(profile: ca.MX, q0: ca.MX, q1: ca.MX) -> ca.MX:
+            return q0 + (q1 - q0) * profile
+
+        def velocity(active: ca.MX, profile: ca.MX, q0: ca.MX, q1: ca.MX) -> ca.MX:
+            return active * (q1 - q0) * profile / duration
+
+        def acceleration(active: ca.MX, profile: ca.MX, q0: ca.MX, q1: ca.MX) -> ca.MX:
+            return active * (q1 - q0) * profile / (duration**2)
+
+        left_plane_initial = variables[1]
+        left_plane_final = variables[2]
+        right_plane_initial = variables[3]
+        right_plane_final = variables[4]
+        left_elevation_initial = -np.pi
+        left_elevation_final = 0.0
+        right_elevation_initial = np.pi
+        right_elevation_final = 0.0
+
+        q_joint = ca.vertcat(
+            position(left_profile, left_plane_initial, left_plane_final),
+            position(left_profile, left_elevation_initial, left_elevation_final),
+            position(right_profile, right_plane_initial, right_plane_final),
+            position(right_profile, right_elevation_initial, right_elevation_final),
+        )
+        qdot_joint = ca.vertcat(
+            velocity(left_active, left_velocity_profile, left_plane_initial, left_plane_final),
+            velocity(left_active, left_velocity_profile, left_elevation_initial, left_elevation_final),
+            velocity(right_active, right_velocity_profile, right_plane_initial, right_plane_final),
+            velocity(
+                right_active,
+                right_velocity_profile,
+                right_elevation_initial,
+                right_elevation_final,
+            ),
+        )
+        qddot_joint = ca.vertcat(
+            acceleration(
+                left_active,
+                left_acceleration_profile,
+                left_plane_initial,
+                left_plane_final,
+            ),
+            acceleration(
+                left_active,
+                left_acceleration_profile,
+                left_elevation_initial,
+                left_elevation_final,
+            ),
+            acceleration(
+                right_active,
+                right_acceleration_profile,
+                right_plane_initial,
+                right_plane_final,
+            ),
+            acceleration(
+                right_active,
+                right_acceleration_profile,
+                right_elevation_initial,
+                right_elevation_final,
+            ),
+        )
+        return q_joint, qdot_joint, qddot_joint
+
+    def _symbolic_initial_state(self, variables: ca.MX) -> ca.MX:
+        """Return the symbolic initial root state."""
+
+        q_joint, qdot_joint, _ = self._symbolic_joint_kinematics(variables, ca.MX(0.0))
+        q_root = ca.MX.zeros(6, 1)
+        q_full = ca.vertcat(q_root, q_joint)
+        qdot_without_translation = ca.vertcat(
+            ca.MX.zeros(3, 1),
+            ca.vertcat(self.configuration.somersault_rate, 0.0, 0.0),
+            qdot_joint,
+        )
+        # Root translations are expressed directly in the global `x, y, z` axes, so their
+        # contribution to the CoM velocity is additive. Cancelling the CoM motion therefore
+        # amounts to negating the CoM velocity obtained with zero translational root speed.
+        translation_velocity = -self.symbolic_model.CoMdot(
+            q_full,
+            qdot_without_translation,
+            True,
+        ).to_mx()
+        qdot_root = ca.vertcat(translation_velocity, self.configuration.somersault_rate, 0.0, 0.0)
+        return ca.vertcat(q_root, qdot_root)
+
+    def _symbolic_dynamics(self, time: ca.MX, state: ca.MX, variables: ca.MX) -> ca.MX:
+        """Return the symbolic time derivative of the root state."""
+
+        q_root = state[:6]
+        qdot_root = state[6:]
+        q_joint, qdot_joint, qddot_joint = self._symbolic_joint_kinematics(variables, time)
+        q_full = ca.vertcat(q_root, q_joint)
+        qdot_full = ca.vertcat(qdot_root, qdot_joint)
+        qddot_root = self.symbolic_model.ForwardDynamicsFreeFloatingBase(
+            q_full,
+            qdot_full,
+            qddot_joint,
+        ).to_mx()
+        return ca.vertcat(qdot_root, qddot_root)
+
+    def _build_symbolic_objective_function(self, size: int) -> ca.Function:
+        """Build and cache the symbolic final-twist objective."""
+
+        cached = self._symbolic_objectives.get(size)
+        if cached is not None:
+            return cached
+
+        if self.configuration.rk4_step is None:
+            raise ValueError("The symbolic optimizer requires a fixed RK4 step.")
+        if self.configuration.integrator.lower() != "rk4":
+            raise ValueError("The symbolic optimizer currently supports only RK4.")
+
+        step = float(self.configuration.rk4_step)
+        step_count = int(round(self.configuration.final_time / step))
+        if abs(step_count * step - self.configuration.final_time) > SYMBOLIC_RK4_TOLERANCE:
+            raise ValueError("The symbolic optimizer requires `final_time` to be a multiple of `rk4_step`.")
+
+        decision_variables = ca.MX.sym("x", size, 1)
+        if size == 1:
+            full_variables = ca.vertcat(decision_variables[0], 0.0, 0.0, 0.0, 0.0)
+        elif size == 5:
+            full_variables = decision_variables
+        else:
+            raise ValueError("Unsupported symbolic decision-variable size.")
+
+        state = self._symbolic_initial_state(full_variables)
+        time = 0.0
+        for _ in range(step_count):
+            k1 = self._symbolic_dynamics(time, state, full_variables)
+            k2 = self._symbolic_dynamics(time + 0.5 * step, state + 0.5 * step * k1, full_variables)
+            k3 = self._symbolic_dynamics(time + 0.5 * step, state + 0.5 * step * k2, full_variables)
+            k4 = self._symbolic_dynamics(time + step, state + step * k3, full_variables)
+            state = state + (step / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            time += step
+
+        objective_function = ca.Function(
+            f"final_twist_symbolic_{size}d",
+            [decision_variables],
+            [state[5]],
+        )
+        self._symbolic_objectives[size] = objective_function
+        return objective_function
+
+    def optimize_symbolic(
+        self,
+        initial_guess: TwistOptimizationVariables,
+        *,
+        bounds: IpoptBounds | None = None,
+        max_iter: int = 50,
+        print_level: int = 0,
+        print_time: bool = False,
+    ) -> TwistOptimizationResult:
+        """Optimize the full 5D strategy with an exact symbolic RK4 objective."""
+
+        chosen_bounds = bounds or self.default_bounds()
+        x0 = self.to_vector(initial_guess)
+        x_symbol = ca.MX.sym("x", x0.size)
+        objective = self._build_symbolic_objective_function(5)(x_symbol)
+        solver = ca.nlpsol(
+            "twist_solver_symbolic_5d",
+            "ipopt",
+            {"x": x_symbol, "f": objective},
+            {
+                "ipopt.max_iter": int(max_iter),
+                "ipopt.print_level": int(print_level),
+                "print_time": int(bool(print_time)),
+            },
+        )
+        solution = solver(
+            x0=x0,
+            lbx=np.asarray(chosen_bounds.lower, dtype=float),
+            ubx=np.asarray(chosen_bounds.upper, dtype=float),
+        )
+        status = solver.stats()["return_status"]
+        solution_vector = np.asarray(solution["x"].full(), dtype=float).reshape(-1)
+        variables = self.from_vector(solution_vector)
+        _, simulation = self.evaluate(solution_vector)
+        normalized_status = status.lower().replace("_", " ")
+        return TwistOptimizationResult(
+            variables=variables,
+            final_twist_angle=simulation.final_twist_angle,
+            final_twist_turns=simulation.final_twist_turns,
+            objective=float(solution["f"]),
+            solver_status=status,
+            success=(
+                "success" in normalized_status
+                or "succeeded" in normalized_status
+                or "solved" in normalized_status
+            ),
+        )
+
     def optimize(
         self,
         initial_guess: TwistOptimizationVariables,
@@ -308,6 +550,25 @@ class TwistStrategyOptimizer:
         print_time: bool = False,
     ) -> TwistOptimizationResult:
         """Optimize the decision variables and return the best twist strategy."""
+
+        return self.optimize_symbolic(
+            initial_guess,
+            bounds=bounds,
+            max_iter=max_iter,
+            print_level=print_level,
+            print_time=print_time,
+        )
+
+    def optimize_black_box(
+        self,
+        initial_guess: TwistOptimizationVariables,
+        *,
+        bounds: IpoptBounds | None = None,
+        max_iter: int = 50,
+        print_level: int = 0,
+        print_time: bool = False,
+    ) -> TwistOptimizationResult:
+        """Optimize the decision variables with the legacy black-box callback path."""
 
         chosen_bounds = bounds or self.default_bounds()
         raw_result = optimize_black_box_ipopt(
@@ -341,27 +602,37 @@ class TwistStrategyOptimizer:
         """Optimize only the right-arm start time with both arm planes kept at zero."""
 
         chosen_bounds = bounds or self.right_arm_start_only_bounds()
-
-        def evaluator(vector: np.ndarray) -> float:
-            return self.evaluate_right_arm_start_only(float(np.asarray(vector, dtype=float).reshape(-1)[0]))[
-                0
-            ]
-
-        raw_result = optimize_black_box_ipopt(
-            evaluator,
-            np.array([initial_right_arm_start], dtype=float),
-            chosen_bounds,
-            max_iter=max_iter,
-            print_level=print_level,
-            print_time=print_time,
+        x_symbol = ca.MX.sym("x", 1, 1)
+        objective = self._build_symbolic_objective_function(1)(x_symbol)
+        solver = ca.nlpsol(
+            "twist_solver_symbolic_1d",
+            "ipopt",
+            {"x": x_symbol, "f": objective},
+            {
+                "ipopt.max_iter": int(max_iter),
+                "ipopt.print_level": int(print_level),
+                "print_time": int(bool(print_time)),
+            },
         )
-        variables = self.zero_plane_variables(raw_result.solution[0])
+        solution = solver(
+            x0=np.array([initial_right_arm_start], dtype=float),
+            lbx=np.asarray(chosen_bounds.lower, dtype=float),
+            ubx=np.asarray(chosen_bounds.upper, dtype=float),
+        )
+        status = solver.stats()["return_status"]
+        solution_vector = np.asarray(solution["x"].full(), dtype=float).reshape(-1)
+        variables = self.zero_plane_variables(solution_vector[0])
         _, simulation = self.evaluate(self.to_vector(variables))
+        normalized_status = status.lower().replace("_", " ")
         return TwistOptimizationResult(
             variables=variables,
             final_twist_angle=simulation.final_twist_angle,
             final_twist_turns=simulation.final_twist_turns,
-            objective=raw_result.objective,
-            solver_status=raw_result.solver_status,
-            success=raw_result.success,
+            objective=float(solution["f"]),
+            solver_status=status,
+            success=(
+                "success" in normalized_status
+                or "succeeded" in normalized_status
+                or "solved" in normalized_status
+            ),
         )
