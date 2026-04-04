@@ -1,5 +1,6 @@
 """Visualization helpers for marker extraction, animation, and the best tilting plane."""
 
+from .arm_btp_view import arm_btp_reference_trajectories
 from .arm_deviation import (
     arm_deviation_from_frames,
     arm_deviation_trajectories,
@@ -14,6 +15,7 @@ from .markers import SKELETON_CONNECTIONS, marker_trajectories
 __all__ = [
     "ARM_TOP_VIEW_MARKERS",
     "SKELETON_CONNECTIONS",
+    "arm_btp_reference_trajectories",
     "arm_deviation_from_frames",
     "arm_deviation_trajectories",
     "arm_top_view_trajectories",

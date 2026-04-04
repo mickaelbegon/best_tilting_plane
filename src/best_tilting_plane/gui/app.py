@@ -34,6 +34,7 @@ from best_tilting_plane.simulation import (
 )
 from best_tilting_plane.visualization import (
     SKELETON_CONNECTIONS,
+    arm_btp_reference_trajectories,
     arm_deviation_from_frames,
     arm_top_view_trajectories,
     best_tilting_plane_corners,
@@ -87,6 +88,7 @@ SLIDER_DEFINITIONS = (
 )
 PLOT_X_OPTIONS = ("Temps", "Somersault")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
+ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
 OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 5D")
 PLOT_Y_OPTIONS = (
     "Somersault",
@@ -100,6 +102,8 @@ TOP_VIEW_LEFT_CHAIN = ("shoulder_left", "elbow_left", "wrist_left", "hand_left")
 TOP_VIEW_RIGHT_CHAIN = ("shoulder_right", "elbow_right", "wrist_right", "hand_right")
 DEFAULT_CAMERA_ELEVATION_DEG = 20.0
 DEFAULT_CAMERA_AZIMUTH_DEG = -60.0
+BTP_CAMERA_ELEVATION_DEG = 20.0
+BTP_CAMERA_AZIMUTH_DEG = -55.0
 TOP_VIEW_CAMERA_ELEVATION_DEG = 90.0
 TOP_VIEW_CAMERA_AZIMUTH_DEG = -90.0
 ALL_FRAME_SEGMENTS = tuple(
@@ -220,8 +224,24 @@ class BestTiltingPlaneApp:
         )
         root_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._on_root_mode_change())
 
-        ttk.Label(controls, text="Mode figure").grid(
+        ttk.Label(controls, text="Mode animation").grid(
             row=len(SLIDER_DEFINITIONS) + 2, column=0, sticky="w", pady=4
+        )
+        self.animation_mode_var = tk.StringVar(value=ANIMATION_MODE_OPTIONS[0])
+        animation_mode_box = ttk.Combobox(
+            controls,
+            textvariable=self.animation_mode_var,
+            values=ANIMATION_MODE_OPTIONS,
+            state="readonly",
+            width=24,
+        )
+        animation_mode_box.grid(
+            row=len(SLIDER_DEFINITIONS) + 2, column=1, columnspan=2, sticky="ew", pady=4
+        )
+        animation_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._on_animation_mode_change())
+
+        ttk.Label(controls, text="Mode figure").grid(
+            row=len(SLIDER_DEFINITIONS) + 3, column=0, sticky="w", pady=4
         )
         self.plot_mode_var = tk.StringVar(value=PLOT_MODE_OPTIONS[0])
         plot_mode_box = ttk.Combobox(
@@ -232,12 +252,12 @@ class BestTiltingPlaneApp:
             width=24,
         )
         plot_mode_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 2, column=1, columnspan=2, sticky="ew", pady=4
+            row=len(SLIDER_DEFINITIONS) + 3, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Label(controls, text="Figure x").grid(
-            row=len(SLIDER_DEFINITIONS) + 3, column=0, sticky="w", pady=4
+            row=len(SLIDER_DEFINITIONS) + 4, column=0, sticky="w", pady=4
         )
         self.plot_x_var = tk.StringVar(value=PLOT_X_OPTIONS[0])
         plot_x_box = ttk.Combobox(
@@ -248,12 +268,12 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_x_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 3, column=1, columnspan=2, sticky="ew", pady=4
+            row=len(SLIDER_DEFINITIONS) + 4, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_x_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Label(controls, text="Figure y").grid(
-            row=len(SLIDER_DEFINITIONS) + 4, column=0, sticky="w", pady=4
+            row=len(SLIDER_DEFINITIONS) + 5, column=0, sticky="w", pady=4
         )
         self.plot_y_var = tk.StringVar(value="Twist")
         plot_y_box = ttk.Combobox(
@@ -264,12 +284,12 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_y_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 4, column=1, columnspan=2, sticky="ew", pady=4
+            row=len(SLIDER_DEFINITIONS) + 5, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_y_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Button(controls, text="Simulate", command=self._run_simulation).grid(
-            row=len(SLIDER_DEFINITIONS) + 5, column=0, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 6, column=0, sticky="w", pady=(10, 0)
         )
         self.optimization_mode_var = tk.StringVar(value=OPTIMIZATION_MODE_OPTIONS[0])
         optimization_mode_box = ttk.Combobox(
@@ -280,15 +300,15 @@ class BestTiltingPlaneApp:
             width=18,
         )
         optimization_mode_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 5, column=1, sticky="ew", pady=(10, 0), padx=(0, 8)
+            row=len(SLIDER_DEFINITIONS) + 6, column=1, sticky="ew", pady=(10, 0), padx=(0, 8)
         )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=len(SLIDER_DEFINITIONS) + 5, column=2, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 6, column=2, sticky="w", pady=(10, 0)
         )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 6, column=0, columnspan=3, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 7, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.sequence_var = tk.StringVar(
             value=(
@@ -300,7 +320,7 @@ class BestTiltingPlaneApp:
             )
         )
         ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 7, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=len(SLIDER_DEFINITIONS) + 8, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
         self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
@@ -341,6 +361,9 @@ class BestTiltingPlaneApp:
 
         self._line_artists: tuple[object, ...] = ()
         self._frame_artists: dict[str, tuple[object, object, object]] = {}
+        self._btp_chain_artists: dict[str, object] = {}
+        self._btp_path_artists: dict[str, object] = {}
+        self._btp_marker_artists: dict[str, object] = {}
         self._angular_momentum_artist = None
         self._plane_artist: Poly3DCollection | None = None
 
@@ -512,6 +535,13 @@ class BestTiltingPlaneApp:
             qdot_history[:, :6] = 0.0
         return qdot_history
 
+    def _animation_mode(self) -> str:
+        """Return the currently selected animation mode."""
+
+        if hasattr(self, "animation_mode_var"):
+            return self.animation_mode_var.get()
+        return ANIMATION_MODE_OPTIONS[0]
+
     def _refresh_visualization_data(self) -> None:
         """Rebuild the cached visualization data from the latest simulation."""
 
@@ -528,11 +558,13 @@ class BestTiltingPlaneApp:
         )
         observables = system_observables(self._last_model_path, display_q, display_qdot)
         deviations = arm_deviation_from_frames(frame_trajectories, display_q[:, 3])
+        btp_trajectories = arm_btp_reference_trajectories(trajectories, display_q[:, 3])
         self._visualization_data = {
             "result": self._last_simulation,
             "display_q": display_q,
             "display_qdot": display_qdot,
             "trajectories": trajectories,
+            "btp_trajectories": btp_trajectories,
             "frames": frame_trajectories,
             "observables": observables,
             "deviations": deviations,
@@ -547,11 +579,28 @@ class BestTiltingPlaneApp:
         self._prepare_animation_scene()
         self._refresh_plot()
 
+    def _on_animation_mode_change(self) -> None:
+        """Refresh the animation panel when toggling the animation mode."""
+
+        if self._visualization_data is None:
+            return
+        self._prepare_animation_scene()
+        self._sync_time_slider_to_frame(self._current_plot_frame_index())
+
     def _prepare_animation_scene(self) -> None:
         """Prepare the 3D axis and artists for the current simulation result."""
 
         if self._visualization_data is None:
             return
+
+        if self._animation_mode() == ANIMATION_MODE_OPTIONS[1]:
+            self._prepare_btp_animation_scene()
+            return
+
+        self._prepare_standard_animation_scene()
+
+    def _prepare_standard_animation_scene(self) -> None:
+        """Prepare the default global 3D animation scene."""
 
         trajectories = self._visualization_data["trajectories"]
         self._animation_axis.clear()
@@ -590,6 +639,63 @@ class BestTiltingPlaneApp:
             )
             self._animation_axis.add_collection3d(self._plane_artist)
 
+        self._draw_animation_frame(self._animation_frame_index)
+
+    def _prepare_btp_animation_scene(self) -> None:
+        """Prepare the arm animation expressed in the best-tilting-plane frame."""
+
+        projected = self._visualization_data["btp_trajectories"]
+        self._animation_axis.clear()
+        self._animation_axis.set_xlabel("Axe somersault (m)")
+        self._animation_axis.set_ylabel("Axe twist BTP (m)")
+        self._animation_axis.set_zlabel("Hors BTP (m)")
+        self._animation_axis.set_box_aspect((1.0, 1.0, 0.7))
+        self._animation_axis.view_init(
+            elev=BTP_CAMERA_ELEVATION_DEG,
+            azim=BTP_CAMERA_AZIMUTH_DEG,
+        )
+
+        all_points = np.concatenate(list(projected.values()), axis=0)
+        span = np.max(all_points, axis=0) - np.min(all_points, axis=0)
+        center = np.mean(all_points, axis=0)
+        radius = max(0.25, 0.6 * float(np.max(span)))
+        self._animation_axis.set_xlim(center[0] - radius, center[0] + radius)
+        self._animation_axis.set_ylim(center[1] - radius, center[1] + radius)
+        self._animation_axis.set_zlim(center[2] - 0.8 * radius, center[2] + 0.8 * radius)
+
+        self._btp_chain_artists = {
+            "left": self._animation_axis.plot([], [], [], color="tab:red", linewidth=2.8, marker="o")[0],
+            "right": self._animation_axis.plot([], [], [], color="tab:blue", linewidth=2.8, marker="o")[0],
+        }
+        self._btp_path_artists = {
+            "left": self._animation_axis.plot([], [], [], color="tab:red", linewidth=1.8, alpha=0.35)[0],
+            "right": self._animation_axis.plot([], [], [], color="tab:blue", linewidth=1.8, alpha=0.35)[0],
+        }
+        self._btp_marker_artists = {
+            "left": self._animation_axis.plot([], [], [], color="tab:red", marker="o", linestyle="None")[0],
+            "right": self._animation_axis.plot([], [], [], color="tab:blue", marker="o", linestyle="None")[0],
+        }
+        self._line_artists = ()
+        self._frame_artists = {}
+        self._angular_momentum_artist = None
+        self._plane_artist = None
+        if self.show_btp.get():
+            self._plane_artist = Poly3DCollection(
+                [
+                    np.array(
+                        [
+                            [-radius, -radius, 0.0],
+                            [radius, -radius, 0.0],
+                            [radius, radius, 0.0],
+                            [-radius, radius, 0.0],
+                        ]
+                    )
+                ],
+                alpha=0.14,
+                facecolor="tab:orange",
+                edgecolor="none",
+            )
+            self._animation_axis.add_collection3d(self._plane_artist)
         self._draw_animation_frame(self._animation_frame_index)
 
     def _start_animation_loop(self) -> None:
@@ -708,7 +814,14 @@ class BestTiltingPlaneApp:
     def _draw_animation_frame(self, frame_index: int) -> None:
         """Draw one frame of the embedded 3D animation."""
 
-        if self._visualization_data is None or self._angular_momentum_artist is None:
+        if self._visualization_data is None:
+            return
+
+        if self._animation_mode() == ANIMATION_MODE_OPTIONS[1]:
+            self._draw_btp_animation_frame(frame_index)
+            return
+
+        if self._angular_momentum_artist is None:
             return
 
         result = self._visualization_data["result"]
@@ -752,6 +865,43 @@ class BestTiltingPlaneApp:
             f"vrilles = {display_q[frame_index, 5] / (2*np.pi):.2f} | "
             f"H(CoM) = {np.array2string(angular_momentum, precision=2)} | "
             f"axes: {GLOBAL_AXIS_LABELS}"
+        )
+        self._animation_canvas.draw_idle()
+
+    def _draw_btp_animation_frame(self, frame_index: int) -> None:
+        """Draw one frame of the arm motion expressed in the best-tilting-plane frame."""
+
+        result = self._visualization_data["result"]
+        projected = self._visualization_data["btp_trajectories"]
+        deviations = self._visualization_data["deviations"]
+
+        left_chain = np.vstack([projected[marker_name][frame_index] for marker_name in TOP_VIEW_LEFT_CHAIN])
+        right_chain = np.vstack(
+            [projected[marker_name][frame_index] for marker_name in TOP_VIEW_RIGHT_CHAIN]
+        )
+        left_path = projected["hand_left"][: frame_index + 1]
+        right_path = projected["hand_right"][: frame_index + 1]
+
+        self._btp_chain_artists["left"].set_data(left_chain[:, 0], left_chain[:, 1])
+        self._btp_chain_artists["left"].set_3d_properties(left_chain[:, 2])
+        self._btp_chain_artists["right"].set_data(right_chain[:, 0], right_chain[:, 1])
+        self._btp_chain_artists["right"].set_3d_properties(right_chain[:, 2])
+
+        self._btp_path_artists["left"].set_data(left_path[:, 0], left_path[:, 1])
+        self._btp_path_artists["left"].set_3d_properties(left_path[:, 2])
+        self._btp_path_artists["right"].set_data(right_path[:, 0], right_path[:, 1])
+        self._btp_path_artists["right"].set_3d_properties(right_path[:, 2])
+
+        self._btp_marker_artists["left"].set_data([left_chain[-1, 0]], [left_chain[-1, 1]])
+        self._btp_marker_artists["left"].set_3d_properties([left_chain[-1, 2]])
+        self._btp_marker_artists["right"].set_data([right_chain[-1, 0]], [right_chain[-1, 1]])
+        self._btp_marker_artists["right"].set_3d_properties([right_chain[-1, 2]])
+
+        self._animation_axis.set_title(
+            "Animation bras / BTP | "
+            f"t = {result.time[frame_index]:.2f} s | "
+            f"dev. G = {np.rad2deg(deviations['left'][frame_index]):.1f} deg | "
+            f"dev. D = {np.rad2deg(deviations['right'][frame_index]):.1f} deg"
         )
         self._animation_canvas.draw_idle()
 

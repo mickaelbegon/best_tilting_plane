@@ -6,6 +6,7 @@ import numpy as np
 
 from best_tilting_plane.modeling import ReducedAerialBiomod
 from best_tilting_plane.visualization import (
+    arm_btp_reference_trajectories,
     arm_top_view_trajectories,
     best_tilting_plane_corners,
     marker_trajectories,
@@ -52,3 +53,26 @@ def test_arm_top_view_trajectories_are_relative_to_the_pelvis_and_keep_xy() -> N
 
     np.testing.assert_allclose(top_view["hand_left"], np.array([[-0.8, 0.8], [-0.8, 0.7]]))
     np.testing.assert_allclose(top_view["hand_right"], np.array([[0.8, 0.8], [0.8, 0.7]]))
+
+
+def test_arm_btp_reference_trajectories_project_markers_in_the_btp_basis() -> None:
+    """The BTP helper should express arm markers in the moving `(somersault, twist, normal)` frame."""
+
+    trajectories = {
+        "pelvis_origin": np.array([[1.0, 2.0, 3.0], [1.0, 2.0, 3.0]]),
+        "shoulder_left": np.array([[1.2, 2.0, 3.4], [1.2, 1.6, 3.0]]),
+        "elbow_left": np.array([[1.2, 2.0, 3.4], [1.2, 1.6, 3.0]]),
+        "wrist_left": np.array([[1.2, 2.0, 3.4], [1.2, 1.6, 3.0]]),
+        "hand_left": np.array([[1.2, 2.0, 3.4], [1.2, 1.6, 3.0]]),
+        "shoulder_right": np.array([[0.8, 2.0, 2.6], [0.8, 2.4, 3.0]]),
+        "elbow_right": np.array([[0.8, 2.0, 2.6], [0.8, 2.4, 3.0]]),
+        "wrist_right": np.array([[0.8, 2.0, 2.6], [0.8, 2.4, 3.0]]),
+        "hand_right": np.array([[0.8, 2.0, 2.6], [0.8, 2.4, 3.0]]),
+    }
+
+    projected = arm_btp_reference_trajectories(trajectories, np.array([0.0, np.pi / 2.0]))
+
+    np.testing.assert_allclose(projected["hand_left"][0], np.array([0.2, 0.4, 0.0]), atol=1e-12)
+    np.testing.assert_allclose(projected["hand_right"][0], np.array([-0.2, -0.4, 0.0]), atol=1e-12)
+    np.testing.assert_allclose(projected["hand_left"][1], np.array([0.2, 0.4, 0.0]), atol=1e-12)
+    np.testing.assert_allclose(projected["hand_right"][1], np.array([-0.2, -0.4, 0.0]), atol=1e-12)

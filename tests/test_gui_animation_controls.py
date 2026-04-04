@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from best_tilting_plane.gui.app import (
+    ANIMATION_MODE_OPTIONS,
     DEFAULT_CAMERA_AZIMUTH_DEG,
     DEFAULT_CAMERA_ELEVATION_DEG,
     ROOT_INITIAL_OPTIONS,
@@ -103,6 +104,7 @@ def _build_app_for_animation() -> tuple[BestTiltingPlaneApp, list[int], FakeSche
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app.root = scheduler
     app.play_pause_label = FakeVar("Play")
+    app.animation_mode_var = FakeVar(ANIMATION_MODE_OPTIONS[0])
     app.plot_mode_var = FakeVar("Courbe")
     app.root_initial_mode = FakeVar(ROOT_INITIAL_OPTIONS[1])
     app.time_slider_var = FakeVar(0.0)
@@ -193,6 +195,20 @@ def test_apply_camera_view_uses_default_perspective_otherwise() -> None:
         DEFAULT_CAMERA_ELEVATION_DEG,
         DEFAULT_CAMERA_AZIMUTH_DEG,
     )
+
+
+def test_draw_animation_frame_dispatches_to_btp_animation_mode() -> None:
+    """The animation panel should use the dedicated BTP renderer when that mode is selected."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app._animation_mode = lambda: ANIMATION_MODE_OPTIONS[1]
+    app._visualization_data = {"result": object()}
+    dispatched: list[int] = []
+    app._draw_btp_animation_frame = dispatched.append
+
+    app._draw_animation_frame(2)
+
+    assert dispatched == [2]
 
 
 def test_apply_optimized_values_updates_sliders_and_reruns_simulation() -> None:
