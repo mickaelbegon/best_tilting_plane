@@ -98,7 +98,7 @@ PLOT_X_OPTIONS = ("Temps", "Somersault", "Vrille")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
 ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Best tilting plane")
-OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 5D", "Optimize DMS")
+OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize DMS")
 PLOT_Y_OPTIONS = (
     "Somersault",
     "Tilt",
@@ -306,6 +306,12 @@ class BestTiltingPlaneApp:
             text="Comparer jerk bras 1",
             command=self._show_first_arm_jerk_comparison,
         ).grid(row=len(SLIDER_DEFINITIONS) + 5, column=1, columnspan=2, sticky="ew", pady=(10, 0))
+        self.ignore_optimization_cache_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            controls,
+            text="Ignorer le cache optimum",
+            variable=self.ignore_optimization_cache_var,
+        ).grid(row=len(SLIDER_DEFINITIONS) + 6, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self.optimization_mode_var = tk.StringVar(value=OPTIMIZATION_MODE_OPTIONS[0])
         optimization_mode_box = ttk.Combobox(
             controls,
@@ -315,15 +321,15 @@ class BestTiltingPlaneApp:
             width=18,
         )
         optimization_mode_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 6, column=0, columnspan=2, sticky="ew", pady=(10, 0), padx=(0, 8)
+            row=len(SLIDER_DEFINITIONS) + 7, column=0, columnspan=2, sticky="ew", pady=(10, 0), padx=(0, 8)
         )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=len(SLIDER_DEFINITIONS) + 6, column=2, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 7, column=2, sticky="w", pady=(10, 0)
         )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 7, column=0, columnspan=3, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 8, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.sequence_var = tk.StringVar(
             value=(
@@ -335,7 +341,7 @@ class BestTiltingPlaneApp:
             )
         )
         ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 8, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=len(SLIDER_DEFINITIONS) + 9, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
         self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
@@ -434,6 +440,14 @@ class BestTiltingPlaneApp:
         """Return the cache key associated with the current optimization mode."""
 
         return self.optimization_mode_var.get().lower().replace(" ", "_")
+
+    def _should_ignore_optimization_cache(self) -> bool:
+        """Return whether the current optimization should bypass cached results."""
+
+        variable = getattr(self, "ignore_optimization_cache_var", None)
+        if variable is None:
+            return False
+        return bool(variable.get())
 
     def _optimization_cache_signature(self) -> dict[str, float | int | str]:
         """Describe the numerical setup that must match for a cached optimum to be reused."""
@@ -1462,7 +1476,9 @@ class BestTiltingPlaneApp:
         self.result_var.set("Optimisation en cours... voir les iterations IPOPT dans le terminal.")
         self.root.update_idletasks()
 
-        if mode == "Optimize DMS":
+        use_cache = not self._should_ignore_optimization_cache()
+
+        if mode == "Optimize DMS" and use_cache:
             cached_dms_solution = self._load_cached_dms_solution()
             if cached_dms_solution is not None:
                 cached_values, cached_motion, cached_final_twist_turns, cached_solver_status, cached_scan_data = (
@@ -1485,7 +1501,7 @@ class BestTiltingPlaneApp:
                     ),
                 )
                 return
-        else:
+        elif mode != "Optimize DMS" and use_cache:
             cached_values = self._load_cached_optimized_values()
             if cached_values is not None:
                 self._apply_optimized_values(
@@ -1501,7 +1517,7 @@ class BestTiltingPlaneApp:
                 shooting_step=DMS_SHOOTING_STEP,
             )
             candidate_start_times = np.asarray(optimizer.candidate_start_times(), dtype=float)
-            cached_progress = self._load_cached_dms_progress()
+            cached_progress = None if not use_cache else self._load_cached_dms_progress()
             start_index = 0
             scan_start_times: list[float] = []
             scan_final_twist_turns: list[float] = []
@@ -1658,15 +1674,12 @@ class BestTiltingPlaneApp:
             self._model_path(),
             configuration=self._standard_optimization_configuration(),
         )
-        if mode == "Optimize 5D":
-            result = optimizer.optimize(initial_guess, max_iter=25, print_level=5, print_time=True)
-        else:
-            result = optimizer.optimize_right_arm_start_only(
-                initial_guess.right_arm_start,
-                max_iter=25,
-                print_level=5,
-                print_time=True,
-            )
+        result = optimizer.optimize_right_arm_start_only(
+            initial_guess.right_arm_start,
+            max_iter=25,
+            print_level=5,
+            print_time=True,
+        )
 
         optimized_values = {
             "right_arm_start": result.variables.right_arm_start,

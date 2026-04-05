@@ -12,6 +12,7 @@ from best_tilting_plane.gui.app import (
     ANIMATION_REFERENCE_OPTIONS,
     DEFAULT_CAMERA_AZIMUTH_DEG,
     DEFAULT_CAMERA_ELEVATION_DEG,
+    OPTIMIZATION_MODE_OPTIONS,
     ROOT_INITIAL_OPTIONS,
     TOP_VIEW_CAMERA_AZIMUTH_DEG,
     TOP_VIEW_CAMERA_ELEVATION_DEG,
@@ -367,6 +368,12 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
     ]
 
 
+def test_optimization_mode_options_keep_only_2d_and_dms() -> None:
+    """The GUI should expose only the reduced IPOPT and DMS optimization modes."""
+
+    assert OPTIMIZATION_MODE_OPTIONS == ("Optimize 2D", "Optimize DMS")
+
+
 def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> None:
     """A matching cache entry should be returned as GUI-ready float values."""
 
@@ -462,6 +469,91 @@ def test_optimize_strategy_uses_cache_without_running_ipopt(monkeypatch, tmp_pat
                 "right_plane_final": 0.0,
             },
             "optimum charge depuis le cache",
+        )
+    ]
+
+
+def test_optimize_strategy_can_ignore_cached_ipopt_solution(monkeypatch, tmp_path: Path) -> None:
+    """The force-recompute option should bypass a stored 2D optimum and run IPOPT again."""
+
+    class FakeOptimizer:
+        def optimize_right_arm_start_only(self, initial_right_arm_start, **_kwargs):
+            assert initial_right_arm_start == 0.1
+            return type(
+                "OptimizationResult",
+                (),
+                {
+                    "variables": type(
+                        "Variables",
+                        (),
+                        {
+                            "right_arm_start": 0.35,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    )(),
+                    "final_twist_turns": -0.75,
+                    "solver_status": "Solve_Succeeded",
+                },
+            )()
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.TwistStrategyOptimizer.from_builder",
+        lambda *_args, **_kwargs: FakeOptimizer(),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize 2D")
+    app.ignore_optimization_cache_var = FakeVar(True)
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_2d": {
+                        "signature": app._optimization_cache_signature(),
+                        "values": {
+                            "right_arm_start": 0.42,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    applied: list[tuple[dict[str, float], str | None]] = []
+    app._apply_optimized_values = lambda values, status_suffix=None: applied.append(
+        (dict(values), status_suffix)
+    )
+
+    app._optimize_strategy()
+
+    assert applied == [
+        (
+            {
+                "right_arm_start": 0.35,
+                "left_plane_initial": 0.0,
+                "left_plane_final": 0.0,
+                "right_plane_initial": 0.0,
+                "right_plane_final": 0.0,
+            },
+            "optimum IPOPT: -0.75 tours (Solve_Succeeded)",
         )
     ]
 
@@ -781,6 +873,134 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     np.testing.assert_allclose(shown[0]["objective_values"], [-0.39, -0.62, -0.60])
     np.testing.assert_array_equal(shown[0]["success_mask"], [True, True, True])
     assert shown[0]["best_start_time"] == 0.28
+
+
+def test_optimize_strategy_can_ignore_cached_dms_solution_and_restart_sweep(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The force-recompute option should ignore both cached DMS optima and partial checkpoints."""
+
+    calls: list[tuple[float, float | None]] = []
+
+    class FakeDmsOptimizer:
+        def candidate_start_times(self):
+            return np.array([0.10, 0.12], dtype=float)
+
+        def solve_fixed_start(self, initial_guess, *, right_arm_start, previous_result=None, **_kwargs):
+            assert initial_guess.right_arm_start == 0.1
+            calls.append(
+                (
+                    float(right_arm_start),
+                    None if previous_result is None else float(previous_result.variables.right_arm_start),
+                )
+            )
+            return type(
+                "DmsResult",
+                (),
+                {
+                    "variables": type(
+                        "Variables",
+                        (),
+                        {
+                            "right_arm_start": right_arm_start,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    )(),
+                    "prescribed_motion": f"dms-motion-{right_arm_start:.2f}",
+                    "left_plane_jerk": np.zeros(15),
+                    "right_plane_jerk": np.zeros(15),
+                    "final_twist_turns": -0.40 if np.isclose(right_arm_start, 0.10) else -0.63,
+                    "objective": -0.39 if np.isclose(right_arm_start, 0.10) else -0.62,
+                    "solver_status": "Solve_Succeeded",
+                    "success": True,
+                    "warm_start_primal": np.full(20, right_arm_start),
+                    "warm_start_lam_x": np.full(20, 1.0),
+                    "warm_start_lam_g": np.full(10, 2.0),
+                },
+            )()
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.DirectMultipleShootingOptimizer.from_builder",
+        lambda *_args, **_kwargs: FakeDmsOptimizer(),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize DMS")
+    app.ignore_optimization_cache_var = FakeVar(True)
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+    app._show_dms_sweep_figure = lambda **kwargs: None
+    applied: list[tuple[dict[str, float], object, str | None]] = []
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: applied.append(
+        (dict(values), prescribed_motion, status_suffix)
+    )
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_dms": {
+                        "signature": app._optimization_cache_signature(),
+                        "in_progress": True,
+                        "values": {
+                            "right_arm_start": 0.10,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "left_plane_jerk": [0.0] * 15,
+                        "right_plane_jerk": [0.0] * 15,
+                        "scan_start_times": [0.10],
+                        "scan_final_twist_turns": [-0.40],
+                        "scan_objective_values": [-0.39],
+                        "scan_success_mask": [True],
+                        "last_completed_index": 0,
+                        "last_warm_start_primal": [0.10] * 20,
+                        "last_warm_start_lam_x": [1.0] * 20,
+                        "last_warm_start_lam_g": [2.0] * 10,
+                        "final_twist_turns": -0.40,
+                        "solver_status": "Solve_Succeeded",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app._optimize_strategy()
+
+    assert calls == [(0.10, None), (0.12, 0.10)]
+    assert applied == [
+        (
+            {
+                "right_arm_start": 0.12,
+                "left_plane_initial": 0.0,
+                "left_plane_final": 0.0,
+                "right_plane_initial": 0.0,
+                "right_plane_final": 0.0,
+            },
+            "dms-motion-0.12",
+            "optimum DMS: -0.63 tours (Solve_Succeeded)",
+        )
+    ]
 
 
 def test_optimize_strategy_writes_cache_after_dms(monkeypatch, tmp_path: Path) -> None:

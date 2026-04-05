@@ -67,7 +67,7 @@ The current GUI provides:
 
 - sliders and numeric entry boxes for the decision variables
 - auto-simulation on slider changes with debounce, plus a `Simulate` button
-- an `Optimize` button with `Optimize 2D`, `Optimize 5D`, and `Optimize DMS` modes
+- an `Optimize` button with `Optimize 2D` and `Optimize DMS` modes, plus a checkbox to ignore cached optima
 - a `Comparer jerk bras 1` button that opens an external comparison window for the first-arm plane `q`, `qdot`, and `qddot`
 - a single integrated window with embedded 3D animation and 2D plotting
 - play/pause controls and a time slider to scrub through the animation
