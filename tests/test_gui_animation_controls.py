@@ -558,6 +558,39 @@ def test_optimize_strategy_can_ignore_cached_ipopt_solution(monkeypatch, tmp_pat
     ]
 
 
+def test_optimize_strategy_reports_errors_instead_of_raising(monkeypatch, tmp_path: Path) -> None:
+    """A failing optimizer should leave a readable error in the GUI instead of crashing Tkinter."""
+
+    class FakeOptimizer:
+        def optimize_right_arm_start_only(self, initial_right_arm_start, **_kwargs):
+            assert initial_right_arm_start == 0.1
+            raise ValueError("boom")
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.TwistStrategyOptimizer.from_builder",
+        lambda *_args, **_kwargs: FakeOptimizer(),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize 2D")
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+
+    app._optimize_strategy()
+
+    assert app._auto_runner.cancelled
+    assert app.result_var.get() == "Erreur optimisation: boom"
+
+
 def test_optimize_strategy_writes_cache_after_ipopt(monkeypatch, tmp_path: Path) -> None:
     """A newly optimized strategy should be persisted for later GUI sessions."""
 
@@ -873,6 +906,21 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     np.testing.assert_allclose(shown[0]["objective_values"], [-0.39, -0.62, -0.60])
     np.testing.assert_array_equal(shown[0]["success_mask"], [True, True, True])
     assert shown[0]["best_start_time"] == 0.28
+
+
+def test_report_callback_exception_updates_result_message() -> None:
+    """Tkinter callback failures should be surfaced in the GUI status line."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.result_var = FakeVar("")
+
+    try:
+        raise RuntimeError("callback boom")
+    except RuntimeError as error:
+        trace = error.__traceback__
+        app._report_callback_exception(RuntimeError, error, trace)
+
+    assert app.result_var.get() == "Erreur GUI: callback boom"
 
 
 def test_optimize_strategy_can_ignore_cached_dms_solution_and_restart_sweep(
