@@ -65,7 +65,7 @@ def test_direct_multiple_shooting_jerk_bound_matches_left_elevation_fitting(
     )
 
     reference = approximate_first_arm_elevation_motion(
-        total_time=configuration.final_time,
+        total_time=dms_module.LEFT_ARM_ACTIVE_DURATION,
         step=optimizer.shooting_step,
     )
 
@@ -161,18 +161,22 @@ def test_direct_multiple_shooting_solve_builds_float_bounds_and_returns_motion(
     assert result.success
     assert result.solver_status == "Solve_Succeeded"
     assert result.variables == initial_guess
+    assert result.arm_node_times.shape == (optimizer.active_control_count + 1,)
     assert result.root_state_nodes.shape == (dms_module.ROOT_STATE_SIZE, optimizer.interval_count + 1)
     assert result.left_plane_jerk.shape == (optimizer.active_control_count,)
     assert result.right_plane_jerk.shape == (optimizer.active_control_count,)
-    assert result.left_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.interval_count + 1)
-    assert result.right_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.interval_count + 1)
+    assert result.left_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)
+    assert result.right_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)
     assert result.prescribed_motion.right_arm_start == initial_guess.right_arm_start
     assert result.objective == -0.5
     assert captured["options"]["ipopt.max_iter"] == 3
     assert captured["options"]["ipopt.print_level"] == 5
     assert captured["options"]["print_time"] == 1
     assert np.asarray(captured["x0"], dtype=float).shape == (
-        1 + (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE + optimizer.active_control_count * 2,
+        1
+        + (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE
+        + 2 * (optimizer.active_control_count + 1) * dms_module.PLANE_STATE_SIZE
+        + 2 * optimizer.active_control_count,
     )
     assert np.asarray(captured["lbx"], dtype=float).dtype == float
     assert np.asarray(captured["ubx"], dtype=float).dtype == float
