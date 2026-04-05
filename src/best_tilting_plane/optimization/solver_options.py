@@ -15,6 +15,14 @@ HSL_LIBRARY_NAMES = (
     "libcoinhsl.so",
 )
 HSL_ENVIRONMENT_VARIABLE = "BEST_TILTING_PLANE_IPOPT_HSL"
+OPTIMIZATION_THREAD_COUNT = 6
+THREAD_ENVIRONMENT_VARIABLES = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+)
 
 
 def _append_unique(paths: list[Path], seen: set[Path], candidate: Path) -> None:
@@ -77,6 +85,18 @@ def locate_ipopt_hsl_library() -> str | None:
     return None
 
 
+def configure_optimization_threads(thread_count: int = OPTIMIZATION_THREAD_COUNT) -> int:
+    """Force the optimization stack to use one fixed number of CPU threads."""
+
+    normalized_count = int(thread_count)
+    if normalized_count <= 0:
+        raise ValueError("The optimization thread count must be strictly positive.")
+    value = str(normalized_count)
+    for variable_name in THREAD_ENVIRONMENT_VARIABLES:
+        os.environ[variable_name] = value
+    return normalized_count
+
+
 def build_ipopt_solver_options(
     *,
     max_iter: int,
@@ -87,6 +107,7 @@ def build_ipopt_solver_options(
 ) -> dict[str, object]:
     """Build one consistent IPOPT option dictionary for every CasADi solver."""
 
+    configure_optimization_threads()
     options: dict[str, object] = {
         "ipopt.max_iter": int(max_iter),
         "ipopt.print_level": int(print_level),

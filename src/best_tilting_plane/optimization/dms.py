@@ -11,7 +11,10 @@ import casadi as ca
 import numpy as np
 
 from best_tilting_plane.modeling import ReducedAerialBiomod
-from best_tilting_plane.optimization.solver_options import build_ipopt_solver_options
+from best_tilting_plane.optimization.solver_options import (
+    build_ipopt_solver_options,
+    configure_optimization_threads,
+)
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
     PiecewiseConstantJerkArmMotion,
@@ -565,6 +568,7 @@ class DirectMultipleShootingOptimizer:
         if self._solver is not None and self._solver_options_key == options_key:
             return self._solver
 
+        configure_optimization_threads()
         parameters = ca.MX.sym("p", ELEVATION_STAGE_BLOCK_SIZE * self.interval_count, 1)
         root_state_symbols = [
             ca.MX.sym(f"X_root_{index}", ROOT_STATE_SIZE, 1) for index in range(self.interval_count + 1)

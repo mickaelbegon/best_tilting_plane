@@ -45,6 +45,19 @@ def test_build_ipopt_solver_options_prefers_ma57_when_hsl_is_available(
     assert options["print_time"] == 1
 
 
+def test_configure_optimization_threads_forces_six_cores(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shared optimization helper should force the project-wide thread count to six."""
+
+    for variable_name in solver_options_module.THREAD_ENVIRONMENT_VARIABLES:
+        monkeypatch.delenv(variable_name, raising=False)
+
+    configured = solver_options_module.configure_optimization_threads()
+
+    assert configured == 6
+    for variable_name in solver_options_module.THREAD_ENVIRONMENT_VARIABLES:
+        assert solver_options_module.os.environ[variable_name] == "6"
+
+
 def test_black_box_ipopt_solves_a_simple_quadratic_problem() -> None:
     """The generic IPOPT wrapper should solve a smooth bounded quadratic objective."""
 

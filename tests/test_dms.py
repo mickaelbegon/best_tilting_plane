@@ -118,6 +118,7 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     initial_state = np.asarray(optimizer._symbolic_initial_root_state(initial_guess), dtype=float).reshape(-1)
     state_history = np.tile(initial_state.reshape(-1, 1), (1, optimizer.interval_count + 1))
     captured: dict[str, object] = {}
+    configured_threads: list[int] = []
 
     monkeypatch.setattr(
         optimizer,
@@ -128,6 +129,11 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
         optimizer,
         "_initial_guess_root_state_history",
         lambda _variables, _motion: state_history,
+    )
+    monkeypatch.setattr(
+        dms_module,
+        "configure_optimization_threads",
+        lambda thread_count=6: configured_threads.append(int(thread_count)) or int(thread_count),
     )
 
     class FakeSimulator:
@@ -185,6 +191,7 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     assert result.right_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)
     assert result.prescribed_motion.right_arm_start == initial_guess.right_arm_start
     assert result.objective == -0.5
+    assert configured_threads == [6]
     assert captured["options"]["ipopt.max_iter"] == 3
     assert captured["options"]["ipopt.print_level"] == 5
     assert captured["options"]["ipopt.linear_solver"] == "ma57"
