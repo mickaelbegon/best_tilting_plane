@@ -304,21 +304,36 @@ def approximate_quintic_segment_with_piecewise_constant_jerk(
     )
 
 
-def approximate_first_arm_plane_motion(
-    variables: TwistOptimizationVariables,
+def approximate_first_arm_elevation_motion(
+    variables: TwistOptimizationVariables | None = None,
     *,
     total_time: float = 1.0,
     step: float = 0.02,
 ) -> PiecewiseConstantJerkTrajectory:
-    """Approximate the first-arm plane motion with a piecewise-constant jerk control."""
+    """Approximate the first-arm elevation motion with a piecewise-constant jerk control."""
 
     return approximate_quintic_segment_with_piecewise_constant_jerk(
         total_time=total_time,
         step=step,
         active_start=0.0,
         active_duration=0.3,
-        q0=float(variables.left_plane_initial),
-        q1=float(variables.left_plane_final),
+        q0=-np.pi,
+        q1=0.0,
+    )
+
+
+def approximate_first_arm_plane_motion(
+    variables: TwistOptimizationVariables,
+    *,
+    total_time: float = 1.0,
+    step: float = 0.02,
+) -> PiecewiseConstantJerkTrajectory:
+    """Backward-compatible alias kept for callers that still use the old helper name."""
+
+    return approximate_first_arm_elevation_motion(
+        variables,
+        total_time=total_time,
+        step=step,
     )
 
 
@@ -329,10 +344,10 @@ def first_arm_piecewise_constant_comparison_data(
     jerk_step: float = 0.02,
     sample_step: float = 0.005,
 ) -> dict[str, np.ndarray]:
-    """Return the reference and piecewise-constant-jerk first-arm plane trajectories."""
+    """Return the reference and piecewise-constant-jerk first-arm elevation trajectories."""
 
     motion = PrescribedArmMotion(variables)
-    approximation = approximate_first_arm_plane_motion(
+    approximation = approximate_first_arm_elevation_motion(
         variables,
         total_time=total_time,
         step=jerk_step,
@@ -341,15 +356,15 @@ def first_arm_piecewise_constant_comparison_data(
     return {
         "time": samples,
         "reference_q": np.array(
-            [motion.left(float(sample)).elevation_plane.position for sample in samples],
+            [motion.left(float(sample)).elevation.position for sample in samples],
             dtype=float,
         ),
         "reference_qdot": np.array(
-            [motion.left(float(sample)).elevation_plane.velocity for sample in samples],
+            [motion.left(float(sample)).elevation.velocity for sample in samples],
             dtype=float,
         ),
         "reference_qddot": np.array(
-            [motion.left(float(sample)).elevation_plane.acceleration for sample in samples],
+            [motion.left(float(sample)).elevation.acceleration for sample in samples],
             dtype=float,
         ),
         "approximate_q": approximation.position(samples),
@@ -407,7 +422,7 @@ def show_first_arm_piecewise_constant_comparison(
     jerk_step: float = 0.02,
     sample_step: float = 0.005,
 ):
-    """Open an external matplotlib window comparing the first-arm plane kinematics."""
+    """Open an external matplotlib window comparing the first-arm elevation kinematics."""
 
     import matplotlib.pyplot as plt
 

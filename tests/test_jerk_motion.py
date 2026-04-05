@@ -89,6 +89,12 @@ def test_first_arm_piecewise_constant_comparison_helpers_return_consistent_shape
     assert np.all(np.isfinite(data["approximate_q"]))
     assert np.all(np.isfinite(data["approximate_qdot"]))
     assert np.all(np.isfinite(data["approximate_qddot"]))
+    np.testing.assert_allclose(data["reference_q"][0], -np.pi, atol=1e-12)
+    np.testing.assert_allclose(data["approximate_q"][0], -np.pi, atol=1e-12)
+    zero_index = int(round(0.3 / 0.01))
+    np.testing.assert_allclose(data["time"][zero_index], 0.3, atol=1e-12)
+    np.testing.assert_allclose(data["reference_q"][zero_index], 0.0, atol=1e-12)
+    np.testing.assert_allclose(data["approximate_q"][zero_index], 0.0, atol=2e-1)
 
     figure, axes, figure_data = create_first_arm_piecewise_constant_comparison_figure(
         variables,
@@ -100,3 +106,4 @@ def test_first_arm_piecewise_constant_comparison_helpers_return_consistent_shape
     assert len(axes) == 3
     assert figure.axes[:3] == list(axes)
     assert np.array_equal(figure_data["time"], data["time"])
+    assert "bras 1" in axes[0].get_title().lower()
