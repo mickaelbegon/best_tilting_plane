@@ -124,6 +124,7 @@ class DirectMultipleShootingOptimizer:
         self._solver = None
         self._solver_options_key: tuple[int, int, bool] | None = None
         self._constraint_count = 0
+        self._interval_parallelization = "serial"
 
         if self.shooting_step <= 0.0:
             raise ValueError("The shooting step must be strictly positive.")
@@ -392,6 +393,66 @@ class DirectMultipleShootingOptimizer:
         )
         return root_state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
+    def _build_interval_defect_function(self) -> ca.Function:
+        """Build one interval defect function that CasADi can map over all shooting nodes."""
+
+        root_state = ca.MX.sym("xk", ROOT_STATE_SIZE, 1)
+        root_state_next = ca.MX.sym("xk_next", ROOT_STATE_SIZE, 1)
+        left_plane_state = ca.MX.sym("xlk", PLANE_STATE_SIZE, 1)
+        left_plane_state_next = ca.MX.sym("xlk_next", PLANE_STATE_SIZE, 1)
+        right_plane_state = ca.MX.sym("xrk", PLANE_STATE_SIZE, 1)
+        right_plane_state_next = ca.MX.sym("xrk_next", PLANE_STATE_SIZE, 1)
+        left_jerk = ca.MX.sym("ulk")
+        right_jerk = ca.MX.sym("urk")
+        elevation_block = ca.MX.sym("pk", ELEVATION_STAGE_BLOCK_SIZE, 1)
+
+        left_plane_prediction = self._advance_symbolic_constant_jerk(
+            left_plane_state,
+            left_jerk,
+            self.shooting_step,
+        )
+        right_plane_prediction = self._advance_symbolic_constant_jerk(
+            right_plane_state,
+            right_jerk,
+            self.shooting_step,
+        )
+        root_state_prediction = self._integrate_root_interval(
+            root_state,
+            left_plane_state,
+            left_jerk,
+            right_plane_state,
+            right_jerk,
+            elevation_block[0:2],
+            elevation_block[2:4],
+            elevation_block[4:6],
+            elevation_block[6:8],
+            elevation_block[8:10],
+            elevation_block[10:12],
+            elevation_block[12:14],
+            elevation_block[14:16],
+            elevation_block[16:18],
+        )
+        defect = ca.vertcat(
+            root_state_next - root_state_prediction,
+            left_plane_state_next - left_plane_prediction,
+            right_plane_state_next - right_plane_prediction,
+        )
+        return ca.Function(
+            "dms_interval_defect",
+            [
+                root_state,
+                root_state_next,
+                left_plane_state,
+                left_plane_state_next,
+                right_plane_state,
+                right_plane_state_next,
+                left_jerk,
+                right_jerk,
+                elevation_block,
+            ],
+            [defect],
+        )
+
     def _initial_guess_motion(
         self,
         variables: TwistOptimizationVariables,
@@ -512,50 +573,34 @@ class DirectMultipleShootingOptimizer:
         left_control_symbols = ca.MX.sym("U_left", self.interval_count, 1)
         right_control_symbols = ca.MX.sym("U_right", self.interval_count, 1)
 
-        constraints: list[ca.MX] = []
-        for index in range(self.interval_count):
-            constraints.append(
-                left_plane_state_symbols[index + 1]
-                - self._advance_symbolic_constant_jerk(
-                    left_plane_state_symbols[index],
-                    left_control_symbols[index],
-                    self.shooting_step,
-                )
-            )
-            constraints.append(
-                right_plane_state_symbols[index + 1]
-                - self._advance_symbolic_constant_jerk(
-                    right_plane_state_symbols[index],
-                    right_control_symbols[index],
-                    self.shooting_step,
-                )
-            )
-
         objective = root_state_symbols[-1][5] / (2.0 * np.pi)
         objective += self.jerk_regularization * self.shooting_step * (
             ca.sumsqr(left_control_symbols) + ca.sumsqr(right_control_symbols)
         )
-        for index in range(self.interval_count):
-            offset = ELEVATION_STAGE_BLOCK_SIZE * index
-            constraints.append(
-                root_state_symbols[index + 1]
-                - self._integrate_root_interval(
-                    root_state_symbols[index],
-                    left_plane_state_symbols[index],
-                    left_control_symbols[index],
-                    right_plane_state_symbols[index],
-                    right_control_symbols[index],
-                    parameters[offset : offset + 2],
-                    parameters[offset + 2 : offset + 4],
-                    parameters[offset + 4 : offset + 6],
-                    parameters[offset + 6 : offset + 8],
-                    parameters[offset + 8 : offset + 10],
-                    parameters[offset + 10 : offset + 12],
-                    parameters[offset + 12 : offset + 14],
-                    parameters[offset + 14 : offset + 16],
-                    parameters[offset + 16 : offset + 18],
-                )
+        interval_defect = self._build_interval_defect_function()
+        parallelization = "openmp" if self.interval_count > 1 else "serial"
+        try:
+            mapped_interval_defect = interval_defect.map(
+                self.interval_count,
+                parallelization,
             )
+        except RuntimeError:
+            parallelization = "serial"
+            mapped_interval_defect = interval_defect.map(self.interval_count, parallelization)
+        self._interval_parallelization = parallelization
+
+        mapped_defects = mapped_interval_defect(
+            ca.horzcat(*root_state_symbols[:-1]),
+            ca.horzcat(*root_state_symbols[1:]),
+            ca.horzcat(*left_plane_state_symbols[:-1]),
+            ca.horzcat(*left_plane_state_symbols[1:]),
+            ca.horzcat(*right_plane_state_symbols[:-1]),
+            ca.horzcat(*right_plane_state_symbols[1:]),
+            ca.reshape(left_control_symbols, 1, self.interval_count),
+            ca.reshape(right_control_symbols, 1, self.interval_count),
+            ca.reshape(parameters, ELEVATION_STAGE_BLOCK_SIZE, self.interval_count),
+        )[0]
+        constraints = [ca.reshape(mapped_defects, -1, 1)]
 
         decision_vector = ca.vertcat(
             *root_state_symbols,
