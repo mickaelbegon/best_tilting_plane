@@ -43,9 +43,9 @@ def _build_app_for_plotting(
                 "time": np.array([0.0, 0.5, 1.0], dtype=float),
                 "q": np.array(
                     [
-                        [0.0, 0.0, 0.0, 0.1, 0.2, 0.3],
-                        [0.0, 0.0, 0.0, 0.4, 0.5, 0.6],
-                        [0.0, 0.0, 0.0, 0.9, 1.0, 1.1],
+                        [0.0, 0.0, 0.0, 0.1, 0.2, 0.3, -0.2, -3.0, 0.2, 3.0],
+                        [0.0, 0.0, 0.0, 0.4, 0.5, 0.6, -0.1, -1.5, 0.1, 1.5],
+                        [0.0, 0.0, 0.0, 0.9, 1.0, 1.1, 0.0, 0.0, 0.0, 0.0],
                     ],
                     dtype=float,
                 ),
@@ -117,13 +117,45 @@ def test_plot_data_returns_twist_against_somersault() -> None:
 
     app = _build_app_for_plotting(plot_x="Somersault", plot_y="Twist")
 
-    x_data, y_data, x_label, y_label, title = app._plot_data()
+    x_data, y_data, x_label, y_label, title, curve_labels = app._plot_data()
 
     np.testing.assert_allclose(x_data, np.rad2deg(np.array([0.1, 0.4, 0.9])))
     np.testing.assert_allclose(y_data, np.rad2deg(np.array([0.3, 0.6, 1.1])))
     assert x_label == "Somersault (deg)"
     assert y_label == "Twist (deg)"
     assert title == "Twist en fonction de somersault"
+    assert curve_labels is None
+
+
+def test_plot_data_can_return_the_four_arm_kinematic_curves() -> None:
+    """The plot selector should expose the four arm DoFs as one 4-curve figure."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Cinematique bras")
+
+    x_data, y_data, x_label, y_label, title, curve_labels = app._plot_data()
+
+    np.testing.assert_allclose(x_data, np.array([0.0, 0.5, 1.0]))
+    np.testing.assert_allclose(
+        y_data,
+        np.rad2deg(
+            np.array(
+                [
+                    [-0.2, -3.0, 0.2, 3.0],
+                    [-0.1, -1.5, 0.1, 1.5],
+                    [0.0, 0.0, 0.0, 0.0],
+                ]
+            )
+        ),
+    )
+    assert x_label == "Temps (s)"
+    assert y_label == "Angles bras (deg)"
+    assert title == "Cinematique bras en fonction de temps"
+    assert curve_labels == (
+        "Plan bras gauche",
+        "Elevation bras gauche",
+        "Plan bras droit",
+        "Elevation bras droit",
+    )
 
 
 def test_top_view_plot_data_returns_relative_arm_trajectories_and_current_frame() -> None:

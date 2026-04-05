@@ -96,6 +96,7 @@ PLOT_Y_OPTIONS = (
     "Somersault",
     "Tilt",
     "Twist",
+    "Cinematique bras",
     "Deviation bras gauche",
     "Deviation bras droit",
 )
@@ -114,6 +115,12 @@ ALL_FRAME_SEGMENTS = tuple(
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
 OPTIMIZATION_CACHE_VERSION = 1
+ARM_KINEMATICS_LABELS = (
+    "Plan bras gauche",
+    "Elevation bras gauche",
+    "Plan bras droit",
+    "Elevation bras droit",
+)
 
 
 def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
@@ -941,7 +948,9 @@ class BestTiltingPlaneApp:
             return np.asarray(self._visualization_data["display_q"][:, 3 + root_index], dtype=float)
         return np.asarray(result.q[:, 3 + root_index], dtype=float)
 
-    def _plot_data(self) -> tuple[np.ndarray, np.ndarray, str, str, str]:
+    def _plot_data(
+        self,
+    ) -> tuple[np.ndarray, np.ndarray, str, str, str, tuple[str, ...] | None]:
         """Return the currently selected x/y data and corresponding labels."""
 
         if self._visualization_data is None:
@@ -967,6 +976,10 @@ class BestTiltingPlaneApp:
         elif y_choice == "Twist":
             y_data = np.rad2deg(self._root_series(result, 2))
             y_label = "Twist (deg)"
+        elif y_choice == "Cinematique bras":
+            y_data = np.rad2deg(np.asarray(result.q[:, 6:10], dtype=float))
+            y_label = "Angles bras (deg)"
+            curve_labels = ARM_KINEMATICS_LABELS
         elif y_choice == "Deviation bras gauche":
             y_data = np.rad2deg(deviations["left"])
             y_label = "Deviation bras gauche / BTP (deg)"
@@ -976,9 +989,11 @@ class BestTiltingPlaneApp:
         else:
             y_data = np.rad2deg(deviations["right"])
             y_label = "Deviation bras droit / BTP (deg)"
+        if y_choice != "Cinematique bras":
+            curve_labels = None
 
         title = f"{y_choice} en fonction de {self.plot_x_var.get().lower()}"
-        return x_data, y_data, x_label, y_label, title
+        return x_data, y_data, x_label, y_label, title, curve_labels
 
     def _plot_requires_frame_sync(self) -> bool:
         """Return whether the current 2D figure depends on the animation frame."""
@@ -1094,9 +1109,21 @@ class BestTiltingPlaneApp:
             self._refresh_top_view_plot()
             return
 
-        x_data, y_data, x_label, y_label, title = self._plot_data()
+        x_data, y_data, x_label, y_label, title, curve_labels = self._plot_data()
         self._plot_axis.clear()
-        self._plot_axis.plot(x_data, y_data, color="tab:blue", linewidth=2.0)
+        if np.asarray(y_data).ndim == 2:
+            colors = ("tab:red", "tab:orange", "tab:blue", "tab:green")
+            for curve_index, curve_label in enumerate(curve_labels or ()):
+                self._plot_axis.plot(
+                    x_data,
+                    y_data[:, curve_index],
+                    color=colors[curve_index % len(colors)],
+                    linewidth=2.0,
+                    label=curve_label,
+                )
+            self._plot_axis.legend(loc="best")
+        else:
+            self._plot_axis.plot(x_data, y_data, color="tab:blue", linewidth=2.0)
         self._plot_axis.set_xlabel(x_label)
         self._plot_axis.set_ylabel(y_label)
         self._plot_axis.set_title(title)
