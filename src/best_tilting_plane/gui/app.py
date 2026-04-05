@@ -26,7 +26,11 @@ from best_tilting_plane.modeling import (
     RIGHT_ARM_PLANE_BOUNDS_DEG,
     ROOT_ROTATION_SEQUENCE,
 )
-from best_tilting_plane.optimization import DirectMultipleShootingOptimizer, TwistStrategyOptimizer
+from best_tilting_plane.optimization import (
+    DirectMultipleShootingOptimizer,
+    TwistStrategyOptimizer,
+    show_dms_start_time_sweep_figure,
+)
 from best_tilting_plane.simulation import (
     PiecewiseConstantJerkArmMotion,
     PiecewiseConstantJerkTrajectory,
@@ -119,6 +123,8 @@ STANDARD_RK4_STEP = 0.005
 OPTIMIZATION_CACHE_VERSION = 1
 DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
+DMS_SCAN_START = 0.10
+DMS_SCAN_END = 0.70
 ARM_KINEMATICS_LABELS = (
     "Plan bras gauche",
     "Elevation bras gauche",
@@ -444,6 +450,8 @@ class BestTiltingPlaneApp:
         if self.optimization_mode_var.get() == "Optimize DMS":
             signature["dms_shooting_step"] = DMS_SHOOTING_STEP
             signature["dms_active_duration"] = DMS_ACTIVE_DURATION
+            signature["dms_scan_start"] = DMS_SCAN_START
+            signature["dms_scan_end"] = DMS_SCAN_END
         return signature
 
     def _read_optimization_cache_file(self) -> dict[str, object]:
@@ -520,7 +528,30 @@ class BestTiltingPlaneApp:
             right_arm_start=right_arm_start,
         )
 
-    def _load_cached_dms_solution(self) -> tuple[dict[str, float], PiecewiseConstantJerkArmMotion, float, str] | None:
+    def _show_dms_sweep_figure(
+        self,
+        *,
+        start_times: list[float] | np.ndarray,
+        final_twist_turns: list[float] | np.ndarray,
+        objective_values: list[float] | np.ndarray,
+        success_mask: list[bool] | np.ndarray,
+        best_start_time: float,
+    ) -> None:
+        """Open the discrete DMS sweep figure in an external matplotlib window."""
+
+        if len(start_times) == 0:
+            return
+        show_dms_start_time_sweep_figure(
+            start_times=np.asarray(start_times, dtype=float),
+            final_twist_turns=np.asarray(final_twist_turns, dtype=float),
+            objective_values=np.asarray(objective_values, dtype=float),
+            success_mask=np.asarray(success_mask, dtype=bool),
+            best_start_time=float(best_start_time),
+        )
+
+    def _load_cached_dms_solution(
+        self,
+    ) -> tuple[dict[str, float], PiecewiseConstantJerkArmMotion, float, str, dict[str, list[float] | list[bool]] | None] | None:
         """Return one cached DMS solution when the stored signature matches the current setup."""
 
         cache = self._read_optimization_cache_file()
@@ -547,12 +578,34 @@ class BestTiltingPlaneApp:
             return None
         if len(left_jerk_values) == 0 or len(right_jerk_values) == 0:
             return None
+        scan_data = None
+        scan_start_times = record.get("scan_start_times")
+        scan_final_twist_turns = record.get("scan_final_twist_turns")
+        scan_objective_values = record.get("scan_objective_values")
+        scan_success_mask = record.get("scan_success_mask")
+        if (
+            isinstance(scan_start_times, list)
+            and isinstance(scan_final_twist_turns, list)
+            and isinstance(scan_objective_values, list)
+            and isinstance(scan_success_mask, list)
+            and len(scan_start_times) == len(scan_final_twist_turns) == len(scan_objective_values) == len(scan_success_mask)
+            and len(scan_start_times) > 0
+        ):
+            try:
+                scan_data = {
+                    "start_times": [float(value) for value in scan_start_times],
+                    "final_twist_turns": [float(value) for value in scan_final_twist_turns],
+                    "objective_values": [float(value) for value in scan_objective_values],
+                    "success_mask": [bool(value) for value in scan_success_mask],
+                }
+            except (TypeError, ValueError):
+                scan_data = None
         motion = self._rebuild_cached_dms_motion(
             optimized_values,
             left_plane_jerk=left_jerk_values,
             right_plane_jerk=right_jerk_values,
         )
-        return optimized_values, motion, final_twist_turns, solver_status
+        return optimized_values, motion, final_twist_turns, solver_status, scan_data
 
     def _store_cached_optimized_values(
         self,
@@ -580,6 +633,10 @@ class BestTiltingPlaneApp:
         *,
         left_plane_jerk: np.ndarray,
         right_plane_jerk: np.ndarray,
+        scan_start_times: np.ndarray,
+        scan_final_twist_turns: np.ndarray,
+        scan_objective_values: np.ndarray,
+        scan_success_mask: np.ndarray,
         final_twist_turns: float,
         solver_status: str,
     ) -> None:
@@ -592,6 +649,10 @@ class BestTiltingPlaneApp:
             "values": {name: float(value) for name, value in optimized_values.items()},
             "left_plane_jerk": np.asarray(left_plane_jerk, dtype=float).tolist(),
             "right_plane_jerk": np.asarray(right_plane_jerk, dtype=float).tolist(),
+            "scan_start_times": np.asarray(scan_start_times, dtype=float).tolist(),
+            "scan_final_twist_turns": np.asarray(scan_final_twist_turns, dtype=float).tolist(),
+            "scan_objective_values": np.asarray(scan_objective_values, dtype=float).tolist(),
+            "scan_success_mask": np.asarray(scan_success_mask, dtype=bool).tolist(),
             "final_twist_turns": float(final_twist_turns),
             "solver_status": str(solver_status),
         }
@@ -1285,9 +1346,17 @@ class BestTiltingPlaneApp:
         if mode == "Optimize DMS":
             cached_dms_solution = self._load_cached_dms_solution()
             if cached_dms_solution is not None:
-                cached_values, cached_motion, cached_final_twist_turns, cached_solver_status = (
+                cached_values, cached_motion, cached_final_twist_turns, cached_solver_status, cached_scan_data = (
                     cached_dms_solution
                 )
+                if cached_scan_data is not None:
+                    self._show_dms_sweep_figure(
+                        start_times=cached_scan_data["start_times"],
+                        final_twist_turns=cached_scan_data["final_twist_turns"],
+                        objective_values=cached_scan_data["objective_values"],
+                        success_mask=cached_scan_data["success_mask"],
+                        best_start_time=cached_values["right_arm_start"],
+                    )
                 self._apply_optimized_values(
                     cached_values,
                     prescribed_motion=cached_motion,
@@ -1312,7 +1381,8 @@ class BestTiltingPlaneApp:
                 configuration=self._standard_optimization_configuration(),
                 shooting_step=DMS_SHOOTING_STEP,
             )
-            result = optimizer.solve(initial_guess, max_iter=50, print_level=5, print_time=True)
+            sweep_result = optimizer.solve(initial_guess, max_iter=50, print_level=5, print_time=True)
+            result = sweep_result.best_result
             optimized_values = {
                 "right_arm_start": result.variables.right_arm_start,
                 "left_plane_initial": np.rad2deg(result.variables.left_plane_initial),
@@ -1320,10 +1390,21 @@ class BestTiltingPlaneApp:
                 "right_plane_initial": np.rad2deg(result.variables.right_plane_initial),
                 "right_plane_final": np.rad2deg(result.variables.right_plane_final),
             }
+            self._show_dms_sweep_figure(
+                start_times=sweep_result.start_times,
+                final_twist_turns=sweep_result.final_twist_turns,
+                objective_values=sweep_result.objective_values,
+                success_mask=sweep_result.success_mask,
+                best_start_time=result.variables.right_arm_start,
+            )
             self._store_cached_dms_solution(
                 optimized_values,
                 left_plane_jerk=result.left_plane_jerk,
                 right_plane_jerk=result.right_plane_jerk,
+                scan_start_times=sweep_result.start_times,
+                scan_final_twist_turns=sweep_result.final_twist_turns,
+                scan_objective_values=sweep_result.objective_values,
+                scan_success_mask=sweep_result.success_mask,
                 final_twist_turns=result.final_twist_turns,
                 solver_status=result.solver_status,
             )

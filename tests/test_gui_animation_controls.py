@@ -570,6 +570,10 @@ def test_load_cached_dms_solution_rebuilds_the_prescribed_motion(tmp_path: Path)
                         },
                         "left_plane_jerk": [0.0] * 15,
                         "right_plane_jerk": [0.0] * 15,
+                        "scan_start_times": [0.10, 0.12, 0.14],
+                        "scan_final_twist_turns": [-0.40, -0.55, -0.63],
+                        "scan_objective_values": [-0.39, -0.54, -0.62],
+                        "scan_success_mask": [True, True, True],
                         "final_twist_turns": -0.63,
                         "solver_status": "Solve_Succeeded",
                     }
@@ -582,13 +586,15 @@ def test_load_cached_dms_solution_rebuilds_the_prescribed_motion(tmp_path: Path)
     cached = app._load_cached_dms_solution()
 
     assert cached is not None
-    values, motion, final_twist_turns, solver_status = cached
+    values, motion, final_twist_turns, solver_status, scan_data = cached
     assert values["right_arm_start"] == 0.28
     assert motion.right_arm_start == 0.28
     assert motion.left_plane.jerks.shape == (15,)
     assert motion.right_plane.jerks.shape == (15,)
     assert final_twist_turns == -0.63
     assert solver_status == "Solve_Succeeded"
+    assert scan_data is not None
+    assert scan_data["start_times"] == [0.10, 0.12, 0.14]
 
 
 def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
@@ -620,6 +626,8 @@ def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
         integrator="rk4",
         rk4_step=0.005,
     )
+    shown: list[dict[str, object]] = []
+    app._show_dms_sweep_figure = lambda **kwargs: shown.append(dict(kwargs))
     (tmp_path / "optimization_cache.json").write_text(
         json.dumps(
             {
@@ -635,6 +643,10 @@ def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
                         },
                         "left_plane_jerk": [0.0] * 15,
                         "right_plane_jerk": [0.0] * 15,
+                        "scan_start_times": [0.10, 0.12, 0.28],
+                        "scan_final_twist_turns": [-0.40, -0.55, -0.63],
+                        "scan_objective_values": [-0.39, -0.54, -0.62],
+                        "scan_success_mask": [True, True, True],
                         "final_twist_turns": -0.63,
                         "solver_status": "Solve_Succeeded",
                     }
@@ -660,6 +672,15 @@ def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
     }
     assert applied[0][1] is not None
     assert applied[0][2] == "optimum DMS charge depuis le cache: -0.63 tours (Solve_Succeeded)"
+    assert shown == [
+        {
+            "start_times": [0.10, 0.12, 0.28],
+            "final_twist_turns": [-0.40, -0.55, -0.63],
+            "objective_values": [-0.39, -0.54, -0.62],
+            "success_mask": [True, True, True],
+            "best_start_time": 0.28,
+        }
+    ]
 
 
 def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
@@ -671,8 +692,8 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     class FakeDmsOptimizer:
         def solve(self, initial_guess, **_kwargs):
             assert initial_guess.right_arm_start == 0.1
-            return type(
-                "DmsResult",
+            best_result = type(
+                "BestResult",
                 (),
                 {
                     "variables": type(
@@ -691,6 +712,17 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
                     "right_plane_jerk": np.zeros(15),
                     "final_twist_turns": -0.63,
                     "solver_status": "Solve_Succeeded",
+                },
+            )()
+            return type(
+                "DmsSweepResult",
+                (),
+                {
+                    "best_result": best_result,
+                    "start_times": np.array([0.10, 0.28, 0.30]),
+                    "final_twist_turns": np.array([-0.40, -0.63, -0.61]),
+                    "objective_values": np.array([-0.39, -0.62, -0.60]),
+                    "success_mask": np.array([True, True, True]),
                 },
             )()
 
@@ -717,6 +749,8 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
         integrator="rk4",
         rk4_step=0.005,
     )
+    shown: list[dict[str, object]] = []
+    app._show_dms_sweep_figure = lambda **kwargs: shown.append(dict(kwargs))
     applied: list[tuple[dict[str, float], object, str | None]] = []
     app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: applied.append(
         (dict(values), prescribed_motion, status_suffix)
@@ -738,6 +772,12 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
             "optimum DMS: -0.63 tours (Solve_Succeeded)",
         )
     ]
+    assert len(shown) == 1
+    np.testing.assert_allclose(shown[0]["start_times"], [0.10, 0.28, 0.30])
+    np.testing.assert_allclose(shown[0]["final_twist_turns"], [-0.40, -0.63, -0.61])
+    np.testing.assert_allclose(shown[0]["objective_values"], [-0.39, -0.62, -0.60])
+    np.testing.assert_array_equal(shown[0]["success_mask"], [True, True, True])
+    assert shown[0]["best_start_time"] == 0.28
 
 
 def test_optimize_strategy_writes_cache_after_dms(monkeypatch, tmp_path: Path) -> None:
@@ -746,8 +786,8 @@ def test_optimize_strategy_writes_cache_after_dms(monkeypatch, tmp_path: Path) -
     class FakeDmsOptimizer:
         def solve(self, initial_guess, **_kwargs):
             assert initial_guess.right_arm_start == 0.1
-            return type(
-                "DmsResult",
+            best_result = type(
+                "BestResult",
                 (),
                 {
                     "variables": type(
@@ -766,6 +806,17 @@ def test_optimize_strategy_writes_cache_after_dms(monkeypatch, tmp_path: Path) -
                     "right_plane_jerk": np.zeros(15),
                     "final_twist_turns": -0.63,
                     "solver_status": "Solve_Succeeded",
+                },
+            )()
+            return type(
+                "DmsSweepResult",
+                (),
+                {
+                    "best_result": best_result,
+                    "start_times": np.array([0.10, 0.28, 0.30]),
+                    "final_twist_turns": np.array([-0.40, -0.63, -0.61]),
+                    "objective_values": np.array([-0.39, -0.62, -0.60]),
+                    "success_mask": np.array([True, True, True]),
                 },
             )()
 
@@ -792,6 +843,7 @@ def test_optimize_strategy_writes_cache_after_dms(monkeypatch, tmp_path: Path) -
         integrator="rk4",
         rk4_step=0.005,
     )
+    app._show_dms_sweep_figure = lambda **kwargs: None
     app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: None
 
     app._optimize_strategy()
@@ -807,5 +859,9 @@ def test_optimize_strategy_writes_cache_after_dms(monkeypatch, tmp_path: Path) -
     }
     assert record["left_plane_jerk"] == [0.0] * 15
     assert record["right_plane_jerk"] == [0.0] * 15
+    assert record["scan_start_times"] == [0.10, 0.28, 0.30]
+    assert record["scan_final_twist_turns"] == [-0.40, -0.63, -0.61]
+    assert record["scan_objective_values"] == [-0.39, -0.62, -0.60]
+    assert record["scan_success_mask"] == [True, True, True]
     assert record["final_twist_turns"] == -0.63
     assert record["solver_status"] == "Solve_Succeeded"
