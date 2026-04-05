@@ -15,6 +15,7 @@ from best_tilting_plane.simulation import (
     PiecewiseConstantJerkTrajectory,
     SimulationConfiguration,
     TwistOptimizationVariables,
+    approximate_first_arm_elevation_motion,
 )
 
 
@@ -46,6 +47,27 @@ def test_direct_multiple_shooting_initial_guess_motion_respects_activation_windo
     assert motion.right_plane.active_end == 0.16 + dms_module.RIGHT_ARM_ACTIVE_DURATION
     assert motion.left_plane.jerks.shape == (optimizer.interval_count,)
     assert motion.right_plane.jerks.shape == (optimizer.interval_count,)
+
+
+def test_direct_multiple_shooting_jerk_bound_matches_left_elevation_fitting(
+    tmp_path: Path,
+) -> None:
+    """The jerk bounds should come from the maximum absolute jerk of the left-arm elevation fitting."""
+
+    configuration = SimulationConfiguration(final_time=1.0, steps=201, integrator="rk4", rk4_step=0.005)
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=configuration,
+        shooting_step=0.02,
+    )
+
+    reference = approximate_first_arm_elevation_motion(
+        total_time=configuration.final_time,
+        step=optimizer.shooting_step,
+    )
+
+    assert optimizer.jerk_bound == np.max(np.abs(reference.jerks))
 
 
 def test_direct_multiple_shooting_solve_builds_float_bounds_and_returns_motion(
@@ -147,3 +169,7 @@ def test_direct_multiple_shooting_solve_builds_float_bounds_and_returns_motion(
     )
     assert np.asarray(captured["lbx"], dtype=float).dtype == float
     assert np.asarray(captured["ubx"], dtype=float).dtype == float
+    control_lower_bounds = np.asarray(captured["lbx"], dtype=float)[-2 * optimizer.interval_count :]
+    control_upper_bounds = np.asarray(captured["ubx"], dtype=float)[-2 * optimizer.interval_count :]
+    np.testing.assert_allclose(control_lower_bounds, -optimizer.jerk_bound)
+    np.testing.assert_allclose(control_upper_bounds, optimizer.jerk_bound)

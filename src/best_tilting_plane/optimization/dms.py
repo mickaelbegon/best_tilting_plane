@@ -18,13 +18,13 @@ from best_tilting_plane.simulation import (
     PredictiveAerialTwistSimulator,
     SimulationConfiguration,
     TwistOptimizationVariables,
+    approximate_first_arm_elevation_motion,
     approximate_quintic_segment_with_piecewise_constant_jerk,
 )
 
 LEFT_ARM_ACTIVE_DURATION = 0.3
 RIGHT_ARM_ACTIVE_DURATION = 0.3
 RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
-JERK_BOUNDS = (-1000.0, 1000.0)
 PLANE_STATE_SIZE = 3
 ROOT_STATE_SIZE = 12
 FULL_STATE_SIZE = ROOT_STATE_SIZE + 2 * PLANE_STATE_SIZE
@@ -86,6 +86,11 @@ class DirectMultipleShootingOptimizer:
             raise ValueError("The final time must be a multiple of the shooting step.")
         self.interval_count = step_count
         self.node_times = np.linspace(0.0, self.configuration.final_time, self.interval_count + 1)
+        elevation_fit = approximate_first_arm_elevation_motion(
+            total_time=self.configuration.final_time,
+            step=self.shooting_step,
+        )
+        self.jerk_bound = float(np.max(np.abs(elevation_fit.jerks)))
 
     @classmethod
     def from_builder(
@@ -371,8 +376,8 @@ class DirectMultipleShootingOptimizer:
                     float(initial_motion.right_plane.jerks[jerk_index]),
                 ]
             )
-            lbx.extend([JERK_BOUNDS[0], JERK_BOUNDS[0]])
-            ubx.extend([JERK_BOUNDS[1], JERK_BOUNDS[1]])
+            lbx.extend([-self.jerk_bound, -self.jerk_bound])
+            ubx.extend([self.jerk_bound, self.jerk_bound])
 
         solution = solver(
             x0=np.asarray(x0, dtype=float),
