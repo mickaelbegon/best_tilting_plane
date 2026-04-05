@@ -110,14 +110,14 @@ def test_direct_multiple_shooting_solve_builds_float_bounds_and_returns_motion(
         ),
         right_arm_start=initial_guess.right_arm_start,
     )
-    initial_state = np.asarray(optimizer._symbolic_initial_state(initial_guess), dtype=float).reshape(-1)
+    initial_state = np.asarray(optimizer._symbolic_initial_root_state(initial_guess), dtype=float).reshape(-1)
     state_history = np.tile(initial_state.reshape(-1, 1), (1, optimizer.interval_count + 1))
     captured: dict[str, object] = {}
 
     monkeypatch.setattr(optimizer, "_initial_guess_motion", lambda _variables: warm_start_motion)
     monkeypatch.setattr(
         optimizer,
-        "_initial_guess_state_history",
+        "_initial_guess_root_state_history",
         lambda _variables, _motion: state_history,
     )
 
@@ -157,15 +157,18 @@ def test_direct_multiple_shooting_solve_builds_float_bounds_and_returns_motion(
     assert result.success
     assert result.solver_status == "Solve_Succeeded"
     assert result.variables == initial_guess
+    assert result.root_state_nodes.shape == (dms_module.ROOT_STATE_SIZE, optimizer.interval_count + 1)
     assert result.left_plane_jerk.shape == (optimizer.interval_count,)
     assert result.right_plane_jerk.shape == (optimizer.interval_count,)
+    assert result.left_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.interval_count + 1)
+    assert result.right_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.interval_count + 1)
     assert result.prescribed_motion.right_arm_start == initial_guess.right_arm_start
     assert result.objective == -0.5
     assert captured["options"]["ipopt.max_iter"] == 3
     assert captured["options"]["ipopt.print_level"] == 5
     assert captured["options"]["print_time"] == 1
     assert np.asarray(captured["x0"], dtype=float).shape == (
-        1 + (optimizer.interval_count + 1) * dms_module.FULL_STATE_SIZE + optimizer.interval_count * 2,
+        1 + (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE + optimizer.interval_count * 2,
     )
     assert np.asarray(captured["lbx"], dtype=float).dtype == float
     assert np.asarray(captured["ubx"], dtype=float).dtype == float

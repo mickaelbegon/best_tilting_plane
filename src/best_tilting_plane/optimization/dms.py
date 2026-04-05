@@ -26,8 +26,8 @@ LEFT_ARM_ACTIVE_DURATION = 0.3
 RIGHT_ARM_ACTIVE_DURATION = 0.3
 RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
 PLANE_STATE_SIZE = 3
+ARM_STATE_SIZE = 2 * PLANE_STATE_SIZE
 ROOT_STATE_SIZE = 12
-FULL_STATE_SIZE = ROOT_STATE_SIZE + 2 * PLANE_STATE_SIZE
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,9 @@ class DirectMultipleShootingResult:
     left_plane_jerk: np.ndarray
     right_plane_jerk: np.ndarray
     node_times: np.ndarray
+    root_state_nodes: np.ndarray
+    left_plane_state_nodes: np.ndarray
+    right_plane_state_nodes: np.ndarray
     prescribed_motion: PiecewiseConstantJerkArmMotion
     simulation: AerialSimulationResult
     objective: float
@@ -152,8 +155,8 @@ class DirectMultipleShootingOptimizer:
             ca.vertcat(left_qddot, right_qddot),
         )
 
-    def _symbolic_initial_state(self, variables: TwistOptimizationVariables) -> ca.DM:
-        """Return the combined root-and-plane initial state."""
+    def _symbolic_initial_root_state(self, variables: TwistOptimizationVariables) -> ca.DM:
+        """Return the initial root state."""
 
         q = np.zeros(self.model.nbQ(), dtype=float)
         qdot = np.zeros(self.model.nbQ(), dtype=float)
@@ -181,6 +184,93 @@ class DirectMultipleShootingOptimizer:
                     qdot[3],
                     qdot[4],
                     qdot[5],
+                ],
+                dtype=float,
+            )
+        )
+
+    @staticmethod
+    def _advance_symbolic_constant_acceleration(
+        q: ca.MX,
+        qdot: ca.MX,
+        qddot: ca.MX,
+        duration: ca.MX,
+    ) -> tuple[ca.MX, ca.MX, ca.MX]:
+        """Advance one scalar state over a zero-jerk symbolic interval."""
+
+        return (
+            q + duration * qdot + 0.5 * duration * duration * qddot,
+            qdot + duration * qddot,
+            qddot,
+        )
+
+    @staticmethod
+    def _advance_symbolic_constant_jerk(
+        q: ca.MX,
+        qdot: ca.MX,
+        qddot: ca.MX,
+        jerk: ca.MX,
+        duration: ca.MX,
+    ) -> tuple[ca.MX, ca.MX, ca.MX]:
+        """Advance one scalar state over a constant-jerk symbolic interval."""
+
+        return (
+            q + duration * qdot + 0.5 * duration * duration * qddot + duration * duration * duration * jerk / 6.0,
+            qdot + duration * qddot + 0.5 * duration * duration * jerk,
+            qddot + duration * jerk,
+        )
+
+    def _advance_symbolic_plane_state(
+        self,
+        plane_state: ca.MX,
+        jerk: ca.MX,
+        *,
+        interval_start: float,
+        evaluation_end: float,
+        active_start: ca.MX | float,
+        active_end: ca.MX | float,
+    ) -> ca.MX:
+        """Advance one plane state over part of a shooting interval."""
+
+        q, qdot, qddot = plane_state[0], plane_state[1], plane_state[2]
+        overlap_start = ca.fmin(evaluation_end, ca.fmax(interval_start, active_start))
+        overlap_end = ca.fmin(evaluation_end, ca.fmax(interval_start, active_end))
+        overlap_end = ca.fmax(overlap_start, overlap_end)
+
+        if interval_start != 0.0:
+            start_time = ca.DM(interval_start)
+        else:
+            start_time = ca.DM(0.0)
+        end_time = ca.DM(evaluation_end)
+
+        if evaluation_end > interval_start:
+            q, qdot, qddot = self._advance_symbolic_constant_acceleration(
+                q,
+                qdot,
+                qddot,
+                overlap_start - start_time,
+            )
+            q, qdot, qddot = self._advance_symbolic_constant_jerk(
+                q,
+                qdot,
+                qddot,
+                jerk,
+                overlap_end - overlap_start,
+            )
+            q, qdot, qddot = self._advance_symbolic_constant_acceleration(
+                q,
+                qdot,
+                qddot,
+                end_time - overlap_end,
+            )
+        return ca.vertcat(q, qdot, qddot)
+
+    def _symbolic_initial_arm_state(self, variables: TwistOptimizationVariables) -> ca.DM:
+        """Return the initial left/right plane state."""
+
+        return ca.DM(
+            np.array(
+                [
                     variables.left_plane_initial,
                     0.0,
                     0.0,
@@ -192,13 +282,79 @@ class DirectMultipleShootingOptimizer:
             )
         )
 
-    def _symbolic_dynamics(self, time: ca.MX, state: ca.MX, control: ca.MX, t1: ca.MX) -> ca.MX:
-        """Return the time derivative of the root and plane states."""
+    def _symbolic_arm_state_at(
+        self,
+        arm_state: ca.MX,
+        control: ca.MX,
+        *,
+        interval_start: float,
+        evaluation_end: float,
+        t1: ca.MX,
+    ) -> ca.MX:
+        """Return the arm-plane state at a given sub-time inside one shooting interval."""
 
-        q_root = state[:6]
-        qdot_root = state[6:12]
-        left_q, left_qdot, left_qddot = state[12], state[13], state[14]
-        right_q, right_qdot, right_qddot = state[15], state[16], state[17]
+        left_state = self._advance_symbolic_plane_state(
+            arm_state[:3],
+            control[0],
+            interval_start=interval_start,
+            evaluation_end=evaluation_end,
+            active_start=0.0,
+            active_end=LEFT_ARM_ACTIVE_DURATION,
+        )
+        right_state = self._advance_symbolic_plane_state(
+            arm_state[3:],
+            control[1],
+            interval_start=interval_start,
+            evaluation_end=evaluation_end,
+            active_start=t1,
+            active_end=t1 + RIGHT_ARM_ACTIVE_DURATION,
+        )
+        return ca.vertcat(left_state, right_state)
+
+    def _integrate_arm_interval(
+        self,
+        arm_state: ca.MX,
+        control: ca.MX,
+        interval_start: float,
+        t1: ca.MX,
+    ) -> ca.MX:
+        """Propagate the arm-plane state over one shooting interval."""
+
+        return self._symbolic_arm_state_at(
+            arm_state,
+            control,
+            interval_start=interval_start,
+            evaluation_end=interval_start + self.shooting_step,
+            t1=t1,
+        )
+
+    def _build_symbolic_arm_state_history(
+        self,
+        control_symbols: list[ca.MX],
+        t1: ca.MX,
+        initial_guess: TwistOptimizationVariables,
+    ) -> list[ca.MX]:
+        """Reconstruct all arm-plane node states from the jerk controls."""
+
+        arm_states = [self._symbolic_initial_arm_state(initial_guess)]
+        for index, control in enumerate(control_symbols):
+            arm_states.append(
+                self._integrate_arm_interval(
+                    arm_states[-1],
+                    control,
+                    float(self.node_times[index]),
+                    t1,
+                )
+            )
+        return arm_states
+
+    def _symbolic_root_dynamics(self, time: ca.MX, root_state: ca.MX, arm_state: ca.MX, t1: ca.MX) -> ca.MX:
+        """Return the time derivative of the root state."""
+
+        q_root = root_state[:6]
+        qdot_root = root_state[6:12]
+        left_q, left_qdot, left_qddot = arm_state[0], arm_state[1], arm_state[2]
+        right_q, right_qdot, right_qddot = arm_state[3], arm_state[4], arm_state[5]
 
         elevation_q, elevation_qdot, elevation_qddot = self._symbolic_elevation_kinematics(time, t1)
         q_joint = ca.vertcat(left_q, elevation_q[0], right_q, elevation_q[1])
@@ -213,32 +369,38 @@ class DirectMultipleShootingOptimizer:
             qddot_joint,
         ).to_mx()
 
-        left_jerk = ca.if_else(time < LEFT_ARM_ACTIVE_DURATION, control[0], 0.0)
-        right_jerk = ca.if_else(
-            ca.logic_and(time >= t1, time < t1 + RIGHT_ARM_ACTIVE_DURATION),
-            control[1],
-            0.0,
-        )
-        return ca.vertcat(
-            qdot_root,
-            qddot_root,
-            left_qdot,
-            left_qddot,
-            left_jerk,
-            right_qdot,
-            right_qddot,
-            right_jerk,
-        )
+        return ca.vertcat(qdot_root, qddot_root)
 
-    def _integrate_interval(self, state: ca.MX, control: ca.MX, interval_start: float, t1: ca.MX) -> ca.MX:
-        """Integrate one shooting interval with RK4."""
+    def _integrate_root_interval(
+        self,
+        root_state: ca.MX,
+        arm_state: ca.MX,
+        control: ca.MX,
+        interval_start: float,
+        t1: ca.MX,
+    ) -> ca.MX:
+        """Integrate one root shooting interval with RK4 using deterministic arm states."""
 
         dt = self.shooting_step
-        k1 = self._symbolic_dynamics(interval_start, state, control, t1)
-        k2 = self._symbolic_dynamics(interval_start + 0.5 * dt, state + 0.5 * dt * k1, control, t1)
-        k3 = self._symbolic_dynamics(interval_start + 0.5 * dt, state + 0.5 * dt * k2, control, t1)
-        k4 = self._symbolic_dynamics(interval_start + dt, state + dt * k3, control, t1)
-        return state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+        arm_mid = self._symbolic_arm_state_at(
+            arm_state,
+            control,
+            interval_start=interval_start,
+            evaluation_end=interval_start + 0.5 * dt,
+            t1=t1,
+        )
+        arm_end = self._symbolic_arm_state_at(
+            arm_state,
+            control,
+            interval_start=interval_start,
+            evaluation_end=interval_start + dt,
+            t1=t1,
+        )
+        k1 = self._symbolic_root_dynamics(interval_start, root_state, arm_state, t1)
+        k2 = self._symbolic_root_dynamics(interval_start + 0.5 * dt, root_state + 0.5 * dt * k1, arm_mid, t1)
+        k3 = self._symbolic_root_dynamics(interval_start + 0.5 * dt, root_state + 0.5 * dt * k2, arm_mid, t1)
+        k4 = self._symbolic_root_dynamics(interval_start + dt, root_state + dt * k3, arm_end, t1)
+        return root_state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
     def _initial_guess_motion(self, variables: TwistOptimizationVariables) -> PiecewiseConstantJerkArmMotion:
         """Return a piecewise-constant-jerk motion used as a warm start for the DMS problem."""
@@ -265,12 +427,12 @@ class DirectMultipleShootingOptimizer:
             right_arm_start=variables.right_arm_start,
         )
 
-    def _initial_guess_state_history(
+    def _initial_guess_root_state_history(
         self,
         variables: TwistOptimizationVariables,
         motion: PiecewiseConstantJerkArmMotion,
     ) -> np.ndarray:
-        """Return a warm-start state history sampled on the shooting grid."""
+        """Return a warm-start root-state history sampled on the shooting grid."""
 
         simulation = PredictiveAerialTwistSimulator(
             self.model_path,
@@ -284,23 +446,16 @@ class DirectMultipleShootingOptimizer:
             ),
             model=self.model,
         ).simulate()
-        states = np.zeros((FULL_STATE_SIZE, self.interval_count + 1), dtype=float)
+        states = np.zeros((ROOT_STATE_SIZE, self.interval_count + 1), dtype=float)
         states[:6, :] = simulation.q[:, :6].T
         states[6:12, :] = simulation.qdot[:, :6].T
-        for index, time in enumerate(self.node_times):
-            left = motion.left(float(time))
-            right = motion.right(float(time))
-            states[12:15, index] = (
-                left.elevation_plane.position,
-                left.elevation_plane.velocity,
-                left.elevation_plane.acceleration,
-            )
-            states[15:18, index] = (
-                right.elevation_plane.position,
-                right.elevation_plane.velocity,
-                right.elevation_plane.acceleration,
-            )
         return states
+
+    @staticmethod
+    def _plane_state_nodes(trajectory: PiecewiseConstantJerkTrajectory) -> np.ndarray:
+        """Return `(q, qdot, qddot)` at all nodes for one plane trajectory."""
+
+        return np.vstack(trajectory.node_states())
 
     def solve(
         self,
@@ -313,27 +468,33 @@ class DirectMultipleShootingOptimizer:
         """Solve the direct multiple-shooting problem."""
 
         t1_symbol = ca.MX.sym("t1")
-        state_symbols = [
-            ca.MX.sym(f"X_{index}", FULL_STATE_SIZE, 1) for index in range(self.interval_count + 1)
+        root_state_symbols = [
+            ca.MX.sym(f"X_{index}", ROOT_STATE_SIZE, 1) for index in range(self.interval_count + 1)
         ]
         control_symbols = [
             ca.MX.sym(f"U_{index}", 2, 1) for index in range(self.interval_count)
         ]
+        arm_state_symbols = self._build_symbolic_arm_state_history(
+            control_symbols,
+            t1_symbol,
+            initial_guess,
+        )
 
-        constraints = [state_symbols[0] - self._symbolic_initial_state(initial_guess)]
-        objective = state_symbols[-1][5] / (2.0 * np.pi)
+        constraints = [root_state_symbols[0] - self._symbolic_initial_root_state(initial_guess)]
+        objective = root_state_symbols[-1][5] / (2.0 * np.pi)
         for index, control in enumerate(control_symbols):
             objective += self.jerk_regularization * self.shooting_step * ca.sumsqr(control)
-            next_state = self._integrate_interval(
-                state_symbols[index],
+            next_state = self._integrate_root_interval(
+                root_state_symbols[index],
+                arm_state_symbols[index],
                 control,
                 float(self.node_times[index]),
                 t1_symbol,
             )
-            constraints.append(state_symbols[index + 1] - next_state)
+            constraints.append(root_state_symbols[index + 1] - next_state)
 
         constraints.append(
-            state_symbols[-1][12:18]
+            arm_state_symbols[-1]
             - ca.vertcat(
                 initial_guess.left_plane_final,
                 0.0,
@@ -346,7 +507,7 @@ class DirectMultipleShootingOptimizer:
 
         decision_vector = ca.vertcat(
             t1_symbol,
-            *state_symbols,
+            *root_state_symbols,
             *control_symbols,
         )
         solver = ca.nlpsol(
@@ -361,14 +522,14 @@ class DirectMultipleShootingOptimizer:
         )
 
         initial_motion = self._initial_guess_motion(initial_guess)
-        initial_states = self._initial_guess_state_history(initial_guess, initial_motion)
+        initial_states = self._initial_guess_root_state_history(initial_guess, initial_motion)
         x0 = [float(initial_guess.right_arm_start)]
         lbx = [RIGHT_ARM_START_BOUNDS[0]]
         ubx = [RIGHT_ARM_START_BOUNDS[1]]
         for state_index in range(self.interval_count + 1):
             x0.extend(initial_states[:, state_index].tolist())
-            lbx.extend([-float("inf")] * FULL_STATE_SIZE)
-            ubx.extend([float("inf")] * FULL_STATE_SIZE)
+            lbx.extend([-float("inf")] * ROOT_STATE_SIZE)
+            ubx.extend([float("inf")] * ROOT_STATE_SIZE)
         for jerk_index in range(self.interval_count):
             x0.extend(
                 [
@@ -391,8 +552,8 @@ class DirectMultipleShootingOptimizer:
         offset = 0
         right_arm_start = float(raw_solution[offset])
         offset += 1
-        state_values = raw_solution[offset : offset + FULL_STATE_SIZE * (self.interval_count + 1)]
-        offset += FULL_STATE_SIZE * (self.interval_count + 1)
+        root_state_values = raw_solution[offset : offset + ROOT_STATE_SIZE * (self.interval_count + 1)]
+        offset += ROOT_STATE_SIZE * (self.interval_count + 1)
         control_values = raw_solution[offset:].reshape(self.interval_count, 2)
 
         left_plane = PiecewiseConstantJerkTrajectory(
@@ -418,6 +579,9 @@ class DirectMultipleShootingOptimizer:
             right_plane=right_plane,
             right_arm_start=right_arm_start,
         )
+        root_state_nodes = root_state_values.reshape(self.interval_count + 1, ROOT_STATE_SIZE).T
+        left_plane_state_nodes = self._plane_state_nodes(left_plane)
+        right_plane_state_nodes = self._plane_state_nodes(right_plane)
         simulation = PredictiveAerialTwistSimulator(
             self.model_path,
             motion,
@@ -437,6 +601,9 @@ class DirectMultipleShootingOptimizer:
             left_plane_jerk=control_values[:, 0].copy(),
             right_plane_jerk=control_values[:, 1].copy(),
             node_times=self.node_times.copy(),
+            root_state_nodes=root_state_nodes,
+            left_plane_state_nodes=left_plane_state_nodes,
+            right_plane_state_nodes=right_plane_state_nodes,
             prescribed_motion=motion,
             simulation=simulation,
             objective=float(solution["f"]),
