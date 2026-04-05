@@ -43,10 +43,12 @@ def test_direct_multiple_shooting_initial_guess_motion_respects_activation_windo
 
     assert motion.left_plane.active_start == 0.0
     assert motion.left_plane.active_end == dms_module.LEFT_ARM_ACTIVE_DURATION
-    assert motion.right_plane.active_start == 0.16
-    assert motion.right_plane.active_end == 0.16 + dms_module.RIGHT_ARM_ACTIVE_DURATION
-    assert motion.left_plane.jerks.shape == (optimizer.interval_count,)
-    assert motion.right_plane.jerks.shape == (optimizer.interval_count,)
+    assert motion.right_plane.active_start == 0.0
+    assert motion.right_plane.active_end == dms_module.RIGHT_ARM_ACTIVE_DURATION
+    assert motion.left_plane.jerks.shape == (optimizer.active_control_count,)
+    assert motion.right_plane.jerks.shape == (optimizer.active_control_count,)
+    assert motion.left_plane.duration == optimizer.configuration.final_time
+    assert motion.right_plane.duration == optimizer.configuration.final_time - 0.16
 
 
 def test_direct_multiple_shooting_jerk_bound_matches_left_elevation_fitting(
@@ -95,18 +97,20 @@ def test_direct_multiple_shooting_solve_builds_float_bounds_and_returns_motion(
             qdot0=0.0,
             qddot0=0.0,
             step=optimizer.shooting_step,
-            jerks=np.zeros(optimizer.interval_count, dtype=float),
+            jerks=np.zeros(optimizer.active_control_count, dtype=float),
             active_start=0.0,
             active_end=dms_module.LEFT_ARM_ACTIVE_DURATION,
+            total_duration=optimizer.configuration.final_time,
         ),
         right_plane=PiecewiseConstantJerkTrajectory(
             q0=0.0,
             qdot0=0.0,
             qddot0=0.0,
             step=optimizer.shooting_step,
-            jerks=np.zeros(optimizer.interval_count, dtype=float),
-            active_start=initial_guess.right_arm_start,
-            active_end=initial_guess.right_arm_start + dms_module.RIGHT_ARM_ACTIVE_DURATION,
+            jerks=np.zeros(optimizer.active_control_count, dtype=float),
+            active_start=0.0,
+            active_end=dms_module.RIGHT_ARM_ACTIVE_DURATION,
+            total_duration=optimizer.configuration.final_time - initial_guess.right_arm_start,
         ),
         right_arm_start=initial_guess.right_arm_start,
     )
@@ -158,8 +162,8 @@ def test_direct_multiple_shooting_solve_builds_float_bounds_and_returns_motion(
     assert result.solver_status == "Solve_Succeeded"
     assert result.variables == initial_guess
     assert result.root_state_nodes.shape == (dms_module.ROOT_STATE_SIZE, optimizer.interval_count + 1)
-    assert result.left_plane_jerk.shape == (optimizer.interval_count,)
-    assert result.right_plane_jerk.shape == (optimizer.interval_count,)
+    assert result.left_plane_jerk.shape == (optimizer.active_control_count,)
+    assert result.right_plane_jerk.shape == (optimizer.active_control_count,)
     assert result.left_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.interval_count + 1)
     assert result.right_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.interval_count + 1)
     assert result.prescribed_motion.right_arm_start == initial_guess.right_arm_start
@@ -168,11 +172,11 @@ def test_direct_multiple_shooting_solve_builds_float_bounds_and_returns_motion(
     assert captured["options"]["ipopt.print_level"] == 5
     assert captured["options"]["print_time"] == 1
     assert np.asarray(captured["x0"], dtype=float).shape == (
-        1 + (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE + optimizer.interval_count * 2,
+        1 + (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE + optimizer.active_control_count * 2,
     )
     assert np.asarray(captured["lbx"], dtype=float).dtype == float
     assert np.asarray(captured["ubx"], dtype=float).dtype == float
-    control_lower_bounds = np.asarray(captured["lbx"], dtype=float)[-2 * optimizer.interval_count :]
-    control_upper_bounds = np.asarray(captured["ubx"], dtype=float)[-2 * optimizer.interval_count :]
+    control_lower_bounds = np.asarray(captured["lbx"], dtype=float)[-2 * optimizer.active_control_count :]
+    control_upper_bounds = np.asarray(captured["ubx"], dtype=float)[-2 * optimizer.active_control_count :]
     np.testing.assert_allclose(control_lower_bounds, -optimizer.jerk_bound)
     np.testing.assert_allclose(control_upper_bounds, optimizer.jerk_bound)

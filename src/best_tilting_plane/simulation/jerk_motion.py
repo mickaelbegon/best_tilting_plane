@@ -58,6 +58,7 @@ class PiecewiseConstantJerkTrajectory:
     jerks: np.ndarray
     active_start: float
     active_end: float
+    total_duration: float | None = None
 
     def __post_init__(self) -> None:
         """Validate the discretization inputs."""
@@ -66,12 +67,24 @@ class PiecewiseConstantJerkTrajectory:
             raise ValueError("The jerk discretization step must be strictly positive.")
         if self.active_end < self.active_start:
             raise ValueError("The active jerk window must satisfy `active_end >= active_start`.")
+        if self.total_duration is not None and self.total_duration <= 0.0:
+            raise ValueError("The total duration must be strictly positive.")
+        if self.total_duration is not None and self.total_duration + 1e-12 < self.control_duration:
+            raise ValueError("The total duration cannot be smaller than the jerk-control horizon.")
+
+    @property
+    def control_duration(self) -> float:
+        """Return the duration covered by the jerk-control grid."""
+
+        return float(len(self.jerks) * self.step)
 
     @property
     def duration(self) -> float:
         """Return the total duration covered by the discrete control grid."""
 
-        return float(len(self.jerks) * self.step)
+        if self.total_duration is not None:
+            return float(self.total_duration)
+        return self.control_duration
 
     def state(self, time: float) -> tuple[float, float, float]:
         """Return position, velocity, and acceleration at the requested time."""
@@ -98,6 +111,13 @@ class PiecewiseConstantJerkTrajectory:
             current_time = interval_end
             if clipped_time <= interval_end:
                 break
+        if clipped_time > current_time:
+            q, qdot, qddot = _advance_constant_acceleration(
+                q,
+                qdot,
+                qddot,
+                clipped_time - current_time,
+            )
         return q, qdot, qddot
 
     def position(self, time: float | np.ndarray) -> np.ndarray | float:
@@ -118,7 +138,15 @@ class PiecewiseConstantJerkTrajectory:
     def node_states(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return position, velocity, and acceleration at all grid nodes."""
 
-        node_times = np.linspace(0.0, self.duration, len(self.jerks) + 1)
+        node_times = np.asarray(
+            sorted(
+                {
+                    *np.arange(0.0, self.duration + 0.5 * self.step, self.step, dtype=float).tolist(),
+                    float(self.duration),
+                }
+            ),
+            dtype=float,
+        )
         positions = np.zeros(node_times.shape[0], dtype=float)
         velocities = np.zeros_like(positions)
         accelerations = np.zeros_like(positions)
@@ -228,11 +256,12 @@ class PiecewiseConstantJerkArmMotion:
     def right(self, time: float) -> ArmKinematics:
         """Return the right-arm kinematics at a given time."""
 
+        local_time = float(time) - self.right_arm_start
         return ArmKinematics(
             elevation_plane=ArmJointKinematics(
-                position=float(self.right_plane.position(time)),
-                velocity=float(self.right_plane.velocity(time)),
-                acceleration=float(self.right_plane.acceleration(time)),
+                position=float(self.right_plane.position(local_time)),
+                velocity=float(self.right_plane.velocity(local_time)),
+                acceleration=float(self.right_plane.acceleration(local_time)),
             ),
             elevation=ArmJointKinematics(
                 position=float(self._right_elevation.position(time)),
