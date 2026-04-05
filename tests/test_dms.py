@@ -182,19 +182,35 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     assert captured["options"]["ipopt.max_iter"] == 3
     assert captured["options"]["ipopt.print_level"] == 5
     assert captured["options"]["print_time"] == 1
-    assert np.asarray(captured["p"], dtype=float).shape == (25,)
-    assert np.asarray(captured["p"], dtype=float)[0] == initial_guess.right_arm_start
+    assert np.asarray(captured["p"], dtype=float).shape == (
+        dms_module.ELEVATION_STAGE_BLOCK_SIZE * optimizer.interval_count,
+    )
     assert np.asarray(captured["x0"], dtype=float).shape == (
         (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE
-        + 2 * (optimizer.active_control_count + 1) * dms_module.PLANE_STATE_SIZE
-        + 2 * optimizer.active_control_count,
+        + 2 * (optimizer.interval_count + 1) * dms_module.PLANE_STATE_SIZE
+        + 2 * optimizer.interval_count,
     )
     assert np.asarray(captured["lbx"], dtype=float).dtype == float
     assert np.asarray(captured["ubx"], dtype=float).dtype == float
-    control_lower_bounds = np.asarray(captured["lbx"], dtype=float)[-2 * optimizer.active_control_count :]
-    control_upper_bounds = np.asarray(captured["ubx"], dtype=float)[-2 * optimizer.active_control_count :]
-    np.testing.assert_allclose(control_lower_bounds, -optimizer.jerk_bound)
-    np.testing.assert_allclose(control_upper_bounds, optimizer.jerk_bound)
+    all_lower_bounds = np.asarray(captured["lbx"], dtype=float)
+    all_upper_bounds = np.asarray(captured["ubx"], dtype=float)
+    control_block_size = optimizer.interval_count
+    left_control_lower_bounds = all_lower_bounds[-2 * control_block_size : -control_block_size]
+    left_control_upper_bounds = all_upper_bounds[-2 * control_block_size : -control_block_size]
+    right_control_lower_bounds = all_lower_bounds[-control_block_size:]
+    right_control_upper_bounds = all_upper_bounds[-control_block_size:]
+    np.testing.assert_allclose(left_control_lower_bounds[: optimizer.active_control_count], -optimizer.jerk_bound)
+    np.testing.assert_allclose(left_control_upper_bounds[: optimizer.active_control_count], optimizer.jerk_bound)
+    np.testing.assert_allclose(left_control_lower_bounds[optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(left_control_upper_bounds[optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(
+        right_control_lower_bounds[: int(round(initial_guess.right_arm_start / optimizer.shooting_step))],
+        0.0,
+    )
+    np.testing.assert_allclose(
+        right_control_upper_bounds[: int(round(initial_guess.right_arm_start / optimizer.shooting_step))],
+        0.0,
+    )
 
 
 def test_direct_multiple_shooting_sweep_keeps_the_best_successful_candidate(tmp_path: Path) -> None:

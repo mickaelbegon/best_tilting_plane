@@ -1,4 +1,4 @@
-"""Direct multiple-shooting optimization with a discrete sweep over the second-arm start node."""
+"""Classical jerk-driven direct multiple shooting for the reduced aerial model."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
 RIGHT_ARM_SWEEP_BOUNDS = (0.1, 0.7)
 PLANE_STATE_SIZE = 3
 ROOT_STATE_SIZE = 12
+ELEVATION_STAGE_BLOCK_SIZE = 18
 
 
 @dataclass(frozen=True)
@@ -101,7 +102,7 @@ class DirectMultipleShootingSweepResult:
 
 
 class DirectMultipleShootingOptimizer:
-    """Direct multiple-shooting twist optimizer with a discrete sweep over the second-arm start node."""
+    """Classical jerk-driven multiple shooting with one global graph and fixed known values."""
 
     def __init__(
         self,
@@ -166,7 +167,7 @@ class DirectMultipleShootingOptimizer:
         )
 
     @staticmethod
-    def _quintic_profile(phase: ca.MX) -> tuple[ca.MX, ca.MX, ca.MX]:
+    def _quintic_profile(phase: float) -> tuple[float, float, float]:
         """Return the quintic profile and its first two derivatives."""
 
         phase2 = phase * phase
@@ -178,37 +179,80 @@ class DirectMultipleShootingOptimizer:
         acceleration = 120.0 * phase3 - 180.0 * phase2 + 60.0 * phase
         return profile, velocity, acceleration
 
-    @staticmethod
-    def _clipped_phase(time: ca.MX, start: float | ca.MX, duration: float) -> ca.MX:
-        """Return the symbolic motion phase clipped to `[0, 1]`."""
+    @classmethod
+    def _numeric_quintic_segment(
+        cls,
+        *,
+        time: float,
+        start: float,
+        duration: float,
+        q0: float,
+        q1: float,
+    ) -> tuple[float, float, float]:
+        """Return one known quintic segment and its first two derivatives."""
 
-        return ca.fmin(1.0, ca.fmax(0.0, (time - start) / duration))
-
-    def _symbolic_elevation_kinematics(
-        self,
-        time: ca.MX,
-        right_arm_start: ca.MX,
-    ) -> tuple[ca.MX, ca.MX, ca.MX]:
-        """Return the fixed left/right elevation kinematics."""
-
-        left_phase = self._clipped_phase(time, 0.0, LEFT_ARM_ACTIVE_DURATION)
-        right_phase = self._clipped_phase(time, right_arm_start, RIGHT_ARM_ACTIVE_DURATION)
-        left_profile, left_profile_dot, left_profile_ddot = self._quintic_profile(left_phase)
-        right_profile, right_profile_dot, right_profile_ddot = self._quintic_profile(right_phase)
-
-        left_q = -np.pi + np.pi * left_profile
-        right_q = np.pi - np.pi * right_profile
-        left_qdot = np.pi * left_profile_dot / LEFT_ARM_ACTIVE_DURATION
-        right_qdot = -np.pi * right_profile_dot / RIGHT_ARM_ACTIVE_DURATION
-        left_qddot = np.pi * left_profile_ddot / (LEFT_ARM_ACTIVE_DURATION**2)
-        right_qddot = -np.pi * right_profile_ddot / (RIGHT_ARM_ACTIVE_DURATION**2)
+        if time <= start:
+            return q0, 0.0, 0.0
+        if time >= start + duration:
+            return q1, 0.0, 0.0
+        phase = (time - start) / duration
+        profile, velocity, acceleration = cls._quintic_profile(phase)
+        delta = q1 - q0
         return (
-            ca.vertcat(left_q, right_q),
-            ca.vertcat(left_qdot, right_qdot),
-            ca.vertcat(left_qddot, right_qddot),
+            q0 + delta * profile,
+            delta * velocity / duration,
+            delta * acceleration / (duration**2),
         )
 
-    def _symbolic_initial_root_state(self, variables: TwistOptimizationVariables) -> ca.DM:
+    def _fixed_elevation_kinematics(
+        self,
+        *,
+        time: float,
+        right_arm_start: float,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return the known elevation kinematics at one fixed time for one fixed second-arm start."""
+
+        left_q, left_qdot, left_qddot = self._numeric_quintic_segment(
+            time=time,
+            start=0.0,
+            duration=LEFT_ARM_ACTIVE_DURATION,
+            q0=-np.pi,
+            q1=0.0,
+        )
+        right_q, right_qdot, right_qddot = self._numeric_quintic_segment(
+            time=time,
+            start=right_arm_start,
+            duration=RIGHT_ARM_ACTIVE_DURATION,
+            q0=np.pi,
+            q1=0.0,
+        )
+        return (
+            np.array([left_q, right_q], dtype=float),
+            np.array([left_qdot, right_qdot], dtype=float),
+            np.array([left_qddot, right_qddot], dtype=float),
+        )
+
+    def _elevation_parameter_values(self, *, right_arm_start: float) -> np.ndarray:
+        """Return the known elevation values injected into the root dynamics over the whole horizon."""
+
+        values: list[float] = []
+        for interval_index in range(self.interval_count):
+            interval_start = float(self.node_times[interval_index])
+            for stage_time in (
+                interval_start,
+                interval_start + 0.5 * self.shooting_step,
+                interval_start + self.shooting_step,
+            ):
+                q, qdot, qddot = self._fixed_elevation_kinematics(
+                    time=stage_time,
+                    right_arm_start=right_arm_start,
+                )
+                values.extend(q.tolist())
+                values.extend(qdot.tolist())
+                values.extend(qddot.tolist())
+        return np.asarray(values, dtype=float)
+
+    def _symbolic_initial_root_state(self, variables: TwistOptimizationVariables) -> np.ndarray:
         """Return the initial root state."""
 
         q = np.zeros(self.model.nbQ(), dtype=float)
@@ -221,38 +265,29 @@ class DirectMultipleShootingOptimizer:
         )
         qdot[3] = self.configuration.somersault_rate
         qdot[:3] = -np.asarray(self.model.CoMdot(q, qdot, True).to_array(), dtype=float).reshape(3)
-
-        return ca.DM(
-            np.array(
-                [
-                    q[0],
-                    q[1],
-                    q[2],
-                    q[3],
-                    q[4],
-                    q[5],
-                    qdot[0],
-                    qdot[1],
-                    qdot[2],
-                    qdot[3],
-                    qdot[4],
-                    qdot[5],
-                ],
-                dtype=float,
-            )
+        return np.array(
+            [
+                q[0],
+                q[1],
+                q[2],
+                q[3],
+                q[4],
+                q[5],
+                qdot[0],
+                qdot[1],
+                qdot[2],
+                qdot[3],
+                qdot[4],
+                qdot[5],
+            ],
+            dtype=float,
         )
 
     @staticmethod
-    def _symbolic_initial_plane_state(q0: float) -> ca.DM:
-        """Return the initial plane state `(q, qdot, qddot)`."""
+    def _plane_state_vector(q_value: float) -> np.ndarray:
+        """Return one `(q, qdot, qddot)` vector."""
 
-        return ca.DM(np.array([q0, 0.0, 0.0], dtype=float))
-
-    @staticmethod
-    def _symbolic_terminal_plane_state(qf: float) -> ca.DM:
-        """Return the desired terminal plane state `(q, qdot, qddot)`."""
-
-        return ca.DM(np.array([qf, 0.0, 0.0], dtype=float))
+        return np.array([q_value, 0.0, 0.0], dtype=float)
 
     @staticmethod
     def _advance_symbolic_constant_jerk(
@@ -269,27 +304,14 @@ class DirectMultipleShootingOptimizer:
             qddot + duration * jerk,
         )
 
-    def _symbolic_interpolated_plane_state(
-        self,
-        plane_state_symbols: list[ca.MX],
-        local_time: ca.MX,
-    ) -> ca.MX:
-        """Return a continuous piecewise-linear interpolation of one local arm-plane trajectory."""
-
-        clipped_time = ca.fmin(LEFT_ARM_ACTIVE_DURATION, ca.fmax(0.0, local_time))
-        interpolated_state = ca.MX.zeros(PLANE_STATE_SIZE, 1)
-        for node_index, node_time in enumerate(self.arm_node_times):
-            weight = ca.fmax(0.0, 1.0 - ca.fabs(clipped_time - float(node_time)) / self.shooting_step)
-            interpolated_state += weight * plane_state_symbols[node_index]
-        return interpolated_state
-
     def _symbolic_root_dynamics(
         self,
-        time: ca.MX,
         root_state: ca.MX,
         left_plane_state: ca.MX,
         right_plane_state: ca.MX,
-        right_arm_start: ca.MX,
+        elevation_q: ca.MX,
+        elevation_qdot: ca.MX,
+        elevation_qddot: ca.MX,
     ) -> ca.MX:
         """Return the time derivative of the root state."""
 
@@ -298,7 +320,6 @@ class DirectMultipleShootingOptimizer:
         left_q, left_qdot, left_qddot = left_plane_state[0], left_plane_state[1], left_plane_state[2]
         right_q, right_qdot, right_qddot = right_plane_state[0], right_plane_state[1], right_plane_state[2]
 
-        elevation_q, elevation_qdot, elevation_qddot = self._symbolic_elevation_kinematics(time, right_arm_start)
         q_joint = ca.vertcat(left_q, elevation_q[0], right_q, elevation_q[1])
         qdot_joint = ca.vertcat(left_qdot, elevation_qdot[0], right_qdot, elevation_qdot[1])
         qddot_joint = ca.vertcat(left_qddot, elevation_qddot[0], right_qddot, elevation_qddot[1])
@@ -315,51 +336,59 @@ class DirectMultipleShootingOptimizer:
     def _integrate_root_interval(
         self,
         root_state: ca.MX,
-        left_plane_state_symbols: list[ca.MX],
-        right_plane_state_symbols: list[ca.MX],
-        interval_start: float,
-        right_arm_start: ca.MX,
+        left_plane_state: ca.MX,
+        left_jerk: ca.MX,
+        right_plane_state: ca.MX,
+        right_jerk: ca.MX,
+        elevation_start_q: ca.MX,
+        elevation_start_qdot: ca.MX,
+        elevation_start_qddot: ca.MX,
+        elevation_mid_q: ca.MX,
+        elevation_mid_qdot: ca.MX,
+        elevation_mid_qddot: ca.MX,
+        elevation_end_q: ca.MX,
+        elevation_end_qdot: ca.MX,
+        elevation_end_qddot: ca.MX,
     ) -> ca.MX:
         """Integrate one root shooting interval with RK4."""
 
         dt = self.shooting_step
-        left_start = self._symbolic_interpolated_plane_state(left_plane_state_symbols, ca.MX(interval_start))
-        left_mid = self._symbolic_interpolated_plane_state(left_plane_state_symbols, ca.MX(interval_start + 0.5 * dt))
-        left_end = self._symbolic_interpolated_plane_state(left_plane_state_symbols, ca.MX(interval_start + dt))
-        right_start = self._symbolic_interpolated_plane_state(
-            right_plane_state_symbols,
-            ca.MX(interval_start) - right_arm_start,
-        )
-        right_mid = self._symbolic_interpolated_plane_state(
-            right_plane_state_symbols,
-            ca.MX(interval_start + 0.5 * dt) - right_arm_start,
-        )
-        right_end = self._symbolic_interpolated_plane_state(
-            right_plane_state_symbols,
-            ca.MX(interval_start + dt) - right_arm_start,
-        )
+        left_mid = self._advance_symbolic_constant_jerk(left_plane_state, left_jerk, 0.5 * dt)
+        left_end = self._advance_symbolic_constant_jerk(left_plane_state, left_jerk, dt)
+        right_mid = self._advance_symbolic_constant_jerk(right_plane_state, right_jerk, 0.5 * dt)
+        right_end = self._advance_symbolic_constant_jerk(right_plane_state, right_jerk, dt)
 
-        k1 = self._symbolic_root_dynamics(interval_start, root_state, left_start, right_start, right_arm_start)
+        k1 = self._symbolic_root_dynamics(
+            root_state,
+            left_plane_state,
+            right_plane_state,
+            elevation_start_q,
+            elevation_start_qdot,
+            elevation_start_qddot,
+        )
         k2 = self._symbolic_root_dynamics(
-            interval_start + 0.5 * dt,
             root_state + 0.5 * dt * k1,
             left_mid,
             right_mid,
-            right_arm_start,
+            elevation_mid_q,
+            elevation_mid_qdot,
+            elevation_mid_qddot,
         )
         k3 = self._symbolic_root_dynamics(
-            interval_start + 0.5 * dt,
             root_state + 0.5 * dt * k2,
             left_mid,
             right_mid,
-            right_arm_start,
+            elevation_mid_q,
+            elevation_mid_qdot,
+            elevation_mid_qddot,
         )
         k4 = self._symbolic_root_dynamics(
-            interval_start + dt,
             root_state + dt * k3,
             left_end,
             right_end,
-            right_arm_start,
+            elevation_end_q,
+            elevation_end_qdot,
+            elevation_end_qddot,
         )
         return root_state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
@@ -464,37 +493,27 @@ class DirectMultipleShootingOptimizer:
         print_level: int,
         print_time: bool,
     ):
-        """Build one fixed-start NLP solver and cache it for repeated start-time sweeps."""
+        """Build one global DMS solver and cache it."""
 
         options_key = (int(max_iter), int(print_level), bool(print_time))
         if self._solver is not None and self._solver_options_key == options_key:
             return self._solver
 
-        parameters = ca.MX.sym("parameters", 25, 1)
-        right_arm_start_symbol = parameters[0]
-        initial_root_state_symbol = parameters[1:13]
-        initial_left_plane_state_symbol = parameters[13:16]
-        initial_right_plane_state_symbol = parameters[16:19]
-        terminal_left_plane_state_symbol = parameters[19:22]
-        terminal_right_plane_state_symbol = parameters[22:25]
+        parameters = ca.MX.sym("p", ELEVATION_STAGE_BLOCK_SIZE * self.interval_count, 1)
         root_state_symbols = [
             ca.MX.sym(f"X_root_{index}", ROOT_STATE_SIZE, 1) for index in range(self.interval_count + 1)
         ]
         left_plane_state_symbols = [
-            ca.MX.sym(f"X_left_{index}", PLANE_STATE_SIZE, 1)
-            for index in range(self.active_control_count + 1)
+            ca.MX.sym(f"X_left_{index}", PLANE_STATE_SIZE, 1) for index in range(self.interval_count + 1)
         ]
         right_plane_state_symbols = [
-            ca.MX.sym(f"X_right_{index}", PLANE_STATE_SIZE, 1)
-            for index in range(self.active_control_count + 1)
+            ca.MX.sym(f"X_right_{index}", PLANE_STATE_SIZE, 1) for index in range(self.interval_count + 1)
         ]
-        left_control_symbols = ca.MX.sym("U_left", self.active_control_count, 1)
-        right_control_symbols = ca.MX.sym("U_right", self.active_control_count, 1)
+        left_control_symbols = ca.MX.sym("U_left", self.interval_count, 1)
+        right_control_symbols = ca.MX.sym("U_right", self.interval_count, 1)
 
-        constraints = [root_state_symbols[0] - initial_root_state_symbol]
-        constraints.append(left_plane_state_symbols[0] - initial_left_plane_state_symbol)
-        constraints.append(right_plane_state_symbols[0] - initial_right_plane_state_symbol)
-        for index in range(self.active_control_count):
+        constraints: list[ca.MX] = []
+        for index in range(self.interval_count):
             constraints.append(
                 left_plane_state_symbols[index + 1]
                 - self._advance_symbolic_constant_jerk(
@@ -517,19 +536,26 @@ class DirectMultipleShootingOptimizer:
             ca.sumsqr(left_control_symbols) + ca.sumsqr(right_control_symbols)
         )
         for index in range(self.interval_count):
+            offset = ELEVATION_STAGE_BLOCK_SIZE * index
             constraints.append(
                 root_state_symbols[index + 1]
                 - self._integrate_root_interval(
                     root_state_symbols[index],
-                    left_plane_state_symbols,
-                    right_plane_state_symbols,
-                    float(self.node_times[index]),
-                    right_arm_start_symbol,
+                    left_plane_state_symbols[index],
+                    left_control_symbols[index],
+                    right_plane_state_symbols[index],
+                    right_control_symbols[index],
+                    parameters[offset : offset + 2],
+                    parameters[offset + 2 : offset + 4],
+                    parameters[offset + 4 : offset + 6],
+                    parameters[offset + 6 : offset + 8],
+                    parameters[offset + 8 : offset + 10],
+                    parameters[offset + 10 : offset + 12],
+                    parameters[offset + 12 : offset + 14],
+                    parameters[offset + 14 : offset + 16],
+                    parameters[offset + 16 : offset + 18],
                 )
             )
-
-        constraints.append(left_plane_state_symbols[-1] - terminal_left_plane_state_symbol)
-        constraints.append(right_plane_state_symbols[-1] - terminal_right_plane_state_symbol)
 
         decision_vector = ca.vertcat(
             *root_state_symbols,
@@ -572,7 +598,6 @@ class DirectMultipleShootingOptimizer:
             raise ValueError("The fixed second-arm start time is outside the admissible bounds.")
 
         solver = self._build_solver(max_iter=max_iter, print_level=print_level, print_time=print_time)
-
         fixed_variables = TwistOptimizationVariables(
             right_arm_start=float(right_arm_start),
             left_plane_initial=initial_guess.left_plane_initial,
@@ -580,42 +605,117 @@ class DirectMultipleShootingOptimizer:
             right_plane_initial=initial_guess.right_plane_initial,
             right_plane_final=initial_guess.right_plane_final,
         )
+        right_start_node_index = int(round(right_arm_start / self.shooting_step))
+        right_terminal_node_index = right_start_node_index + self.active_control_count
+
         initial_motion = self._initial_guess_motion(fixed_variables, right_arm_start=right_arm_start)
         initial_root_states = self._initial_guess_root_state_history(fixed_variables, initial_motion)
-        initial_left_states = self._plane_state_history(initial_motion.left_plane, self.arm_node_times)
-        initial_right_states = self._plane_state_history(initial_motion.right_plane, self.arm_node_times)
-        parameter_values = np.concatenate(
-            (
-                np.asarray([right_arm_start], dtype=float),
-                np.asarray(self._symbolic_initial_root_state(fixed_variables), dtype=float).reshape(-1),
-                np.asarray(self._symbolic_initial_plane_state(fixed_variables.left_plane_initial), dtype=float).reshape(-1),
-                np.asarray(self._symbolic_initial_plane_state(fixed_variables.right_plane_initial), dtype=float).reshape(-1),
-                np.asarray(self._symbolic_terminal_plane_state(fixed_variables.left_plane_final), dtype=float).reshape(-1),
-                np.asarray(self._symbolic_terminal_plane_state(fixed_variables.right_plane_final), dtype=float).reshape(-1),
-            )
+
+        left_global_motion = PiecewiseConstantJerkTrajectory(
+            q0=fixed_variables.left_plane_initial,
+            qdot0=0.0,
+            qddot0=0.0,
+            step=self.shooting_step,
+            jerks=np.concatenate(
+                (
+                    np.asarray(initial_motion.left_plane.jerks, dtype=float),
+                    np.zeros(self.interval_count - self.active_control_count, dtype=float),
+                )
+            ),
+            active_start=0.0,
+            active_end=self.configuration.final_time,
+            total_duration=self.configuration.final_time,
         )
+        right_global_jerks = np.zeros(self.interval_count, dtype=float)
+        right_global_jerks[
+            right_start_node_index : right_start_node_index + self.active_control_count
+        ] = np.asarray(initial_motion.right_plane.jerks, dtype=float)
+        right_global_motion = PiecewiseConstantJerkTrajectory(
+            q0=fixed_variables.right_plane_initial,
+            qdot0=0.0,
+            qddot0=0.0,
+            step=self.shooting_step,
+            jerks=right_global_jerks,
+            active_start=0.0,
+            active_end=self.configuration.final_time,
+            total_duration=self.configuration.final_time,
+        )
+        initial_left_states = self._plane_state_history(left_global_motion, self.node_times)
+        initial_right_states = self._plane_state_history(right_global_motion, self.node_times)
+
+        initial_root_state = self._symbolic_initial_root_state(fixed_variables)
+        initial_left_plane_state = self._plane_state_vector(fixed_variables.left_plane_initial)
+        initial_right_plane_state = self._plane_state_vector(fixed_variables.right_plane_initial)
+        terminal_left_plane_state = self._plane_state_vector(fixed_variables.left_plane_final)
+        terminal_right_plane_state = self._plane_state_vector(fixed_variables.right_plane_final)
 
         x0: list[float] = []
         lbx: list[float] = []
         ubx: list[float] = []
         for state_index in range(self.interval_count + 1):
-            x0.extend(initial_root_states[:, state_index].tolist())
-            lbx.extend([-float("inf")] * ROOT_STATE_SIZE)
-            ubx.extend([float("inf")] * ROOT_STATE_SIZE)
-        for state_index in range(self.active_control_count + 1):
-            x0.extend(initial_left_states[:, state_index].tolist())
-            lbx.extend([-float("inf")] * PLANE_STATE_SIZE)
-            ubx.extend([float("inf")] * PLANE_STATE_SIZE)
-        for state_index in range(self.active_control_count + 1):
-            x0.extend(initial_right_states[:, state_index].tolist())
-            lbx.extend([-float("inf")] * PLANE_STATE_SIZE)
-            ubx.extend([float("inf")] * PLANE_STATE_SIZE)
-        x0.extend(initial_motion.left_plane.jerks.tolist())
-        lbx.extend([-self.jerk_bound] * self.active_control_count)
-        ubx.extend([self.jerk_bound] * self.active_control_count)
-        x0.extend(initial_motion.right_plane.jerks.tolist())
-        lbx.extend([-self.jerk_bound] * self.active_control_count)
-        ubx.extend([self.jerk_bound] * self.active_control_count)
+            root_guess = initial_root_states[:, state_index]
+            x0.extend(root_guess.tolist())
+            if state_index == 0:
+                lbx.extend(initial_root_state.tolist())
+                ubx.extend(initial_root_state.tolist())
+            else:
+                lbx.extend([-float("inf")] * ROOT_STATE_SIZE)
+                ubx.extend([float("inf")] * ROOT_STATE_SIZE)
+
+        for state_index in range(self.interval_count + 1):
+            left_guess = initial_left_states[:, state_index]
+            x0.extend(left_guess.tolist())
+            if state_index == 0:
+                lbx.extend(initial_left_plane_state.tolist())
+                ubx.extend(initial_left_plane_state.tolist())
+            elif state_index == self.active_control_count:
+                lbx.extend(terminal_left_plane_state.tolist())
+                ubx.extend(terminal_left_plane_state.tolist())
+            else:
+                lbx.extend([-float("inf")] * PLANE_STATE_SIZE)
+                ubx.extend([float("inf")] * PLANE_STATE_SIZE)
+
+        for state_index in range(self.interval_count + 1):
+            right_guess = initial_right_states[:, state_index]
+            x0.extend(right_guess.tolist())
+            if state_index == 0:
+                lbx.extend(initial_right_plane_state.tolist())
+                ubx.extend(initial_right_plane_state.tolist())
+            elif state_index == right_terminal_node_index:
+                lbx.extend(terminal_right_plane_state.tolist())
+                ubx.extend(terminal_right_plane_state.tolist())
+            else:
+                lbx.extend([-float("inf")] * PLANE_STATE_SIZE)
+                ubx.extend([float("inf")] * PLANE_STATE_SIZE)
+
+        for control_index in range(self.interval_count):
+            jerk_guess = (
+                initial_motion.left_plane.jerks[control_index]
+                if control_index < self.active_control_count
+                else 0.0
+            )
+            x0.append(float(jerk_guess))
+            if control_index < self.active_control_count:
+                lbx.append(-self.jerk_bound)
+                ubx.append(self.jerk_bound)
+            else:
+                lbx.append(0.0)
+                ubx.append(0.0)
+
+        for control_index in range(self.interval_count):
+            active = right_start_node_index <= control_index < right_terminal_node_index
+            jerk_guess = (
+                initial_motion.right_plane.jerks[control_index - right_start_node_index]
+                if active
+                else 0.0
+            )
+            x0.append(float(jerk_guess))
+            if active:
+                lbx.append(-self.jerk_bound)
+                ubx.append(self.jerk_bound)
+            else:
+                lbx.append(0.0)
+                ubx.append(0.0)
 
         solution = solver(
             x0=np.asarray(x0, dtype=float),
@@ -623,23 +723,25 @@ class DirectMultipleShootingOptimizer:
             ubx=np.asarray(ubx, dtype=float),
             lbg=np.zeros(self._constraint_count, dtype=float),
             ubg=np.zeros(self._constraint_count, dtype=float),
-            p=parameter_values,
+            p=self._elevation_parameter_values(right_arm_start=right_arm_start),
         )
         status = solver.stats()["return_status"]
         raw_solution = np.asarray(solution["x"].full(), dtype=float).reshape(-1)
         offset = 0
         root_state_values = raw_solution[offset : offset + ROOT_STATE_SIZE * (self.interval_count + 1)]
         offset += ROOT_STATE_SIZE * (self.interval_count + 1)
-        left_plane_state_values = raw_solution[offset : offset + PLANE_STATE_SIZE * (self.active_control_count + 1)]
-        offset += PLANE_STATE_SIZE * (self.active_control_count + 1)
-        right_plane_state_values = raw_solution[
-            offset : offset + PLANE_STATE_SIZE * (self.active_control_count + 1)
-        ]
-        offset += PLANE_STATE_SIZE * (self.active_control_count + 1)
-        left_control_values = raw_solution[offset : offset + self.active_control_count]
-        offset += self.active_control_count
-        right_control_values = raw_solution[offset : offset + self.active_control_count]
+        left_plane_global_values = raw_solution[offset : offset + PLANE_STATE_SIZE * (self.interval_count + 1)]
+        offset += PLANE_STATE_SIZE * (self.interval_count + 1)
+        right_plane_global_values = raw_solution[offset : offset + PLANE_STATE_SIZE * (self.interval_count + 1)]
+        offset += PLANE_STATE_SIZE * (self.interval_count + 1)
+        left_control_global_values = raw_solution[offset : offset + self.interval_count]
+        offset += self.interval_count
+        right_control_global_values = raw_solution[offset : offset + self.interval_count]
 
+        left_control_values = left_control_global_values[: self.active_control_count]
+        right_control_values = right_control_global_values[
+            right_start_node_index : right_start_node_index + self.active_control_count
+        ]
         left_plane = PiecewiseConstantJerkTrajectory(
             q0=fixed_variables.left_plane_initial,
             qdot0=0.0,
@@ -673,22 +775,21 @@ class DirectMultipleShootingOptimizer:
         ).simulate()
 
         normalized_status = status.lower().replace("_", " ")
+        left_plane_global_states = left_plane_global_values.reshape(self.interval_count + 1, PLANE_STATE_SIZE).T
+        right_plane_global_states = right_plane_global_values.reshape(self.interval_count + 1, PLANE_STATE_SIZE).T
         return DirectMultipleShootingResult(
             variables=fixed_variables,
-            right_arm_start_node_index=int(round(right_arm_start / self.shooting_step)),
+            right_arm_start_node_index=right_start_node_index,
             left_plane_jerk=left_control_values.copy(),
             right_plane_jerk=right_control_values.copy(),
             node_times=self.node_times.copy(),
             arm_node_times=self.arm_node_times.copy(),
             root_state_nodes=root_state_values.reshape(self.interval_count + 1, ROOT_STATE_SIZE).T,
-            left_plane_state_nodes=left_plane_state_values.reshape(
-                self.active_control_count + 1,
-                PLANE_STATE_SIZE,
-            ).T,
-            right_plane_state_nodes=right_plane_state_values.reshape(
-                self.active_control_count + 1,
-                PLANE_STATE_SIZE,
-            ).T,
+            left_plane_state_nodes=left_plane_global_states[:, : self.active_control_count + 1].copy(),
+            right_plane_state_nodes=right_plane_global_states[
+                :,
+                right_start_node_index : right_terminal_node_index + 1,
+            ].copy(),
             prescribed_motion=motion,
             simulation=simulation,
             objective=float(solution["f"]),
@@ -737,23 +838,21 @@ def create_dms_start_time_sweep_figure(
     success_mask: np.ndarray,
     best_start_time: float,
 ):
-    """Create a figure summarizing the discrete sweep over the second-arm start time."""
+    """Create one simple figure summarizing the discrete sweep over the second-arm start time."""
 
     import matplotlib.pyplot as plt
 
+    del objective_values
     times = np.asarray(start_times, dtype=float)
     twists = np.asarray(final_twist_turns, dtype=float)
-    objectives = np.asarray(objective_values, dtype=float)
     successes = np.asarray(success_mask, dtype=bool)
     best_index = int(np.argmin(np.abs(times - float(best_start_time))))
 
-    figure, axes = plt.subplots(2, 1, sharex=True, figsize=(7.5, 6.5), tight_layout=True)
-    axes[0].plot(times, twists, color="tab:blue", linewidth=1.6, marker="o", markersize=4.0)
-    axes[1].plot(times, objectives, color="tab:green", linewidth=1.6, marker="o", markersize=4.0)
+    figure, axis = plt.subplots(1, 1, figsize=(7.5, 4.5), tight_layout=True)
+    axis.plot(times, twists, color="tab:blue", linewidth=1.6, marker="o", markersize=4.0)
     if np.any(~successes):
-        axes[0].scatter(times[~successes], twists[~successes], color="tab:red", marker="x", s=36, label="Echec NLP")
-        axes[1].scatter(times[~successes], objectives[~successes], color="tab:red", marker="x", s=36)
-    axes[0].scatter(
+        axis.scatter(times[~successes], twists[~successes], color="tab:red", marker="x", s=36, label="Echec NLP")
+    axis.scatter(
         [times[best_index]],
         [twists[best_index]],
         color="tab:orange",
@@ -761,21 +860,12 @@ def create_dms_start_time_sweep_figure(
         zorder=3,
         label="Meilleure solution",
     )
-    axes[1].scatter(
-        [times[best_index]],
-        [objectives[best_index]],
-        color="tab:orange",
-        s=64,
-        zorder=3,
-    )
-    axes[0].set_ylabel("Vrille finale (tours)")
-    axes[1].set_ylabel("Objectif")
-    axes[1].set_xlabel("Debut bras droit t1 (s)")
-    axes[0].set_title("Balayage DMS sur les noeuds de t1")
-    for axis in axes:
-        axis.grid(True, alpha=0.3)
-    axes[0].legend(loc="best")
-    return figure, axes
+    axis.set_ylabel("Vrille finale (tours)")
+    axis.set_xlabel("Debut bras droit t1 (s)")
+    axis.set_title("Balayage DMS sur les noeuds de t1")
+    axis.grid(True, alpha=0.3)
+    axis.legend(loc="best")
+    return figure, axis
 
 
 def show_dms_start_time_sweep_figure(
@@ -790,7 +880,7 @@ def show_dms_start_time_sweep_figure(
 
     import matplotlib.pyplot as plt
 
-    figure, axes = create_dms_start_time_sweep_figure(
+    figure, axis = create_dms_start_time_sweep_figure(
         start_times=start_times,
         final_twist_turns=final_twist_turns,
         objective_values=objective_values,
@@ -799,4 +889,4 @@ def show_dms_start_time_sweep_figure(
     )
     figure.canvas.draw_idle()
     plt.show(block=False)
-    return figure, axes
+    return figure, axis
