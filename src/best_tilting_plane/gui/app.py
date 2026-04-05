@@ -28,6 +28,8 @@ from best_tilting_plane.modeling import (
 )
 from best_tilting_plane.optimization import DirectMultipleShootingOptimizer, TwistStrategyOptimizer
 from best_tilting_plane.simulation import (
+    PiecewiseConstantJerkArmMotion,
+    PiecewiseConstantJerkTrajectory,
     PredictiveAerialTwistSimulator,
     SimulationConfiguration,
     TwistOptimizationVariables,
@@ -115,6 +117,8 @@ ALL_FRAME_SEGMENTS = tuple(
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
 OPTIMIZATION_CACHE_VERSION = 1
+DMS_SHOOTING_STEP = 0.02
+DMS_ACTIVE_DURATION = 0.3
 ARM_KINEMATICS_LABELS = (
     "Plan bras gauche",
     "Elevation bras gauche",
@@ -428,7 +432,7 @@ class BestTiltingPlaneApp:
         """Describe the numerical setup that must match for a cached optimum to be reused."""
 
         configuration = self._standard_optimization_configuration()
-        return {
+        signature = {
             "version": OPTIMIZATION_CACHE_VERSION,
             "mode": self._optimization_cache_key(),
             "final_time": float(configuration.final_time),
@@ -437,6 +441,10 @@ class BestTiltingPlaneApp:
             "integrator": configuration.integrator,
             "rk4_step": float(configuration.rk4_step) if configuration.rk4_step is not None else None,
         }
+        if self.optimization_mode_var.get() == "Optimize DMS":
+            signature["dms_shooting_step"] = DMS_SHOOTING_STEP
+            signature["dms_active_duration"] = DMS_ACTIVE_DURATION
+        return signature
 
     def _read_optimization_cache_file(self) -> dict[str, object]:
         """Return the JSON cache content, or an empty structure if it does not exist."""
@@ -475,6 +483,77 @@ class BestTiltingPlaneApp:
         except (TypeError, ValueError):
             return None
 
+    def _rebuild_cached_dms_motion(
+        self,
+        optimized_values: dict[str, float],
+        *,
+        left_plane_jerk: list[float],
+        right_plane_jerk: list[float],
+    ) -> PiecewiseConstantJerkArmMotion:
+        """Rebuild one cached DMS prescribed motion from stored GUI values and jerk sequences."""
+
+        configuration = self._standard_optimization_configuration()
+        right_arm_start = float(optimized_values["right_arm_start"])
+        left_plane = PiecewiseConstantJerkTrajectory(
+            q0=float(np.deg2rad(optimized_values["left_plane_initial"])),
+            qdot0=0.0,
+            qddot0=0.0,
+            step=DMS_SHOOTING_STEP,
+            jerks=np.asarray(left_plane_jerk, dtype=float),
+            active_start=0.0,
+            active_end=DMS_ACTIVE_DURATION,
+            total_duration=configuration.final_time,
+        )
+        right_plane = PiecewiseConstantJerkTrajectory(
+            q0=float(np.deg2rad(optimized_values["right_plane_initial"])),
+            qdot0=0.0,
+            qddot0=0.0,
+            step=DMS_SHOOTING_STEP,
+            jerks=np.asarray(right_plane_jerk, dtype=float),
+            active_start=0.0,
+            active_end=DMS_ACTIVE_DURATION,
+            total_duration=configuration.final_time - right_arm_start,
+        )
+        return PiecewiseConstantJerkArmMotion(
+            left_plane=left_plane,
+            right_plane=right_plane,
+            right_arm_start=right_arm_start,
+        )
+
+    def _load_cached_dms_solution(self) -> tuple[dict[str, float], PiecewiseConstantJerkArmMotion, float, str] | None:
+        """Return one cached DMS solution when the stored signature matches the current setup."""
+
+        cache = self._read_optimization_cache_file()
+        record = cache["records"].get(self._optimization_cache_key())
+        if not isinstance(record, dict):
+            return None
+        if record.get("signature") != self._optimization_cache_signature():
+            return None
+        values = record.get("values")
+        left_plane_jerk = record.get("left_plane_jerk")
+        right_plane_jerk = record.get("right_plane_jerk")
+        if not isinstance(values, dict) or not isinstance(left_plane_jerk, list) or not isinstance(right_plane_jerk, list):
+            return None
+        expected_names = {definition.name for definition in SLIDER_DEFINITIONS}
+        if set(values) != expected_names:
+            return None
+        try:
+            optimized_values = {name: float(values[name]) for name in expected_names}
+            left_jerk_values = [float(value) for value in left_plane_jerk]
+            right_jerk_values = [float(value) for value in right_plane_jerk]
+            final_twist_turns = float(record.get("final_twist_turns", float("nan")))
+            solver_status = str(record.get("solver_status", "cache"))
+        except (TypeError, ValueError):
+            return None
+        if len(left_jerk_values) == 0 or len(right_jerk_values) == 0:
+            return None
+        motion = self._rebuild_cached_dms_motion(
+            optimized_values,
+            left_plane_jerk=left_jerk_values,
+            right_plane_jerk=right_jerk_values,
+        )
+        return optimized_values, motion, final_twist_turns, solver_status
+
     def _store_cached_optimized_values(
         self,
         optimized_values: dict[str, float],
@@ -489,6 +568,30 @@ class BestTiltingPlaneApp:
         cache["records"][self._optimization_cache_key()] = {
             "signature": self._optimization_cache_signature(),
             "values": {name: float(value) for name, value in optimized_values.items()},
+            "final_twist_turns": float(final_twist_turns),
+            "solver_status": str(solver_status),
+        }
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
+
+    def _store_cached_dms_solution(
+        self,
+        optimized_values: dict[str, float],
+        *,
+        left_plane_jerk: np.ndarray,
+        right_plane_jerk: np.ndarray,
+        final_twist_turns: float,
+        solver_status: str,
+    ) -> None:
+        """Persist one DMS optimum for reuse in later GUI sessions."""
+
+        cache_path = self._optimization_cache_path()
+        cache = self._read_optimization_cache_file()
+        cache["records"][self._optimization_cache_key()] = {
+            "signature": self._optimization_cache_signature(),
+            "values": {name: float(value) for name, value in optimized_values.items()},
+            "left_plane_jerk": np.asarray(left_plane_jerk, dtype=float).tolist(),
+            "right_plane_jerk": np.asarray(right_plane_jerk, dtype=float).tolist(),
             "final_twist_turns": float(final_twist_turns),
             "solver_status": str(solver_status),
         }
@@ -1179,19 +1282,35 @@ class BestTiltingPlaneApp:
         self.result_var.set("Optimisation en cours... voir les iterations IPOPT dans le terminal.")
         self.root.update_idletasks()
 
-        cached_values = None if mode == "Optimize DMS" else self._load_cached_optimized_values()
-        if cached_values is not None:
-            self._apply_optimized_values(
-                cached_values,
-                status_suffix="optimum charge depuis le cache",
-            )
-            return
+        if mode == "Optimize DMS":
+            cached_dms_solution = self._load_cached_dms_solution()
+            if cached_dms_solution is not None:
+                cached_values, cached_motion, cached_final_twist_turns, cached_solver_status = (
+                    cached_dms_solution
+                )
+                self._apply_optimized_values(
+                    cached_values,
+                    prescribed_motion=cached_motion,
+                    status_suffix=(
+                        f"optimum DMS charge depuis le cache: "
+                        f"{cached_final_twist_turns:.2f} tours ({cached_solver_status})"
+                    ),
+                )
+                return
+        else:
+            cached_values = self._load_cached_optimized_values()
+            if cached_values is not None:
+                self._apply_optimized_values(
+                    cached_values,
+                    status_suffix="optimum charge depuis le cache",
+                )
+                return
 
         if mode == "Optimize DMS":
             optimizer = DirectMultipleShootingOptimizer.from_builder(
                 self._model_path(),
                 configuration=self._standard_optimization_configuration(),
-                shooting_step=0.02,
+                shooting_step=DMS_SHOOTING_STEP,
             )
             result = optimizer.solve(initial_guess, max_iter=50, print_level=5, print_time=True)
             optimized_values = {
@@ -1201,6 +1320,13 @@ class BestTiltingPlaneApp:
                 "right_plane_initial": np.rad2deg(result.variables.right_plane_initial),
                 "right_plane_final": np.rad2deg(result.variables.right_plane_final),
             }
+            self._store_cached_dms_solution(
+                optimized_values,
+                left_plane_jerk=result.left_plane_jerk,
+                right_plane_jerk=result.right_plane_jerk,
+                final_twist_turns=result.final_twist_turns,
+                solver_status=result.solver_status,
+            )
             self._apply_optimized_values(
                 optimized_values,
                 prescribed_motion=result.prescribed_motion,

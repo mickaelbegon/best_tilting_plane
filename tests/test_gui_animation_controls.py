@@ -17,6 +17,7 @@ from best_tilting_plane.gui.app import (
     TOP_VIEW_CAMERA_ELEVATION_DEG,
     BestTiltingPlaneApp,
 )
+from best_tilting_plane.simulation import SimulationConfiguration
 
 
 class FakeScheduler:
@@ -286,7 +287,11 @@ def test_show_first_arm_jerk_comparison_uses_external_helper(monkeypatch) -> Non
         "right_plane_initial": 10.0,
         "right_plane_final": 20.0,
     }
-    app._standard_optimization_configuration = lambda: type("Config", (), {"final_time": 1.0})()
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
 
     app._show_first_arm_jerk_comparison()
 
@@ -537,11 +542,131 @@ def test_optimize_strategy_writes_cache_after_ipopt(monkeypatch, tmp_path: Path)
     ]
 
 
+def test_load_cached_dms_solution_rebuilds_the_prescribed_motion(tmp_path: Path) -> None:
+    """A matching DMS cache entry should rebuild the jerk-driven prescribed motion."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.optimization_mode_var = FakeVar("Optimize DMS")
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+
+    cache_path = tmp_path / "optimization_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_dms": {
+                        "signature": app._optimization_cache_signature(),
+                        "values": {
+                            "right_arm_start": 0.28,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "left_plane_jerk": [0.0] * 15,
+                        "right_plane_jerk": [0.0] * 15,
+                        "final_twist_turns": -0.63,
+                        "solver_status": "Solve_Succeeded",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cached = app._load_cached_dms_solution()
+
+    assert cached is not None
+    values, motion, final_twist_turns, solver_status = cached
+    assert values["right_arm_start"] == 0.28
+    assert motion.right_arm_start == 0.28
+    assert motion.left_plane.jerks.shape == (15,)
+    assert motion.right_plane.jerks.shape == (15,)
+    assert final_twist_turns == -0.63
+    assert solver_status == "Solve_Succeeded"
+
+
+def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A cached DMS optimum should be replayed directly without rebuilding the DMS optimizer."""
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.DirectMultipleShootingOptimizer.from_builder",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("DMS optimizer should not run")),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize DMS")
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_dms": {
+                        "signature": app._optimization_cache_signature(),
+                        "values": {
+                            "right_arm_start": 0.28,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "left_plane_jerk": [0.0] * 15,
+                        "right_plane_jerk": [0.0] * 15,
+                        "final_twist_turns": -0.63,
+                        "solver_status": "Solve_Succeeded",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    applied: list[tuple[dict[str, float], object, str | None]] = []
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: applied.append(
+        (dict(values), prescribed_motion, status_suffix)
+    )
+
+    app._optimize_strategy()
+
+    assert app._auto_runner.cancelled
+    assert applied[0][0] == {
+        "right_arm_start": 0.28,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    assert applied[0][1] is not None
+    assert applied[0][2] == "optimum DMS charge depuis le cache: -0.63 tours (Solve_Succeeded)"
+
+
 def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    """The DMS mode should bypass the cache and push both slider values and the optimized motion."""
+    """The DMS mode should push both slider values and the optimized motion."""
 
     class FakeDmsOptimizer:
         def solve(self, initial_guess, **_kwargs):
@@ -562,6 +687,8 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
                         },
                     )(),
                     "prescribed_motion": "dms-motion",
+                    "left_plane_jerk": np.zeros(15),
+                    "right_plane_jerk": np.zeros(15),
                     "final_twist_turns": -0.63,
                     "solver_status": "Solve_Succeeded",
                 },
@@ -585,7 +712,11 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
         "right_plane_final": 0.0,
     }
     app._model_path = lambda: tmp_path / "reduced.bioMod"
-    app._standard_optimization_configuration = lambda: type("Config", (), {"final_time": 1.0})()
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
     applied: list[tuple[dict[str, float], object, str | None]] = []
     app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: applied.append(
         (dict(values), prescribed_motion, status_suffix)
@@ -607,3 +738,74 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
             "optimum DMS: -0.63 tours (Solve_Succeeded)",
         )
     ]
+
+
+def test_optimize_strategy_writes_cache_after_dms(monkeypatch, tmp_path: Path) -> None:
+    """A newly optimized DMS solution should be persisted for later GUI sessions."""
+
+    class FakeDmsOptimizer:
+        def solve(self, initial_guess, **_kwargs):
+            assert initial_guess.right_arm_start == 0.1
+            return type(
+                "DmsResult",
+                (),
+                {
+                    "variables": type(
+                        "Variables",
+                        (),
+                        {
+                            "right_arm_start": 0.28,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    )(),
+                    "prescribed_motion": "dms-motion",
+                    "left_plane_jerk": np.zeros(15),
+                    "right_plane_jerk": np.zeros(15),
+                    "final_twist_turns": -0.63,
+                    "solver_status": "Solve_Succeeded",
+                },
+            )()
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.DirectMultipleShootingOptimizer.from_builder",
+        lambda *_args, **_kwargs: FakeDmsOptimizer(),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize DMS")
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: None
+
+    app._optimize_strategy()
+
+    stored = json.loads((tmp_path / "optimization_cache.json").read_text(encoding="utf-8"))
+    record = stored["records"]["optimize_dms"]
+    assert record["values"] == {
+        "right_arm_start": 0.28,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    assert record["left_plane_jerk"] == [0.0] * 15
+    assert record["right_plane_jerk"] == [0.0] * 15
+    assert record["final_twist_turns"] == -0.63
+    assert record["solver_status"] == "Solve_Succeeded"
