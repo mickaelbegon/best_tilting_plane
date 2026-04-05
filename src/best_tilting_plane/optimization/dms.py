@@ -125,6 +125,7 @@ class DirectMultipleShootingOptimizer:
         self._solver_options_key: tuple[int, int, bool] | None = None
         self._constraint_count = 0
         self._interval_parallelization = "serial"
+        self._nlpsol_expand = True
 
         if self.shooting_step <= 0.0:
             raise ValueError("The shooting step must be strictly positive.")
@@ -620,6 +621,7 @@ class DirectMultipleShootingOptimizer:
                 "g": ca.vertcat(*constraints),
             },
             {
+                "expand": bool(self._nlpsol_expand),
                 "ipopt.max_iter": int(max_iter),
                 "ipopt.print_level": int(print_level),
                 "print_time": int(bool(print_time)),
