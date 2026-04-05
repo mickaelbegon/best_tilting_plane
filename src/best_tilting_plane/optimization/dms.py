@@ -11,6 +11,7 @@ import casadi as ca
 import numpy as np
 
 from best_tilting_plane.modeling import ReducedAerialBiomod
+from best_tilting_plane.optimization.solver_options import build_ipopt_solver_options
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
     PiecewiseConstantJerkArmMotion,
@@ -623,15 +624,13 @@ class DirectMultipleShootingOptimizer:
                 "f": objective,
                 "g": ca.vertcat(*constraints),
             },
-            {
-                "expand": bool(self._nlpsol_expand),
-                "ipopt.max_iter": int(max_iter),
-                "ipopt.print_level": int(print_level),
-                "ipopt.warm_start_init_point": "yes",
-                "ipopt.warm_start_bound_push": 1e-8,
-                "ipopt.warm_start_mult_bound_push": 1e-8,
-                "print_time": int(bool(print_time)),
-            },
+            build_ipopt_solver_options(
+                max_iter=max_iter,
+                print_level=print_level,
+                print_time=print_time,
+                expand=self._nlpsol_expand,
+                warm_start=True,
+            ),
         )
         self._solver_options_key = options_key
         return self._solver
@@ -808,6 +807,10 @@ class DirectMultipleShootingOptimizer:
             if previous_result.warm_start_lam_g is not None:
                 solver_inputs["lam_g0"] = np.asarray(previous_result.warm_start_lam_g, dtype=float)
 
+        print(
+            f"DMS solve: t1={right_arm_start:.2f} s "
+            f"(node {right_start_node_index}/{self.interval_count})"
+        )
         solution = solver(**solver_inputs)
         status = solver.stats()["return_status"]
         raw_solution = np.asarray(solution["x"].full(), dtype=float).reshape(-1)

@@ -10,6 +10,7 @@ import numpy as np
 from best_tilting_plane.modeling import ReducedAerialBiomod
 from best_tilting_plane.optimization import DirectMultipleShootingOptimizer
 from best_tilting_plane.optimization import dms as dms_module
+from best_tilting_plane.optimization import solver_options as solver_options_module
 from best_tilting_plane.simulation import (
     PiecewiseConstantJerkArmMotion,
     PiecewiseConstantJerkTrajectory,
@@ -159,6 +160,11 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
 
     monkeypatch.setattr(dms_module, "PredictiveAerialTwistSimulator", FakeSimulator)
     monkeypatch.setattr(dms_module.ca, "nlpsol", fake_nlpsol)
+    monkeypatch.setattr(
+        solver_options_module,
+        "locate_ipopt_hsl_library",
+        lambda: "/tmp/libhsl.dylib",
+    )
 
     result = optimizer.solve_fixed_start(
         initial_guess,
@@ -181,6 +187,8 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     assert result.objective == -0.5
     assert captured["options"]["ipopt.max_iter"] == 3
     assert captured["options"]["ipopt.print_level"] == 5
+    assert captured["options"]["ipopt.linear_solver"] == "ma57"
+    assert captured["options"]["ipopt.hsllib"] == "/tmp/libhsl.dylib"
     assert captured["options"]["print_time"] == 1
     assert np.asarray(captured["p"], dtype=float).shape == (
         dms_module.ELEVATION_STAGE_BLOCK_SIZE * optimizer.interval_count,

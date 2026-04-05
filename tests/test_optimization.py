@@ -13,7 +13,36 @@ from best_tilting_plane.optimization import (
     optimize_black_box_ipopt,
 )
 from best_tilting_plane.optimization import ipopt as ipopt_module
+from best_tilting_plane.optimization import solver_options as solver_options_module
 from best_tilting_plane.simulation import SimulationConfiguration, TwistOptimizationVariables
+
+
+def test_build_ipopt_solver_options_prefers_ma57_when_hsl_is_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The shared IPOPT options should switch to MA57 when one HSL library is available."""
+
+    monkeypatch.setattr(
+        solver_options_module,
+        "locate_ipopt_hsl_library",
+        lambda: "/tmp/libhsl.dylib",
+    )
+
+    options = solver_options_module.build_ipopt_solver_options(
+        max_iter=25,
+        print_level=3,
+        print_time=True,
+        expand=True,
+        warm_start=True,
+    )
+
+    assert options["ipopt.linear_solver"] == "ma57"
+    assert options["ipopt.hsllib"] == "/tmp/libhsl.dylib"
+    assert options["expand"] is True
+    assert options["ipopt.warm_start_init_point"] == "yes"
+    assert options["ipopt.max_iter"] == 25
+    assert options["ipopt.print_level"] == 3
+    assert options["print_time"] == 1
 
 
 def test_black_box_ipopt_solves_a_simple_quadratic_problem() -> None:
@@ -55,6 +84,12 @@ def test_black_box_ipopt_forwards_iteration_display_options(
         return FakeSolver()
 
     monkeypatch.setattr(ipopt_module.ca, "nlpsol", fake_nlpsol)
+    monkeypatch.setattr(ipopt_module, "build_ipopt_solver_options", solver_options_module.build_ipopt_solver_options)
+    monkeypatch.setattr(
+        solver_options_module,
+        "locate_ipopt_hsl_library",
+        lambda: "/tmp/libhsl.dylib",
+    )
 
     optimize_black_box_ipopt(
         lambda vector: float(np.sum(vector**2)),
@@ -66,6 +101,8 @@ def test_black_box_ipopt_forwards_iteration_display_options(
 
     assert captured_options["ipopt.print_level"] == 5
     assert captured_options["print_time"] == 1
+    assert captured_options["ipopt.linear_solver"] == "ma57"
+    assert captured_options["ipopt.hsllib"] == "/tmp/libhsl.dylib"
 
 
 def test_twist_strategy_optimizer_vector_round_trip() -> None:

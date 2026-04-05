@@ -16,6 +16,7 @@ from best_tilting_plane.modeling import (
     RIGHT_ARM_PLANE_BOUNDS_DEG,
     ReducedAerialBiomod,
 )
+from best_tilting_plane.optimization.solver_options import build_ipopt_solver_options
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
     PredictiveAerialTwistSimulator,
@@ -131,11 +132,11 @@ def optimize_black_box_ipopt(
         "twist_solver",
         "ipopt",
         {"x": x_symbol, "f": callback(x_symbol)},
-        {
-            "ipopt.max_iter": int(max_iter),
-            "ipopt.print_level": int(print_level),
-            "print_time": int(bool(print_time)),
-        },
+        build_ipopt_solver_options(
+            max_iter=max_iter,
+            print_level=print_level,
+            print_time=print_time,
+        ),
     )
     solution = solver(
         x0=x0, lbx=np.asarray(bounds.lower, dtype=float), ubx=np.asarray(bounds.upper, dtype=float)
@@ -511,11 +512,11 @@ class TwistStrategyOptimizer:
             "twist_solver_symbolic_5d",
             "ipopt",
             {"x": x_symbol, "f": objective},
-            {
-                "ipopt.max_iter": int(max_iter),
-                "ipopt.print_level": int(print_level),
-                "print_time": int(bool(print_time)),
-            },
+            build_ipopt_solver_options(
+                max_iter=max_iter,
+                print_level=print_level,
+                print_time=print_time,
+            ),
         )
         solution = solver(
             x0=x0,
@@ -608,11 +609,11 @@ class TwistStrategyOptimizer:
             "twist_solver_symbolic_1d",
             "ipopt",
             {"x": x_symbol, "f": objective},
-            {
-                "ipopt.max_iter": int(max_iter),
-                "ipopt.print_level": int(print_level),
-                "print_time": int(bool(print_time)),
-            },
+            build_ipopt_solver_options(
+                max_iter=max_iter,
+                print_level=print_level,
+                print_time=print_time,
+            ),
         )
         solution = solver(
             x0=np.array([initial_right_arm_start], dtype=float),
