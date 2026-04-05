@@ -1,0 +1,24 @@
+{
+  "records": {
+    "optimize_2d": {
+      "final_twist_turns": -2.18,
+      "signature": {
+        "final_time": 1.0,
+        "integrator": "rk4",
+        "mode": "optimize_2d",
+        "rk4_step": 0.005,
+        "somersault_rate": 6.283185307179586,
+        "steps": 201,
+        "version": 1
+      },
+      "solver_status": "Solve_Succeeded",
+      "values": {
+        "left_plane_final": 0.0,
+        "left_plane_initial": 0.0,
+        "right_arm_start": 0.3289750480553516,
+        "right_plane_final": 0.0,
+        "right_plane_initial": 0.0
+      }
+    }
+  }
+}

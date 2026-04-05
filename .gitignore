@@ -7,4 +7,5 @@ dist/
 *.egg-info/
 .idea/
 *.pyc
-generated/
+generated/*
+!generated/optimization_cache.json

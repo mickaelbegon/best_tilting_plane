@@ -474,17 +474,20 @@ class BestTiltingPlaneApp:
 
         cache_path = self._optimization_cache_path()
         if not cache_path.exists():
-            return {"records": {}}
+            return {"records": {}, "progress_records": {}}
         try:
             data = json.loads(cache_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            return {"records": {}}
+            return {"records": {}, "progress_records": {}}
         if not isinstance(data, dict):
-            return {"records": {}}
+            return {"records": {}, "progress_records": {}}
         records = data.get("records")
         if not isinstance(records, dict):
-            return {"records": {}}
-        return {"records": records}
+            records = {}
+        progress_records = data.get("progress_records")
+        if not isinstance(progress_records, dict):
+            progress_records = {}
+        return {"records": records, "progress_records": progress_records}
 
     def _load_cached_optimized_values(self) -> dict[str, float] | None:
         """Return cached optimized GUI values when the stored signature matches the current setup."""
@@ -628,7 +631,9 @@ class BestTiltingPlaneApp:
         """Return one resumable DMS checkpoint when the stored signature matches the current setup."""
 
         cache = self._read_optimization_cache_file()
-        record = cache["records"].get(self._optimization_cache_key())
+        record = cache["progress_records"].get(self._optimization_cache_key())
+        if record is None:
+            record = cache["records"].get(self._optimization_cache_key())
         if not isinstance(record, dict):
             return None
         if record.get("signature") != self._optimization_cache_signature():
@@ -709,6 +714,7 @@ class BestTiltingPlaneApp:
             "final_twist_turns": float(final_twist_turns),
             "solver_status": str(solver_status),
         }
+        cache["progress_records"].pop(self._optimization_cache_key(), None)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -742,6 +748,7 @@ class BestTiltingPlaneApp:
             "final_twist_turns": float(final_twist_turns),
             "solver_status": str(solver_status),
         }
+        cache["progress_records"].pop(self._optimization_cache_key(), None)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -766,7 +773,7 @@ class BestTiltingPlaneApp:
 
         cache_path = self._optimization_cache_path()
         cache = self._read_optimization_cache_file()
-        cache["records"][self._optimization_cache_key()] = {
+        cache["progress_records"][self._optimization_cache_key()] = {
             "signature": self._optimization_cache_signature(),
             "in_progress": True,
             "values": {name: float(value) for name, value in optimized_values.items()},

@@ -1085,6 +1085,78 @@ def test_optimize_strategy_writes_cache_after_dms(monkeypatch, tmp_path: Path) -
     assert record["scan_success_mask"] == [True, True, True]
     assert record["final_twist_turns"] == -0.63
     assert record["solver_status"] == "Solve_Succeeded"
+    assert stored.get("progress_records", {}) == {}
+
+
+def test_store_cached_dms_progress_preserves_completed_dms_solution(tmp_path: Path) -> None:
+    """A resumable DMS checkpoint should not overwrite the last completed optimum."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.optimization_mode_var = FakeVar("Optimize DMS")
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+
+    cache_path = tmp_path / "optimization_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_dms": {
+                        "signature": app._optimization_cache_signature(),
+                        "in_progress": False,
+                        "values": {
+                            "right_arm_start": 0.28,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "left_plane_jerk": [0.0] * 15,
+                        "right_plane_jerk": [0.0] * 15,
+                        "scan_start_times": [0.10, 0.12, 0.28],
+                        "scan_final_twist_turns": [-0.40, -0.55, -0.63],
+                        "scan_objective_values": [-0.39, -0.54, -0.62],
+                        "scan_success_mask": [True, True, True],
+                        "final_twist_turns": -0.63,
+                        "solver_status": "Solve_Succeeded",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app._store_cached_dms_progress(
+        {
+            "right_arm_start": 0.10,
+            "left_plane_initial": 0.0,
+            "left_plane_final": 0.0,
+            "right_plane_initial": 0.0,
+            "right_plane_final": 0.0,
+        },
+        left_plane_jerk=np.zeros(15),
+        right_plane_jerk=np.zeros(15),
+        scan_start_times=np.array([0.10], dtype=float),
+        scan_final_twist_turns=np.array([-0.40], dtype=float),
+        scan_objective_values=np.array([-0.39], dtype=float),
+        scan_success_mask=np.array([True], dtype=bool),
+        last_completed_index=0,
+        last_warm_start_primal=np.full(20, 0.10),
+        last_warm_start_lam_x=np.full(20, 1.0),
+        last_warm_start_lam_g=np.full(10, 2.0),
+        final_twist_turns=-0.40,
+        solver_status="Solve_Succeeded",
+    )
+
+    stored = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert stored["records"]["optimize_dms"]["values"]["right_arm_start"] == 0.28
+    assert stored["records"]["optimize_dms"]["final_twist_turns"] == -0.63
+    assert stored["progress_records"]["optimize_dms"]["in_progress"] is True
+    assert stored["progress_records"]["optimize_dms"]["values"]["right_arm_start"] == 0.10
 
 
 def test_optimize_strategy_resumes_dms_from_partial_checkpoint(
@@ -1209,3 +1281,4 @@ def test_optimize_strategy_resumes_dms_from_partial_checkpoint(
     ]
     stored = json.loads((tmp_path / "optimization_cache.json").read_text(encoding="utf-8"))
     assert stored["records"]["optimize_dms"]["in_progress"] is False
+    assert stored.get("progress_records", {}) == {}
