@@ -73,6 +73,24 @@ def test_direct_multiple_shooting_jerk_bound_matches_left_elevation_fitting(
     assert optimizer.jerk_bound == np.max(np.abs(reference.jerks))
 
 
+def test_direct_multiple_shooting_candidate_start_times_use_the_reduced_search_window(
+    tmp_path: Path,
+) -> None:
+    """The DMS sweep should test only the reduced `t1` window on the shooting grid."""
+
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=1.0, steps=201, integrator="rk4", rk4_step=0.005),
+        shooting_step=0.02,
+    )
+
+    np.testing.assert_allclose(
+        optimizer.candidate_start_times(),
+        np.arange(0.24, 0.44 + 0.001, 0.02, dtype=float),
+    )
+
+
 def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_returns_motion(
     monkeypatch,
     tmp_path: Path,

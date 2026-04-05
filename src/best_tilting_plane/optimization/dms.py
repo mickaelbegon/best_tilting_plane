@@ -29,7 +29,7 @@ from best_tilting_plane.simulation import (
 LEFT_ARM_ACTIVE_DURATION = 0.3
 RIGHT_ARM_ACTIVE_DURATION = 0.3
 RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
-RIGHT_ARM_SWEEP_BOUNDS = (0.1, 0.7)
+RIGHT_ARM_SWEEP_BOUNDS = (0.24, 0.44)
 PLANE_STATE_SIZE = 3
 ROOT_STATE_SIZE = 12
 ELEVATION_STAGE_BLOCK_SIZE = 18
@@ -551,8 +551,16 @@ class DirectMultipleShootingOptimizer:
     def candidate_start_times(self) -> np.ndarray:
         """Return the admissible discrete second-arm start times on the shooting grid."""
 
-        first_node = int(round(RIGHT_ARM_SWEEP_BOUNDS[0] / self.shooting_step))
-        last_node = int(round(RIGHT_ARM_SWEEP_BOUNDS[1] / self.shooting_step))
+        lower_bound = max(RIGHT_ARM_SWEEP_BOUNDS[0], RIGHT_ARM_START_BOUNDS[0])
+        upper_bound = min(
+            RIGHT_ARM_SWEEP_BOUNDS[1],
+            RIGHT_ARM_START_BOUNDS[1],
+            self.configuration.final_time - RIGHT_ARM_ACTIVE_DURATION,
+        )
+        if lower_bound > upper_bound:
+            raise ValueError("The discrete second-arm start-time sweep is empty.")
+        first_node = int(round(lower_bound / self.shooting_step))
+        last_node = int(round(upper_bound / self.shooting_step))
         return self.shooting_step * np.arange(first_node, last_node + 1, dtype=float)
 
     def _build_solver(
@@ -915,7 +923,10 @@ class DirectMultipleShootingOptimizer:
 
         candidate_results_list: list[DirectMultipleShootingResult] = []
         previous_result: DirectMultipleShootingResult | None = None
-        for start_time in self.candidate_start_times():
+        candidate_start_times = np.asarray(self.candidate_start_times(), dtype=float)
+        if candidate_start_times.size == 0:
+            raise ValueError("No admissible second-arm start time is available for the DMS sweep.")
+        for start_time in candidate_start_times:
             current_result = self.solve_fixed_start(
                 initial_guess,
                 right_arm_start=float(start_time),
