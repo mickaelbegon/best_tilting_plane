@@ -230,11 +230,12 @@ def test_direct_multiple_shooting_sweep_keeps_the_best_successful_candidate(tmp_
         _initial_guess,
         *,
         right_arm_start: float,
+        previous_result=None,
         max_iter: int = 100,
         print_level: int = 0,
         print_time: bool = False,
     ):
-        del max_iter, print_level, print_time
+        del previous_result, max_iter, print_level, print_time
         rounded_start = round(right_arm_start, 2)
         objective_map = {0.10: -0.20, 0.12: -0.50, 0.14: -0.80}
         success_map = {0.10: True, 0.12: False, 0.14: True}
@@ -307,3 +308,235 @@ def test_direct_multiple_shooting_sweep_keeps_the_best_successful_candidate(tmp_
     np.testing.assert_allclose(sweep.final_twist_turns, [-0.20, -0.50, -0.80])
     np.testing.assert_array_equal(sweep.success_mask, [True, False, True])
     assert sweep.best_result.variables.right_arm_start == 0.14
+
+
+def test_direct_multiple_shooting_sweep_warm_starts_each_node_with_previous_solution(tmp_path: Path) -> None:
+    """The discrete sweep should pass the previous node solution as warm start to the next solve."""
+
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=1.0, steps=201, integrator="rk4", rk4_step=0.005),
+        shooting_step=0.02,
+    )
+
+    start_times = np.array([0.10, 0.12, 0.14], dtype=float)
+    optimizer.candidate_start_times = lambda: start_times  # type: ignore[method-assign]
+    previous_inputs: list[float | None] = []
+
+    def fake_solve_fixed_start(
+        _initial_guess,
+        *,
+        right_arm_start: float,
+        previous_result=None,
+        max_iter: int = 100,
+        print_level: int = 0,
+        print_time: bool = False,
+    ):
+        del max_iter, print_level, print_time
+        previous_inputs.append(None if previous_result is None else previous_result.variables.right_arm_start)
+        return dms_module.DirectMultipleShootingResult(
+            variables=TwistOptimizationVariables(
+                right_arm_start=right_arm_start,
+                left_plane_initial=0.0,
+                left_plane_final=0.0,
+                right_plane_initial=0.0,
+                right_plane_final=0.0,
+            ),
+            right_arm_start_node_index=int(round(right_arm_start / optimizer.shooting_step)),
+            left_plane_jerk=np.zeros(optimizer.active_control_count),
+            right_plane_jerk=np.zeros(optimizer.active_control_count),
+            node_times=optimizer.node_times.copy(),
+            arm_node_times=optimizer.arm_node_times.copy(),
+            root_state_nodes=np.zeros((dms_module.ROOT_STATE_SIZE, optimizer.interval_count + 1)),
+            left_plane_state_nodes=np.zeros((dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)),
+            right_plane_state_nodes=np.zeros((dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)),
+            prescribed_motion=PiecewiseConstantJerkArmMotion(
+                left_plane=PiecewiseConstantJerkTrajectory(
+                    q0=0.0,
+                    qdot0=0.0,
+                    qddot0=0.0,
+                    step=optimizer.shooting_step,
+                    jerks=np.zeros(optimizer.active_control_count),
+                    active_start=0.0,
+                    active_end=dms_module.LEFT_ARM_ACTIVE_DURATION,
+                    total_duration=optimizer.configuration.final_time,
+                ),
+                right_plane=PiecewiseConstantJerkTrajectory(
+                    q0=0.0,
+                    qdot0=0.0,
+                    qddot0=0.0,
+                    step=optimizer.shooting_step,
+                    jerks=np.zeros(optimizer.active_control_count),
+                    active_start=0.0,
+                    active_end=dms_module.RIGHT_ARM_ACTIVE_DURATION,
+                    total_duration=optimizer.configuration.final_time - right_arm_start,
+                ),
+                right_arm_start=right_arm_start,
+            ),
+            simulation=type(
+                "SimulationResult",
+                (),
+                {
+                    "final_twist_angle": 2.0 * np.pi * right_arm_start,
+                    "final_twist_turns": right_arm_start,
+                },
+            )(),
+            objective=right_arm_start,
+            solver_status="Solve_Succeeded",
+            success=True,
+            warm_start_primal=np.full(10, right_arm_start),
+        )
+
+    optimizer.solve_fixed_start = fake_solve_fixed_start  # type: ignore[method-assign]
+
+    optimizer.solve(
+        TwistOptimizationVariables(
+            right_arm_start=0.10,
+            left_plane_initial=0.0,
+            left_plane_final=0.0,
+            right_plane_initial=0.0,
+            right_plane_final=0.0,
+        )
+    )
+
+    assert previous_inputs == [None, 0.10, 0.12]
+
+
+def test_direct_multiple_shooting_fixed_start_passes_previous_primal_and_duals_to_ipopt(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A previous node solution should be forwarded to IPOPT as a warm start."""
+
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.4, steps=81, integrator="rk4", rk4_step=0.005),
+        shooting_step=0.02,
+    )
+    initial_guess = TwistOptimizationVariables(
+        right_arm_start=0.1,
+        left_plane_initial=0.0,
+        left_plane_final=0.0,
+        right_plane_initial=0.0,
+        right_plane_final=0.0,
+    )
+    warm_start_motion = PiecewiseConstantJerkArmMotion(
+        left_plane=PiecewiseConstantJerkTrajectory(
+            q0=0.0,
+            qdot0=0.0,
+            qddot0=0.0,
+            step=optimizer.shooting_step,
+            jerks=np.zeros(optimizer.active_control_count, dtype=float),
+            active_start=0.0,
+            active_end=dms_module.LEFT_ARM_ACTIVE_DURATION,
+            total_duration=optimizer.configuration.final_time,
+        ),
+        right_plane=PiecewiseConstantJerkTrajectory(
+            q0=0.0,
+            qdot0=0.0,
+            qddot0=0.0,
+            step=optimizer.shooting_step,
+            jerks=np.zeros(optimizer.active_control_count, dtype=float),
+            active_start=0.0,
+            active_end=dms_module.RIGHT_ARM_ACTIVE_DURATION,
+            total_duration=optimizer.configuration.final_time - initial_guess.right_arm_start,
+        ),
+        right_arm_start=initial_guess.right_arm_start,
+    )
+    initial_state = np.asarray(optimizer._symbolic_initial_root_state(initial_guess), dtype=float).reshape(-1)
+    state_history = np.tile(initial_state.reshape(-1, 1), (1, optimizer.interval_count + 1))
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        optimizer,
+        "_initial_guess_motion",
+        lambda _variables, **_kwargs: warm_start_motion,
+    )
+    monkeypatch.setattr(
+        optimizer,
+        "_initial_guess_root_state_history",
+        lambda _variables, _motion: state_history,
+    )
+
+    class FakeSimulator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        @staticmethod
+        def simulate():
+            return type(
+                "SimulationResult",
+                (),
+                {
+                    "final_twist_angle": -0.5,
+                    "final_twist_turns": -0.08,
+                },
+            )()
+
+    class FakeSolver:
+        def __call__(self, **kwargs):
+            captured.update(kwargs)
+            size = np.asarray(kwargs["x0"], dtype=float).shape[0]
+            return {
+                "x": ca.DM(np.asarray(kwargs["x0"], dtype=float)),
+                "f": ca.DM([[-0.5]]),
+                "lam_x": ca.DM(np.zeros(size)),
+                "lam_g": ca.DM(np.zeros(np.asarray(kwargs["lbg"], dtype=float).shape[0])),
+            }
+
+        @staticmethod
+        def stats():
+            return {"return_status": "Solve_Succeeded"}
+
+    def fake_nlpsol(_name, _solver_name, _problem, options):
+        captured["options"] = options
+        return FakeSolver()
+
+    monkeypatch.setattr(dms_module, "PredictiveAerialTwistSimulator", FakeSimulator)
+    monkeypatch.setattr(dms_module.ca, "nlpsol", fake_nlpsol)
+
+    previous_result = dms_module.DirectMultipleShootingResult(
+        variables=initial_guess,
+        right_arm_start_node_index=5,
+        left_plane_jerk=np.zeros(optimizer.active_control_count),
+        right_plane_jerk=np.zeros(optimizer.active_control_count),
+        node_times=optimizer.node_times.copy(),
+        arm_node_times=optimizer.arm_node_times.copy(),
+        root_state_nodes=np.zeros((dms_module.ROOT_STATE_SIZE, optimizer.interval_count + 1)),
+        left_plane_state_nodes=np.zeros((dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)),
+        right_plane_state_nodes=np.zeros((dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)),
+        prescribed_motion=warm_start_motion,
+        simulation=FakeSimulator.simulate(),
+        objective=-0.5,
+        solver_status="Solve_Succeeded",
+        success=True,
+        warm_start_primal=np.full(
+            (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE
+            + 2 * (optimizer.interval_count + 1) * dms_module.PLANE_STATE_SIZE
+            + 2 * optimizer.interval_count,
+            42.0,
+        ),
+        warm_start_lam_x=np.full(
+            (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE
+            + 2 * (optimizer.interval_count + 1) * dms_module.PLANE_STATE_SIZE
+            + 2 * optimizer.interval_count,
+            1.5,
+        ),
+        warm_start_lam_g=np.full(optimizer.interval_count * (dms_module.ROOT_STATE_SIZE + 2 * dms_module.PLANE_STATE_SIZE), 2.5),
+    )
+
+    optimizer.solve_fixed_start(
+        initial_guess,
+        right_arm_start=initial_guess.right_arm_start,
+        previous_result=previous_result,
+        max_iter=3,
+        print_level=5,
+        print_time=True,
+    )
+
+    assert "lam_x0" in captured
+    assert "lam_g0" in captured
+    assert np.asarray(captured["lam_x0"], dtype=float).shape == previous_result.warm_start_primal.shape
+    assert np.asarray(captured["lam_g0"], dtype=float).shape == previous_result.warm_start_lam_g.shape

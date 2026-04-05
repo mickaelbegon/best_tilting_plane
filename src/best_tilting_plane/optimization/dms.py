@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import biorbd
@@ -49,6 +49,9 @@ class DirectMultipleShootingResult:
     objective: float
     solver_status: str
     success: bool
+    warm_start_primal: np.ndarray | None = field(default=None, repr=False)
+    warm_start_lam_x: np.ndarray | None = field(default=None, repr=False)
+    warm_start_lam_g: np.ndarray | None = field(default=None, repr=False)
 
     @property
     def final_twist_angle(self) -> float:
@@ -624,17 +627,36 @@ class DirectMultipleShootingOptimizer:
                 "expand": bool(self._nlpsol_expand),
                 "ipopt.max_iter": int(max_iter),
                 "ipopt.print_level": int(print_level),
+                "ipopt.warm_start_init_point": "yes",
+                "ipopt.warm_start_bound_push": 1e-8,
+                "ipopt.warm_start_mult_bound_push": 1e-8,
                 "print_time": int(bool(print_time)),
             },
         )
         self._solver_options_key = options_key
         return self._solver
 
+    @staticmethod
+    def _project_initial_guess_to_bounds(
+        initial_guess: np.ndarray,
+        lower_bounds: np.ndarray,
+        upper_bounds: np.ndarray,
+    ) -> np.ndarray:
+        """Project one warm start inside the finite NLP bounds."""
+
+        projected = np.asarray(initial_guess, dtype=float).copy()
+        finite_lower = np.isfinite(lower_bounds)
+        finite_upper = np.isfinite(upper_bounds)
+        projected[finite_lower] = np.maximum(projected[finite_lower], lower_bounds[finite_lower])
+        projected[finite_upper] = np.minimum(projected[finite_upper], upper_bounds[finite_upper])
+        return projected
+
     def solve_fixed_start(
         self,
         initial_guess: TwistOptimizationVariables,
         *,
         right_arm_start: float,
+        previous_result: DirectMultipleShootingResult | None = None,
         max_iter: int = 100,
         print_level: int = 0,
         print_time: bool = False,
@@ -764,14 +786,29 @@ class DirectMultipleShootingOptimizer:
                 lbx.append(0.0)
                 ubx.append(0.0)
 
-        solution = solver(
-            x0=np.asarray(x0, dtype=float),
-            lbx=np.asarray(lbx, dtype=float),
-            ubx=np.asarray(ubx, dtype=float),
-            lbg=np.zeros(self._constraint_count, dtype=float),
-            ubg=np.zeros(self._constraint_count, dtype=float),
-            p=self._elevation_parameter_values(right_arm_start=right_arm_start),
-        )
+        x0_array = np.asarray(x0, dtype=float)
+        lbx_array = np.asarray(lbx, dtype=float)
+        ubx_array = np.asarray(ubx, dtype=float)
+        solver_inputs = {
+            "x0": x0_array,
+            "lbx": lbx_array,
+            "ubx": ubx_array,
+            "lbg": np.zeros(self._constraint_count, dtype=float),
+            "ubg": np.zeros(self._constraint_count, dtype=float),
+            "p": self._elevation_parameter_values(right_arm_start=right_arm_start),
+        }
+        if previous_result is not None and previous_result.warm_start_primal is not None:
+            solver_inputs["x0"] = self._project_initial_guess_to_bounds(
+                previous_result.warm_start_primal,
+                lbx_array,
+                ubx_array,
+            )
+            if previous_result.warm_start_lam_x is not None:
+                solver_inputs["lam_x0"] = np.asarray(previous_result.warm_start_lam_x, dtype=float)
+            if previous_result.warm_start_lam_g is not None:
+                solver_inputs["lam_g0"] = np.asarray(previous_result.warm_start_lam_g, dtype=float)
+
+        solution = solver(**solver_inputs)
         status = solver.stats()["return_status"]
         raw_solution = np.asarray(solution["x"].full(), dtype=float).reshape(-1)
         offset = 0
@@ -846,6 +883,17 @@ class DirectMultipleShootingOptimizer:
                 or "succeeded" in normalized_status
                 or "solved" in normalized_status
             ),
+            warm_start_primal=raw_solution.copy(),
+            warm_start_lam_x=(
+                np.asarray(solution["lam_x"].full(), dtype=float).reshape(-1)
+                if "lam_x" in solution
+                else None
+            ),
+            warm_start_lam_g=(
+                np.asarray(solution["lam_g"].full(), dtype=float).reshape(-1)
+                if "lam_g" in solution
+                else None
+            ),
         )
 
     def solve(
@@ -858,16 +906,20 @@ class DirectMultipleShootingOptimizer:
     ) -> DirectMultipleShootingSweepResult:
         """Solve one fixed-start OCP per admissible node and keep the best solution."""
 
-        candidate_results = tuple(
-            self.solve_fixed_start(
+        candidate_results_list: list[DirectMultipleShootingResult] = []
+        previous_result: DirectMultipleShootingResult | None = None
+        for start_time in self.candidate_start_times():
+            current_result = self.solve_fixed_start(
                 initial_guess,
                 right_arm_start=float(start_time),
+                previous_result=previous_result,
                 max_iter=max_iter,
                 print_level=print_level,
                 print_time=print_time,
             )
-            for start_time in self.candidate_start_times()
-        )
+            candidate_results_list.append(current_result)
+            previous_result = current_result
+        candidate_results = tuple(candidate_results_list)
         successful_results = tuple(result for result in candidate_results if result.success)
         selection_pool = successful_results if successful_results else candidate_results
         best_result = min(selection_pool, key=lambda result: result.objective)
