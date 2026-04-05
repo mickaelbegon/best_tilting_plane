@@ -26,11 +26,12 @@ from best_tilting_plane.modeling import (
     RIGHT_ARM_PLANE_BOUNDS_DEG,
     ROOT_ROTATION_SEQUENCE,
 )
-from best_tilting_plane.optimization import TwistStrategyOptimizer
+from best_tilting_plane.optimization import DirectMultipleShootingOptimizer, TwistStrategyOptimizer
 from best_tilting_plane.simulation import (
     PredictiveAerialTwistSimulator,
     SimulationConfiguration,
     TwistOptimizationVariables,
+    show_first_arm_piecewise_constant_comparison,
 )
 from best_tilting_plane.visualization import (
     SKELETON_CONNECTIONS,
@@ -90,7 +91,7 @@ PLOT_X_OPTIONS = ("Temps", "Somersault")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
 ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Best tilting plane")
-OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 5D")
+OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 5D", "Optimize DMS")
 PLOT_Y_OPTIONS = (
     "Somersault",
     "Tilt",
@@ -282,6 +283,11 @@ class BestTiltingPlaneApp:
         ttk.Button(controls, text="Simulate", command=self._run_simulation).grid(
             row=len(SLIDER_DEFINITIONS) + 5, column=0, sticky="w", pady=(10, 0)
         )
+        ttk.Button(
+            controls,
+            text="Comparer jerk bras 1",
+            command=self._show_first_arm_jerk_comparison,
+        ).grid(row=len(SLIDER_DEFINITIONS) + 5, column=1, columnspan=2, sticky="ew", pady=(10, 0))
         self.optimization_mode_var = tk.StringVar(value=OPTIMIZATION_MODE_OPTIONS[0])
         optimization_mode_box = ttk.Combobox(
             controls,
@@ -291,15 +297,15 @@ class BestTiltingPlaneApp:
             width=18,
         )
         optimization_mode_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 5, column=1, sticky="ew", pady=(10, 0), padx=(0, 8)
+            row=len(SLIDER_DEFINITIONS) + 6, column=0, columnspan=2, sticky="ew", pady=(10, 0), padx=(0, 8)
         )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=len(SLIDER_DEFINITIONS) + 5, column=2, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 6, column=2, sticky="w", pady=(10, 0)
         )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 6, column=0, columnspan=3, sticky="w", pady=(10, 0)
+            row=len(SLIDER_DEFINITIONS) + 7, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.sequence_var = tk.StringVar(
             value=(
@@ -311,7 +317,7 @@ class BestTiltingPlaneApp:
             )
         )
         ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 7, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=len(SLIDER_DEFINITIONS) + 8, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
         self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
@@ -491,9 +497,23 @@ class BestTiltingPlaneApp:
             variables,
             configuration=self._standard_optimization_configuration(),
         )
-        result = simulator.simulate()
+        self._update_from_simulation(simulator.simulate(), model_path=Path(simulator.model_path))
+
+    def _run_simulation_with_motion(self, prescribed_motion) -> None:
+        """Simulate one explicit prescribed motion and refresh the displays."""
+
+        simulator = PredictiveAerialTwistSimulator(
+            self._model_path(),
+            prescribed_motion,
+            configuration=self._standard_optimization_configuration(),
+        )
+        self._update_from_simulation(simulator.simulate(), model_path=Path(self._model_path()))
+
+    def _update_from_simulation(self, result, *, model_path: Path) -> None:
+        """Refresh the GUI from a simulation result."""
+
         self._last_simulation = result
-        self._last_model_path = Path(simulator.model_path)
+        self._last_model_path = model_path
         self._refresh_visualization_data()
 
         integrator_label = result.integrator_method.upper()
@@ -1092,26 +1112,44 @@ class BestTiltingPlaneApp:
         self._sync_time_slider_to_frame(self._animation_frame_index)
 
     def _apply_optimized_values(
-        self, optimized_values: dict[str, float], *, status_suffix: str | None = None
+        self,
+        optimized_values: dict[str, float],
+        *,
+        prescribed_motion=None,
+        status_suffix: str | None = None,
     ) -> None:
         """Push optimized parameters to the GUI, rerun the simulation, and restart the animation."""
 
         self._set_values(optimized_values)
         self.root.update_idletasks()
-        self._run_simulation()
+        if prescribed_motion is None:
+            self._run_simulation()
+        else:
+            self._run_simulation_with_motion(prescribed_motion)
         if status_suffix is not None:
             self.result_var.set(f"{self.result_var.get()} | {status_suffix}")
+
+    def _show_first_arm_jerk_comparison(self) -> None:
+        """Open an external comparison window for the first-arm plane motion."""
+
+        show_first_arm_piecewise_constant_comparison(
+            _variables_from_gui(self._current_values()),
+            total_time=self._standard_optimization_configuration().final_time,
+            jerk_step=0.02,
+            sample_step=0.005,
+        )
 
     def _optimize_strategy(self) -> None:
         """Optimize the current strategy with IPOPT, then update the GUI and rerun the simulation."""
 
         current_values = self._current_values()
         initial_guess = _variables_from_gui(current_values)
+        mode = self.optimization_mode_var.get()
         self._auto_runner.cancel()
         self.result_var.set("Optimisation en cours... voir les iterations IPOPT dans le terminal.")
         self.root.update_idletasks()
 
-        cached_values = self._load_cached_optimized_values()
+        cached_values = None if mode == "Optimize DMS" else self._load_cached_optimized_values()
         if cached_values is not None:
             self._apply_optimized_values(
                 cached_values,
@@ -1119,11 +1157,32 @@ class BestTiltingPlaneApp:
             )
             return
 
+        if mode == "Optimize DMS":
+            optimizer = DirectMultipleShootingOptimizer.from_builder(
+                self._model_path(),
+                configuration=self._standard_optimization_configuration(),
+                shooting_step=0.02,
+            )
+            result = optimizer.solve(initial_guess, max_iter=50, print_level=5, print_time=True)
+            optimized_values = {
+                "right_arm_start": result.variables.right_arm_start,
+                "left_plane_initial": np.rad2deg(result.variables.left_plane_initial),
+                "left_plane_final": np.rad2deg(result.variables.left_plane_final),
+                "right_plane_initial": np.rad2deg(result.variables.right_plane_initial),
+                "right_plane_final": np.rad2deg(result.variables.right_plane_final),
+            }
+            self._apply_optimized_values(
+                optimized_values,
+                prescribed_motion=result.prescribed_motion,
+                status_suffix=f"optimum DMS: {result.final_twist_turns:.2f} tours ({result.solver_status})",
+            )
+            return
+
         optimizer = TwistStrategyOptimizer.from_builder(
             self._model_path(),
             configuration=self._standard_optimization_configuration(),
         )
-        if self.optimization_mode_var.get() == "Optimize 5D":
+        if mode == "Optimize 5D":
             result = optimizer.optimize(initial_guess, max_iter=25, print_level=5, print_time=True)
         else:
             result = optimizer.optimize_right_arm_start_only(

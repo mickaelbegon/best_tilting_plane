@@ -248,6 +248,52 @@ def test_apply_optimized_values_updates_sliders_and_reruns_simulation() -> None:
     assert calls == [("set", {"right_arm_start": 0.25}), ("run", None)]
 
 
+def test_apply_optimized_values_can_rerun_with_a_custom_prescribed_motion() -> None:
+    """A custom optimized motion should bypass the default motion rebuild and be replayed directly."""
+
+    scheduler = FakeScheduler()
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = scheduler
+    app.result_var = FakeVar("Vrilles finales: 1.23 tours")
+    calls: list[tuple[str, object]] = []
+    app._set_values = lambda values: calls.append(("set", dict(values)))
+    app._run_simulation = lambda: calls.append(("run_default", None))
+    app._run_simulation_with_motion = lambda motion: calls.append(("run_motion", motion))
+
+    app._apply_optimized_values({"right_arm_start": 0.25}, prescribed_motion="custom-motion")
+
+    assert calls == [
+        ("set", {"right_arm_start": 0.25}),
+        ("run_motion", "custom-motion"),
+    ]
+
+
+def test_show_first_arm_jerk_comparison_uses_external_helper(monkeypatch) -> None:
+    """The dedicated GUI button should open the external comparison window with the GUI values."""
+
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.show_first_arm_piecewise_constant_comparison",
+        lambda variables, **kwargs: captured.update({"variables": variables, "kwargs": kwargs}),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": -15.0,
+        "left_plane_final": 5.0,
+        "right_plane_initial": 10.0,
+        "right_plane_final": 20.0,
+    }
+    app._standard_optimization_configuration = lambda: type("Config", (), {"final_time": 1.0})()
+
+    app._show_first_arm_jerk_comparison()
+
+    assert captured["variables"].right_arm_start == 0.1
+    assert captured["kwargs"] == {"total_time": 1.0, "jerk_step": 0.02, "sample_step": 0.005}
+
+
 def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -487,5 +533,77 @@ def test_optimize_strategy_writes_cache_after_ipopt(monkeypatch, tmp_path: Path)
                 "right_plane_final": 0.0,
             },
             "optimum IPOPT: -0.75 tours (Solve_Succeeded)",
+        )
+    ]
+
+
+def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The DMS mode should bypass the cache and push both slider values and the optimized motion."""
+
+    class FakeDmsOptimizer:
+        def solve(self, initial_guess, **_kwargs):
+            assert initial_guess.right_arm_start == 0.1
+            return type(
+                "DmsResult",
+                (),
+                {
+                    "variables": type(
+                        "Variables",
+                        (),
+                        {
+                            "right_arm_start": 0.28,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    )(),
+                    "prescribed_motion": "dms-motion",
+                    "final_twist_turns": -0.63,
+                    "solver_status": "Solve_Succeeded",
+                },
+            )()
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.DirectMultipleShootingOptimizer.from_builder",
+        lambda *_args, **_kwargs: FakeDmsOptimizer(),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize DMS")
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: type("Config", (), {"final_time": 1.0})()
+    applied: list[tuple[dict[str, float], object, str | None]] = []
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: applied.append(
+        (dict(values), prescribed_motion, status_suffix)
+    )
+
+    app._optimize_strategy()
+
+    assert app._auto_runner.cancelled
+    assert applied == [
+        (
+            {
+                "right_arm_start": 0.28,
+                "left_plane_initial": 0.0,
+                "left_plane_final": 0.0,
+                "right_plane_initial": 0.0,
+                "right_plane_final": 0.0,
+            },
+            "dms-motion",
+            "optimum DMS: -0.63 tours (Solve_Succeeded)",
         )
     ]

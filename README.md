@@ -1,7 +1,7 @@
 # Best Tilting Plane
 
 Python project for building a reduced whole-body `biorbd` model, simulating aerial twisting with prescribed arm
-motions, visualizing the best tilting plane, and optimizing the arm strategy that maximizes the final number of twists.
+motions, visualizing the best tilting plane, and optimizing the arm strategy that minimizes the final number of twists.
 
 ## Project Goals
 
@@ -12,7 +12,7 @@ This repository is being built incrementally with:
 - zero-gravity predictive simulation with prescribed quintic arm kinematics
 - a GUI with sliders, numeric inputs, simulation controls, 3D animation, and twist-count output
 - an optional best-tilting-plane overlay inspired by Charbonneau et al.
-- a nonlinear optimization based on IPOPT to maximize the final root twist
+- nonlinear optimizations based on IPOPT and CasADi to minimize the final root twist
 
 ## Development Rules
 
@@ -35,7 +35,7 @@ The local environment installs:
 
 - `biorbd`
 - `biobuddy` from `../GIT/biobuddy`
-- `casadi` for the future IPOPT-based optimization
+- `casadi` for the IPOPT-based optimizations
 
 ## Install
 
@@ -67,13 +67,15 @@ The current GUI provides:
 
 - sliders and numeric entry boxes for the decision variables
 - auto-simulation on slider changes with debounce, plus a `Simulate` button
-- an `Optimize` button backed by IPOPT
+- an `Optimize` button with `Optimize 2D`, `Optimize 5D`, and `Optimize DMS` modes
+- a `Comparer jerk bras 1` button that opens an external comparison window for the first-arm plane `q`, `qdot`, and `qddot`
 - a single integrated window with embedded 3D animation and 2D plotting
 - play/pause controls and a time slider to scrub through the animation
 - configurable 2D plots against time or somersault for root angles and arm deviations
 - a dedicated top-view mode showing the arm motion relative to the pelvis
 - a `q(root)=0` visualization mode that zeroes the first 6 DoFs for display and uses an `xOy` camera view
 - automatic RK4 versus RK45 selection, with RK4 `dt=0.005 s` retained on the standard case
+- a CasADi-based direct multiple-shooting prototype with piecewise-constant jerk controls on the arm planes
 - an optional best-tilting-plane overlay and the angular momentum shown at the CoM in the 3D view
 
 ## Initial Roadmap
