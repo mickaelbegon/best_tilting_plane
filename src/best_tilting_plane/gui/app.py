@@ -87,7 +87,7 @@ SLIDER_DEFINITIONS = (
         0.0,
     ),
 )
-PLOT_X_OPTIONS = ("Temps", "Somersault")
+PLOT_X_OPTIONS = ("Temps", "Somersault", "Vrille")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
 ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Best tilting plane")
@@ -962,6 +962,9 @@ class BestTiltingPlaneApp:
         if self.plot_x_var.get() == "Somersault":
             x_data = np.rad2deg(self._root_series(result, 0))
             x_label = "Somersault (deg)"
+        elif self.plot_x_var.get() == "Vrille":
+            x_data = np.rad2deg(self._root_series(result, 2))
+            x_label = "Vrille (deg)"
         else:
             x_data = np.asarray(result.time, dtype=float)
             x_label = "Temps (s)"

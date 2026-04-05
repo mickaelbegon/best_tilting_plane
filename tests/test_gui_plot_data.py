@@ -158,6 +158,21 @@ def test_plot_data_can_return_the_four_arm_kinematic_curves() -> None:
     )
 
 
+def test_plot_data_can_use_twist_as_the_horizontal_axis() -> None:
+    """The x-axis selector should expose the root twist angle in degrees."""
+
+    app = _build_app_for_plotting(plot_x="Vrille", plot_y="Tilt")
+
+    x_data, y_data, x_label, y_label, title, curve_labels = app._plot_data()
+
+    np.testing.assert_allclose(x_data, np.rad2deg(np.array([0.3, 0.6, 1.1])))
+    np.testing.assert_allclose(y_data, np.rad2deg(np.array([0.2, 0.5, 1.0])))
+    assert x_label == "Vrille (deg)"
+    assert y_label == "Tilt (deg)"
+    assert title == "Tilt en fonction de vrille"
+    assert curve_labels is None
+
+
 def test_top_view_plot_data_returns_relative_arm_trajectories_and_current_frame() -> None:
     """The top-view mode should expose pelvis-relative arm trajectories."""
 
