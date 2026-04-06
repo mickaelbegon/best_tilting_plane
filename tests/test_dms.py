@@ -91,6 +91,21 @@ def test_direct_multiple_shooting_candidate_start_times_use_the_reduced_search_w
     )
 
 
+def test_direct_multiple_shooting_uses_a_very_small_default_jerk_regularization(
+    tmp_path: Path,
+) -> None:
+    """The DMS default regularization should be small enough not to flatten the arm planes."""
+
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=1.0, steps=201, integrator="rk4", rk4_step=0.005),
+        shooting_step=0.02,
+    )
+
+    assert optimizer.jerk_regularization == 1e-9
+
+
 def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_returns_motion(
     monkeypatch,
     tmp_path: Path,

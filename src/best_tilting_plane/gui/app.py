@@ -33,6 +33,7 @@ from best_tilting_plane.optimization import (
     TwistStrategyOptimizer,
     show_dms_start_time_sweep_figure,
 )
+from best_tilting_plane.optimization.dms import DEFAULT_DMS_JERK_REGULARIZATION
 from best_tilting_plane.simulation import (
     PiecewiseConstantJerkArmMotion,
     PiecewiseConstantJerkTrajectory,
@@ -127,6 +128,7 @@ DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.24
 DMS_SCAN_END = 0.44
+DMS_JERK_REGULARIZATION = DEFAULT_DMS_JERK_REGULARIZATION
 ARM_KINEMATICS_LABELS = (
     "Plan bras gauche",
     "Elevation bras gauche",
@@ -469,6 +471,7 @@ class BestTiltingPlaneApp:
             signature["dms_active_duration"] = DMS_ACTIVE_DURATION
             signature["dms_scan_start"] = DMS_SCAN_START
             signature["dms_scan_end"] = DMS_SCAN_END
+            signature["dms_jerk_regularization"] = DMS_JERK_REGULARIZATION
         return signature
 
     def _read_optimization_cache_file(self) -> dict[str, object]:
@@ -1539,6 +1542,7 @@ class BestTiltingPlaneApp:
                     self._model_path(),
                     configuration=self._standard_optimization_configuration(),
                     shooting_step=DMS_SHOOTING_STEP,
+                    jerk_regularization=DMS_JERK_REGULARIZATION,
                 )
                 candidate_start_times = np.asarray(optimizer.candidate_start_times(), dtype=float)
                 cached_progress = None if not use_cache else self._load_cached_dms_progress()

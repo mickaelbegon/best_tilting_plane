@@ -33,6 +33,7 @@ RIGHT_ARM_SWEEP_BOUNDS = (0.24, 0.44)
 PLANE_STATE_SIZE = 3
 ROOT_STATE_SIZE = 12
 ELEVATION_STAGE_BLOCK_SIZE = 18
+DEFAULT_DMS_JERK_REGULARIZATION = 1e-9
 
 
 @dataclass(frozen=True)
@@ -117,7 +118,7 @@ class DirectMultipleShootingOptimizer:
         *,
         configuration: SimulationConfiguration | None = None,
         shooting_step: float = 0.02,
-        jerk_regularization: float = 1e-4,
+        jerk_regularization: float = DEFAULT_DMS_JERK_REGULARIZATION,
         model: biorbd.Model | None = None,
     ) -> None:
         """Store the models and the direct multiple-shooting settings."""
@@ -162,7 +163,7 @@ class DirectMultipleShootingOptimizer:
         model_builder: ReducedAerialBiomod | None = None,
         configuration: SimulationConfiguration | None = None,
         shooting_step: float = 0.02,
-        jerk_regularization: float = 1e-4,
+        jerk_regularization: float = DEFAULT_DMS_JERK_REGULARIZATION,
     ) -> "DirectMultipleShootingOptimizer":
         """Generate the model file and build a DMS optimizer on top of it."""
 
