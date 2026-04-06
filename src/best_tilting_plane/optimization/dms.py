@@ -616,7 +616,7 @@ class DirectMultipleShootingOptimizer:
             ca.reshape(left_control_symbols, 1, self.interval_count),
             ca.reshape(right_control_symbols, 1, self.interval_count),
             ca.reshape(parameters, ELEVATION_STAGE_BLOCK_SIZE, self.interval_count),
-        )[0]
+        )
         constraints = [ca.reshape(mapped_defects, -1, 1)]
 
         decision_vector = ca.vertcat(

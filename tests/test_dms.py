@@ -215,6 +215,10 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     assert captured["options"]["ipopt.linear_solver"] == "ma57"
     assert captured["options"]["ipopt.hsllib"] == "/tmp/libhsl.dylib"
     assert captured["options"]["print_time"] == 1
+    assert optimizer._constraint_count == optimizer.interval_count * (
+        dms_module.ROOT_STATE_SIZE + 2 * dms_module.PLANE_STATE_SIZE
+    )
+    assert np.asarray(captured["lbg"], dtype=float).shape == (optimizer._constraint_count,)
     assert np.asarray(captured["p"], dtype=float).shape == (
         dms_module.ELEVATION_STAGE_BLOCK_SIZE * optimizer.interval_count,
     )
