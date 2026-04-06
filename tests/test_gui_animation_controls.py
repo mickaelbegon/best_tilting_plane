@@ -855,6 +855,53 @@ def test_load_cached_dms_solution_ignores_stale_signature(tmp_path: Path) -> Non
     assert app._load_cached_dms_solution() is None
 
 
+def test_optimize_3d_can_reuse_legacy_optimize_dms_cache(tmp_path: Path) -> None:
+    """The renamed 3D mode should still replay a compatible legacy `optimize_dms` cache entry."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.optimization_mode_var = FakeVar("Optimize 3D")
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+
+    legacy_signature = dict(app._optimization_cache_signature_for_mode("Optimize 3D"))
+    legacy_signature["version"] -= 1
+    legacy_signature["mode"] = "optimize_dms"
+    legacy_signature.pop("dms_objective_mode")
+    legacy_signature.pop("dms_btp_deviation_weight")
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_dms": {
+                        "signature": legacy_signature,
+                        "values": {
+                            "right_arm_start": 0.28,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "left_plane_jerk": [0.0] * 15,
+                        "right_plane_jerk": [0.0] * 15,
+                        "final_twist_turns": -0.63,
+                        "solver_status": "Solve_Succeeded",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cached = app._load_cached_dms_solution()
+
+    assert cached is not None
+    assert cached[0]["right_arm_start"] == 0.28
+
+
 def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
     monkeypatch,
     tmp_path: Path,

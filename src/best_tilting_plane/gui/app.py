@@ -163,6 +163,14 @@ def _optimization_mode_label(mode: str) -> str:
     return "DMS" if mode == "Optimize DMS" else mode
 
 
+def _legacy_cache_keys_for_mode(mode: str) -> tuple[str, ...]:
+    """Return compatible legacy cache keys for one optimization mode."""
+
+    if mode == "Optimize 3D":
+        return ("optimize_dms",)
+    return ()
+
+
 def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
     """Convert GUI values into the optimization-variable structure."""
 
@@ -560,14 +568,49 @@ class BestTiltingPlaneApp:
             progress_records = {}
         return {"records": records, "progress_records": progress_records}
 
+    def _cache_signatures_match(self, record_signature: object, *, mode: str) -> bool:
+        """Return whether one stored cache signature is compatible with the current mode."""
+
+        if not isinstance(record_signature, dict):
+            return False
+        expected = dict(self._optimization_cache_signature_for_mode(mode))
+        if record_signature == expected:
+            return True
+
+        if mode != "Optimize 3D":
+            return False
+
+        normalized = dict(record_signature)
+        if normalized.get("mode") == "optimize_dms":
+            normalized["mode"] = "optimize_3d"
+        normalized.setdefault("dms_objective_mode", OBJECTIVE_MODE_TWIST)
+        normalized.setdefault("dms_btp_deviation_weight", DMS_BTP_DEVIATION_WEIGHT)
+        normalized["version"] = expected["version"]
+        return normalized == expected
+
+    def _matching_cache_record(
+        self,
+        records: dict[str, object],
+        *,
+        mode: str,
+    ) -> dict[str, object] | None:
+        """Return the first cache record compatible with one optimization mode."""
+
+        record_keys = (self._optimization_cache_key_for_mode(mode), *_legacy_cache_keys_for_mode(mode))
+        for record_key in record_keys:
+            record = records.get(record_key)
+            if not isinstance(record, dict):
+                continue
+            if self._cache_signatures_match(record.get("signature"), mode=mode):
+                return record
+        return None
+
     def _load_cached_optimized_values(self) -> dict[str, float] | None:
         """Return cached optimized GUI values when the stored signature matches the current setup."""
 
         cache = self._read_optimization_cache_file()
-        record = cache["records"].get(self._optimization_cache_key())
-        if not isinstance(record, dict):
-            return None
-        if record.get("signature") != self._optimization_cache_signature():
+        record = self._matching_cache_record(cache["records"], mode=self.optimization_mode_var.get())
+        if record is None:
             return None
         values = record.get("values")
         if not isinstance(values, dict):
@@ -594,10 +637,8 @@ class BestTiltingPlaneApp:
         """Return cached scan data for one mode when the stored signature matches."""
 
         cache = self._read_optimization_cache_file()
-        record = cache["records"].get(self._optimization_cache_key_for_mode(mode))
-        if not isinstance(record, dict):
-            return None
-        if record.get("signature") != self._optimization_cache_signature_for_mode(mode):
+        record = self._matching_cache_record(cache["records"], mode=mode)
+        if record is None:
             return None
         values = record.get("values")
         if not isinstance(values, dict):
@@ -951,10 +992,8 @@ class BestTiltingPlaneApp:
         """Return one cached DMS solution when the stored signature matches the current setup."""
 
         cache = self._read_optimization_cache_file()
-        record = cache["records"].get(self._optimization_cache_key())
-        if not isinstance(record, dict):
-            return None
-        if record.get("signature") != self._optimization_cache_signature():
+        record = self._matching_cache_record(cache["records"], mode=self.optimization_mode_var.get())
+        if record is None:
             return None
         if bool(record.get("in_progress", False)):
             return None
@@ -1009,12 +1048,10 @@ class BestTiltingPlaneApp:
         """Return one resumable DMS checkpoint when the stored signature matches the current setup."""
 
         cache = self._read_optimization_cache_file()
-        record = cache["progress_records"].get(self._optimization_cache_key())
+        record = self._matching_cache_record(cache["progress_records"], mode=self.optimization_mode_var.get())
         if record is None:
-            record = cache["records"].get(self._optimization_cache_key())
-        if not isinstance(record, dict):
-            return None
-        if record.get("signature") != self._optimization_cache_signature():
+            record = self._matching_cache_record(cache["records"], mode=self.optimization_mode_var.get())
+        if record is None:
             return None
         if not bool(record.get("in_progress", False)):
             return None
@@ -1700,6 +1737,8 @@ class BestTiltingPlaneApp:
             mode for mode in OPTIMIZATION_MODE_OPTIONS if mode != current_mode
         ]
         for mode in ordered_modes:
+            if current_mode == "Optimize DMS" and mode == "Optimize 3D":
+                continue
             if mode in seen_modes:
                 continue
             seen_modes.add(mode)
