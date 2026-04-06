@@ -381,6 +381,74 @@ def test_scan_plot_datasets_returns_current_mode_then_other_cached_mode(tmp_path
     assert datasets[1]["best_start_time"] == 0.20
 
 
+def test_scan_plot_datasets_can_include_optimize_3d_btp(tmp_path) -> None:
+    """The embedded `vrilles selon t1` figure should include the 3D-BTP scan when available."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.optimization_mode_var = _FakeVar("Optimize 2D")
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_2d": {
+                        "signature": app._optimization_cache_signature_for_mode("Optimize 2D"),
+                        "values": {
+                            "right_arm_start": 0.20,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "scan_start_times": [0.16, 0.20],
+                        "scan_final_twist_turns": [-0.30, -0.50],
+                        "scan_objective_values": [-0.29, -0.49],
+                    },
+                    "optimize_3d": {
+                        "signature": app._optimization_cache_signature_for_mode("Optimize 3D"),
+                        "values": {
+                            "right_arm_start": 0.28,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "scan_start_times": [0.16, 0.18, 0.28],
+                        "scan_final_twist_turns": [-0.40, -0.55, -0.63],
+                        "scan_objective_values": [-0.39, -0.54, -0.62],
+                        "scan_success_mask": [True, True, True],
+                    },
+                    "optimize_3d_btp": {
+                        "signature": app._optimization_cache_signature_for_mode("Optimize 3D BTP"),
+                        "values": {
+                            "right_arm_start": 0.30,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "scan_start_times": [0.20, 0.24, 0.30],
+                        "scan_final_twist_turns": [-0.44, -0.59, -0.66],
+                        "scan_objective_values": [-0.41, -0.56, -0.61],
+                        "scan_success_mask": [True, True, True],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    datasets = app._scan_plot_datasets()
+
+    assert [dataset["mode"] for dataset in datasets] == ["Optimize 2D", "Optimize 3D", "Optimize 3D BTP"]
+    assert datasets[2]["best_start_time"] == 0.30
+
+
 def test_refresh_plot_adds_arm_angle_bounds_when_plotting_arm_kinematics() -> None:
     """The arm-kinematics figure should display the validated angular bounds for all four DoFs."""
 
