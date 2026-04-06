@@ -74,6 +74,7 @@ def test_gui_slider_bounds_match_the_validated_constraints() -> None:
 
     assert slider_by_name["right_arm_start"].minimum == RIGHT_ARM_START_BOUNDS[0]
     assert slider_by_name["right_arm_start"].maximum == RIGHT_ARM_START_BOUNDS[1]
+    assert slider_by_name["right_arm_start"].resolution == pytest.approx(0.02)
     assert set(slider_by_name) == {"right_arm_start"}
     assert LEFT_ARM_PLANE_BOUNDS_DEG == (-135.0, 0.0)
     assert RIGHT_ARM_PLANE_BOUNDS_DEG == (0.0, 135.0)

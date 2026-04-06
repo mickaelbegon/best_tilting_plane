@@ -67,10 +67,11 @@ class SliderDefinition:
     minimum: float
     maximum: float
     default: float
+    resolution: float = 0.01
 
 
 SLIDER_DEFINITIONS = (
-    SliderDefinition("right_arm_start", "Start bras droit (s)", 0.0, 0.7, 0.10),
+    SliderDefinition("right_arm_start", "Start bras droit (s)", 0.0, 0.7, 0.10, resolution=0.02),
 )
 GUI_FIXED_VALUES = {
     "left_plane_initial": 0.0,
@@ -203,7 +204,7 @@ class BestTiltingPlaneApp:
                 orient=tk.HORIZONTAL,
                 from_=definition.minimum,
                 to=definition.maximum,
-                resolution=0.01,
+                resolution=definition.resolution,
                 length=280,
             )
             scale.set(definition.default)
