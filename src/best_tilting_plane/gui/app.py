@@ -36,6 +36,8 @@ from best_tilting_plane.optimization import (
 )
 from best_tilting_plane.optimization.dms import (
     DEFAULT_DMS_JERK_REGULARIZATION,
+    MULTISTART_REFERENCE_T1,
+    MULTISTART_START_COUNT,
     show_dms_jerk_bounds_figure,
 )
 from best_tilting_plane.simulation import (
@@ -112,8 +114,8 @@ STANDARD_RK4_STEP = 0.005
 OPTIMIZATION_CACHE_VERSION = 2
 DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
-DMS_SCAN_START = 0.16
-DMS_SCAN_END = 0.36
+DMS_SCAN_START = 0.0
+DMS_SCAN_END = 0.7
 DMS_JERK_REGULARIZATION = DEFAULT_DMS_JERK_REGULARIZATION
 ARM_KINEMATICS_LABELS = (
     "Plan bras gauche",
@@ -2080,15 +2082,28 @@ class BestTiltingPlaneApp:
                         f"({index + 1}/{len(candidate_start_times)})"
                     )
                     self.root.update_idletasks()
-                    current_result = optimizer.solve_fixed_start(
-                        initial_guess,
-                        right_arm_start=current_start_time,
-                        previous_result=previous_result,
-                        max_iter=50,
-                        print_level=5,
-                        print_time=True,
-                        show_jerk_diagnostics=False,
-                    )
+                    if np.isclose(current_start_time, MULTISTART_REFERENCE_T1) and hasattr(
+                        optimizer, "solve_fixed_start_multistart"
+                    ):
+                        current_result = optimizer.solve_fixed_start_multistart(
+                            initial_guess,
+                            right_arm_start=current_start_time,
+                            start_count=MULTISTART_START_COUNT,
+                            max_iter=50,
+                            print_level=5,
+                            print_time=True,
+                            show_jerk_diagnostics=False,
+                        )
+                    else:
+                        current_result = optimizer.solve_fixed_start(
+                            initial_guess,
+                            right_arm_start=current_start_time,
+                            previous_result=previous_result,
+                            max_iter=50,
+                            print_level=5,
+                            print_time=True,
+                            show_jerk_diagnostics=False,
+                        )
                     scan_start_times.append(current_start_time)
                     scan_final_twist_turns.append(current_result.final_twist_turns)
                     scan_objective_values.append(current_result.objective)

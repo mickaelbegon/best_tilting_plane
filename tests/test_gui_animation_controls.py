@@ -1063,6 +1063,115 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     assert len(jerk_diagnostics) == 1
 
 
+def test_optimize_strategy_uses_multistart_for_t1_equal_0_30_when_available(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The DMS GUI path should use the dedicated multistart helper for `t1=0.30`."""
+
+    calls: list[tuple[str, float]] = []
+
+    class FakeDmsOptimizer:
+        def candidate_start_times(self):
+            return np.array([0.28, 0.30, 0.32], dtype=float)
+
+        def solve_fixed_start(self, initial_guess, *, right_arm_start, previous_result=None, **_kwargs):
+            assert initial_guess.right_arm_start == 0.1
+            calls.append(("single", float(right_arm_start)))
+            return type(
+                "DmsResult",
+                (),
+                {
+                    "variables": type(
+                        "Variables",
+                        (),
+                        {
+                            "right_arm_start": right_arm_start,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    )(),
+                    "prescribed_motion": f"dms-motion-{right_arm_start:.2f}",
+                    "left_plane_jerk": np.zeros(15),
+                    "right_plane_jerk": np.zeros(15),
+                    "final_twist_turns": -0.55 if np.isclose(right_arm_start, 0.28) else -0.58,
+                    "objective": -0.54 if np.isclose(right_arm_start, 0.28) else -0.57,
+                    "solver_status": "Solve_Succeeded",
+                    "success": True,
+                    "right_arm_start_node_index": int(round(right_arm_start / 0.02)),
+                    "warm_start_primal": np.full(20, right_arm_start),
+                    "warm_start_lam_x": np.full(20, 1.0),
+                    "warm_start_lam_g": np.full(10, 2.0),
+                },
+            )()
+
+        def solve_fixed_start_multistart(self, initial_guess, *, right_arm_start, **_kwargs):
+            assert initial_guess.right_arm_start == 0.1
+            calls.append(("multi", float(right_arm_start)))
+            return type(
+                "DmsResult",
+                (),
+                {
+                    "variables": type(
+                        "Variables",
+                        (),
+                        {
+                            "right_arm_start": right_arm_start,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    )(),
+                    "prescribed_motion": "dms-motion-0.30-best",
+                    "left_plane_jerk": np.zeros(15),
+                    "right_plane_jerk": np.zeros(15),
+                    "final_twist_turns": -0.80,
+                    "objective": -0.79,
+                    "solver_status": "Solve_Succeeded",
+                    "success": True,
+                    "right_arm_start_node_index": 15,
+                    "warm_start_primal": np.full(20, 0.30),
+                    "warm_start_lam_x": np.full(20, 1.0),
+                    "warm_start_lam_g": np.full(10, 2.0),
+                },
+            )()
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.DirectMultipleShootingOptimizer.from_builder",
+        lambda *_args, **_kwargs: FakeDmsOptimizer(),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize DMS")
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+    app._show_dms_sweep_figure = lambda **kwargs: None
+    app._schedule_dms_jerk_diagnostic_figure = lambda **kwargs: None
+    app._schedule_scan_figure = lambda **kwargs: None
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: None
+
+    app._optimize_strategy()
+
+    assert calls == [("single", 0.28), ("multi", 0.3), ("single", 0.32)]
+
+
 def test_report_callback_exception_updates_result_message() -> None:
     """Tkinter callback failures should be surfaced in the GUI status line."""
 

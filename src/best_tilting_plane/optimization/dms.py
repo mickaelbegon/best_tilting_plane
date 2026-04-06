@@ -30,7 +30,9 @@ from best_tilting_plane.simulation import (
 LEFT_ARM_ACTIVE_DURATION = 0.3
 RIGHT_ARM_ACTIVE_DURATION = 0.3
 RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
-RIGHT_ARM_SWEEP_BOUNDS = (0.16, 0.36)
+RIGHT_ARM_SWEEP_BOUNDS = (0.0, 0.7)
+MULTISTART_REFERENCE_T1 = 0.30
+MULTISTART_START_COUNT = 10
 PLANE_STATE_SIZE = 3
 ROOT_STATE_SIZE = 12
 ELEVATION_STAGE_BLOCK_SIZE = 18
@@ -686,6 +688,7 @@ class DirectMultipleShootingOptimizer:
         *,
         right_arm_start: float,
         previous_result: DirectMultipleShootingResult | None = None,
+        warm_start_override: np.ndarray | None = None,
         max_iter: int = 100,
         print_level: int = 0,
         print_time: bool = False,
@@ -793,7 +796,13 @@ class DirectMultipleShootingOptimizer:
             "ubg": np.zeros(self._constraint_count, dtype=float),
             "p": self._elevation_parameter_values(right_arm_start=right_arm_start),
         }
-        if previous_result is not None and previous_result.warm_start_primal is not None:
+        if warm_start_override is not None:
+            solver_inputs["x0"] = self._project_initial_guess_to_bounds(
+                np.asarray(warm_start_override, dtype=float),
+                lbx_array,
+                ubx_array,
+            )
+        elif previous_result is not None and previous_result.warm_start_primal is not None:
             solver_inputs["x0"] = self._project_initial_guess_to_bounds(
                 previous_result.warm_start_primal,
                 lbx_array,
@@ -921,6 +930,126 @@ class DirectMultipleShootingOptimizer:
                 else None
             ),
         )
+
+    def _randomized_warm_start(
+        self,
+        base_primal: np.ndarray,
+        *,
+        right_start_node_index: int,
+        generator: np.random.Generator,
+    ) -> np.ndarray:
+        """Return one randomized warm start by perturbing only the active jerk controls."""
+
+        randomized = np.asarray(base_primal, dtype=float).copy()
+        left_control_offset = (
+            ROOT_STATE_SIZE * (self.interval_count + 1)
+            + 2 * PLANE_STATE_SIZE * (self.interval_count + 1)
+        )
+        right_control_offset = left_control_offset + self.interval_count
+
+        left_slice = slice(left_control_offset, left_control_offset + self.active_control_count)
+        right_slice = slice(
+            right_control_offset + right_start_node_index,
+            right_control_offset + right_start_node_index + self.active_control_count,
+        )
+        perturbation_scale = 0.35 * self.jerk_bound
+        randomized[left_slice] += generator.uniform(
+            low=-perturbation_scale,
+            high=perturbation_scale,
+            size=self.active_control_count,
+        )
+        randomized[right_slice] += generator.uniform(
+            low=-perturbation_scale,
+            high=perturbation_scale,
+            size=self.active_control_count,
+        )
+        return randomized
+
+    def solve_fixed_start_multistart(
+        self,
+        initial_guess: TwistOptimizationVariables,
+        *,
+        right_arm_start: float,
+        start_count: int = MULTISTART_START_COUNT,
+        max_iter: int = 100,
+        print_level: int = 0,
+        print_time: bool = False,
+        show_jerk_diagnostics: bool = False,
+    ) -> DirectMultipleShootingResult:
+        """Run several fixed-start solves and keep the best result for the requested `t1`."""
+
+        if start_count <= 1:
+            return self.solve_fixed_start(
+                initial_guess,
+                right_arm_start=right_arm_start,
+                max_iter=max_iter,
+                print_level=print_level,
+                print_time=print_time,
+                show_jerk_diagnostics=show_jerk_diagnostics,
+            )
+
+        generator = np.random.default_rng(1234)
+        right_start_node_index = int(round(right_arm_start / self.shooting_step))
+        best_result = self.solve_fixed_start(
+            initial_guess,
+            right_arm_start=right_arm_start,
+            max_iter=max_iter,
+            print_level=print_level,
+            print_time=print_time,
+            show_jerk_diagnostics=False,
+        )
+        selection_pool: list[DirectMultipleShootingResult] = [best_result]
+        best_primal = best_result.warm_start_primal
+
+        for start_index in range(1, start_count):
+            print(
+                f"DMS multistart: t1={right_arm_start:.2f} s "
+                f"({start_index + 1}/{start_count})"
+            )
+            randomized_warm_start = None
+            if best_primal is not None:
+                randomized_warm_start = self._randomized_warm_start(
+                    best_primal,
+                    right_start_node_index=right_start_node_index,
+                    generator=generator,
+                )
+            current_result = self.solve_fixed_start(
+                initial_guess,
+                right_arm_start=right_arm_start,
+                warm_start_override=randomized_warm_start,
+                max_iter=max_iter,
+                print_level=print_level,
+                print_time=print_time,
+                show_jerk_diagnostics=False,
+            )
+            selection_pool.append(current_result)
+            best_candidates = [result for result in selection_pool if result.success]
+            if not best_candidates:
+                best_candidates = selection_pool
+            best_result = min(best_candidates, key=lambda result: result.objective)
+            if best_result.warm_start_primal is not None:
+                best_primal = best_result.warm_start_primal
+
+        if show_jerk_diagnostics:
+            show_dms_jerk_bounds_figure(
+                node_times=best_result.node_times,
+                left_jerk=np.pad(
+                    np.asarray(best_result.left_plane_jerk, dtype=float),
+                    (0, self.interval_count - best_result.left_plane_jerk.size),
+                    mode="constant",
+                ),
+                right_jerk=np.pad(
+                    np.asarray(best_result.right_plane_jerk, dtype=float),
+                    (right_start_node_index, self.interval_count - right_start_node_index - best_result.right_plane_jerk.size),
+                    mode="constant",
+                ),
+                left_lower_bounds=self._global_jerk_bounds(right_start_node_index=right_start_node_index)[0],
+                left_upper_bounds=self._global_jerk_bounds(right_start_node_index=right_start_node_index)[1],
+                right_lower_bounds=self._global_jerk_bounds(right_start_node_index=right_start_node_index)[2],
+                right_upper_bounds=self._global_jerk_bounds(right_start_node_index=right_start_node_index)[3],
+                right_arm_start=right_arm_start,
+            )
+        return best_result
 
     def solve(
         self,

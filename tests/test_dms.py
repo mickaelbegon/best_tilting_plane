@@ -78,10 +78,10 @@ def test_direct_multiple_shooting_jerk_bound_matches_left_elevation_fitting(
     assert optimizer.jerk_bound == np.max(np.abs(reference.jerks))
 
 
-def test_direct_multiple_shooting_candidate_start_times_use_the_reduced_search_window(
+def test_direct_multiple_shooting_candidate_start_times_cover_the_full_admissible_window(
     tmp_path: Path,
 ) -> None:
-    """The DMS sweep should test only the reduced `t1` window on the shooting grid."""
+    """The DMS sweep should test the full admissible `t1` window on the shooting grid."""
 
     optimizer = DirectMultipleShootingOptimizer.from_builder(
         tmp_path / "reduced.bioMod",
@@ -92,7 +92,7 @@ def test_direct_multiple_shooting_candidate_start_times_use_the_reduced_search_w
 
     np.testing.assert_allclose(
         optimizer.candidate_start_times(),
-        np.arange(0.16, 0.36 + 0.001, 0.02, dtype=float),
+        np.arange(0.0, 0.70 + 0.001, 0.02, dtype=float),
     )
 
 
@@ -409,6 +409,113 @@ def test_direct_multiple_shooting_sweep_keeps_the_best_successful_candidate(tmp_
     np.testing.assert_allclose(sweep.final_twist_turns, [-0.20, -0.50, -0.80])
     np.testing.assert_array_equal(sweep.success_mask, [True, False, True])
     assert sweep.best_result.variables.right_arm_start == 0.14
+
+
+def test_direct_multiple_shooting_multistart_keeps_the_best_solution_for_one_fixed_t1(
+    tmp_path: Path,
+) -> None:
+    """The multistart helper should keep the best result across several starts."""
+
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=1.0, steps=201, integrator="rk4", rk4_step=0.005),
+        shooting_step=0.02,
+    )
+
+    objective_values = iter([-0.30, -0.45, -0.20])
+    warm_start_shapes: list[tuple[int, ...] | None] = []
+
+    def fake_solve_fixed_start(
+        _initial_guess,
+        *,
+        right_arm_start: float,
+        previous_result=None,
+        warm_start_override=None,
+        max_iter: int = 100,
+        print_level: int = 0,
+        print_time: bool = False,
+        show_jerk_diagnostics: bool = False,
+    ):
+        del previous_result, max_iter, print_level, print_time, show_jerk_diagnostics
+        objective = next(objective_values)
+        warm_start_shapes.append(None if warm_start_override is None else np.asarray(warm_start_override).shape)
+        return dms_module.DirectMultipleShootingResult(
+            variables=TwistOptimizationVariables(
+                right_arm_start=right_arm_start,
+                left_plane_initial=0.0,
+                left_plane_final=0.0,
+                right_plane_initial=0.0,
+                right_plane_final=0.0,
+            ),
+            right_arm_start_node_index=int(round(right_arm_start / optimizer.shooting_step)),
+            left_plane_jerk=np.zeros(optimizer.active_control_count),
+            right_plane_jerk=np.zeros(optimizer.active_control_count),
+            node_times=optimizer.node_times.copy(),
+            arm_node_times=optimizer.arm_node_times.copy(),
+            root_state_nodes=np.zeros((dms_module.ROOT_STATE_SIZE, optimizer.interval_count + 1)),
+            left_plane_state_nodes=np.zeros((dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)),
+            right_plane_state_nodes=np.zeros((dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)),
+            prescribed_motion=PiecewiseConstantJerkArmMotion(
+                left_plane=PiecewiseConstantJerkTrajectory(
+                    q0=0.0,
+                    qdot0=0.0,
+                    qddot0=0.0,
+                    step=optimizer.shooting_step,
+                    jerks=np.zeros(optimizer.active_control_count),
+                    active_start=0.0,
+                    active_end=dms_module.LEFT_ARM_ACTIVE_DURATION,
+                    total_duration=optimizer.configuration.final_time,
+                ),
+                right_plane=PiecewiseConstantJerkTrajectory(
+                    q0=0.0,
+                    qdot0=0.0,
+                    qddot0=0.0,
+                    step=optimizer.shooting_step,
+                    jerks=np.zeros(optimizer.active_control_count),
+                    active_start=0.0,
+                    active_end=dms_module.RIGHT_ARM_ACTIVE_DURATION,
+                    total_duration=optimizer.configuration.final_time - right_arm_start,
+                ),
+                right_arm_start=right_arm_start,
+            ),
+            simulation=type(
+                "SimulationResult",
+                (),
+                {
+                    "final_twist_angle": 2.0 * np.pi * objective,
+                    "final_twist_turns": objective,
+                },
+            )(),
+            objective=objective,
+            solver_status="Solve_Succeeded",
+            success=True,
+            warm_start_primal=np.full(
+                (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE
+                + 2 * (optimizer.interval_count + 1) * dms_module.PLANE_STATE_SIZE
+                + 2 * optimizer.interval_count,
+                right_arm_start + objective,
+            ),
+        )
+
+    optimizer.solve_fixed_start = fake_solve_fixed_start  # type: ignore[method-assign]
+
+    result = optimizer.solve_fixed_start_multistart(
+        TwistOptimizationVariables(
+            right_arm_start=0.30,
+            left_plane_initial=0.0,
+            left_plane_final=0.0,
+            right_plane_initial=0.0,
+            right_plane_final=0.0,
+        ),
+        right_arm_start=0.30,
+        start_count=3,
+    )
+
+    assert result.objective == pytest.approx(-0.45)
+    assert warm_start_shapes[0] is None
+    assert warm_start_shapes[1] is not None
+    assert warm_start_shapes[2] is not None
 
 
 def test_direct_multiple_shooting_sweep_warm_starts_each_node_with_previous_solution(tmp_path: Path) -> None:
