@@ -6,6 +6,7 @@ from pathlib import Path
 
 import casadi as ca
 import numpy as np
+import pytest
 
 from best_tilting_plane.modeling import ReducedAerialBiomod
 from best_tilting_plane.optimization import DirectMultipleShootingOptimizer
@@ -46,10 +47,14 @@ def test_direct_multiple_shooting_initial_guess_motion_respects_activation_windo
     assert motion.left_plane.active_end == dms_module.LEFT_ARM_ACTIVE_DURATION
     assert motion.right_plane.active_start == 0.0
     assert motion.right_plane.active_end == dms_module.RIGHT_ARM_ACTIVE_DURATION
-    assert motion.left_plane.jerks.shape == (optimizer.active_control_count,)
-    assert motion.right_plane.jerks.shape == (optimizer.active_control_count,)
+    assert motion.left_plane.jerks.shape == (optimizer.interval_count,)
+    assert motion.right_plane.jerks.shape == (optimizer.interval_count - int(round(0.16 / optimizer.shooting_step)),)
+    np.testing.assert_allclose(motion.left_plane.jerks[optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(motion.right_plane.jerks[optimizer.active_control_count :], 0.0)
     assert motion.left_plane.duration == optimizer.configuration.final_time
-    assert motion.right_plane.duration == optimizer.configuration.final_time - 0.16
+    assert motion.right_plane.duration == pytest.approx(
+        optimizer.configuration.final_time - 0.16
+    )
 
 
 def test_direct_multiple_shooting_jerk_bound_matches_left_elevation_fitting(

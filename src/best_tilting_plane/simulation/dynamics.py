@@ -11,7 +11,11 @@ import numpy as np
 from scipy.integrate import solve_ivp
 
 from best_tilting_plane.modeling import ReducedAerialBiomod, root_twist_index
-from best_tilting_plane.simulation.arm_motion import PrescribedArmMotion, TwistOptimizationVariables
+from best_tilting_plane.simulation.arm_motion import TwistOptimizationVariables
+from best_tilting_plane.simulation.jerk_motion import (
+    PiecewiseConstantJerkArmMotion,
+    build_piecewise_constant_jerk_arm_motion,
+)
 
 ROOT_DOF = 6
 JOINT_DOF = 4
@@ -77,7 +81,7 @@ class PredictiveAerialTwistSimulator:
     def __init__(
         self,
         model_path: str | Path,
-        prescribed_motion: PrescribedArmMotion,
+        prescribed_motion: PiecewiseConstantJerkArmMotion,
         *,
         configuration: SimulationConfiguration | None = None,
         model: biorbd.Model | None = None,
@@ -108,7 +112,16 @@ class PredictiveAerialTwistSimulator:
 
         builder = model_builder or ReducedAerialBiomod()
         model_path = builder.write(output_path)
-        return cls(model_path, PrescribedArmMotion(variables), configuration=configuration)
+        jerk_step = 0.02
+        return cls(
+            model_path,
+            build_piecewise_constant_jerk_arm_motion(
+                variables,
+                total_time=(configuration or SimulationConfiguration()).final_time,
+                step=jerk_step,
+            ),
+            configuration=configuration,
+        )
 
     def joint_kinematics(self, time: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Return non-root joint position, velocity, and acceleration at the requested time."""

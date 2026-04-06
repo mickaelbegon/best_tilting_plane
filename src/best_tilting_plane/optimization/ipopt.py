@@ -19,8 +19,8 @@ from best_tilting_plane.modeling import (
 from best_tilting_plane.optimization.solver_options import build_ipopt_solver_options
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
+    build_piecewise_constant_jerk_arm_motion,
     PredictiveAerialTwistSimulator,
-    PrescribedArmMotion,
     SimulationConfiguration,
     TwistOptimizationVariables,
 )
@@ -71,6 +71,38 @@ class TwistOptimizationResult:
     objective: float
     solver_status: str
     success: bool
+
+
+@dataclass(frozen=True)
+class RightArmStartSweepResult:
+    """Discrete sweep result for the 1D right-arm-start optimization mode."""
+
+    best_result: TwistOptimizationResult
+    candidate_results: tuple[TwistOptimizationResult, ...]
+
+    @property
+    def start_times(self) -> np.ndarray:
+        """Return the scanned start times."""
+
+        return np.array([result.variables.right_arm_start for result in self.candidate_results], dtype=float)
+
+    @property
+    def objective_values(self) -> np.ndarray:
+        """Return the objective value at every scanned start time."""
+
+        return np.array([result.objective for result in self.candidate_results], dtype=float)
+
+    @property
+    def final_twist_turns(self) -> np.ndarray:
+        """Return the final twist count at every scanned start time."""
+
+        return np.array([result.final_twist_turns for result in self.candidate_results], dtype=float)
+
+    @property
+    def success_mask(self) -> np.ndarray:
+        """Return the solver-success mask for the scanned start times."""
+
+        return np.array([result.success for result in self.candidate_results], dtype=bool)
 
 
 class _ScalarObjectiveCallback(ca.Callback):
@@ -260,7 +292,11 @@ class TwistStrategyOptimizer:
         variables = self.from_vector(np.asarray(point, dtype=float))
         simulator = PredictiveAerialTwistSimulator(
             self.model_path,
-            PrescribedArmMotion(variables),
+            build_piecewise_constant_jerk_arm_motion(
+                variables,
+                total_time=self.configuration.final_time,
+                step=0.02,
+            ),
             configuration=self.configuration,
             model=self.model,
         )
@@ -600,40 +636,100 @@ class TwistStrategyOptimizer:
         print_level: int = 0,
         print_time: bool = False,
     ) -> TwistOptimizationResult:
-        """Optimize only the right-arm start time with both arm planes kept at zero."""
+        """Optimize only the right-arm start time by scanning the 0.02 s grid and keeping the best."""
+
+        del initial_right_arm_start, max_iter, print_level, print_time
+        return self.sweep_right_arm_start_only(bounds=bounds).best_result
+
+    def sweep_right_arm_start_only(
+        self,
+        *,
+        bounds: IpoptBounds | None = None,
+        step: float = 0.02,
+    ) -> RightArmStartSweepResult:
+        """Evaluate every admissible 1D start-time node and keep the best result."""
 
         chosen_bounds = bounds or self.right_arm_start_only_bounds()
-        x_symbol = ca.MX.sym("x", 1, 1)
-        objective = self._build_symbolic_objective_function(1)(x_symbol)
-        solver = ca.nlpsol(
-            "twist_solver_symbolic_1d",
-            "ipopt",
-            {"x": x_symbol, "f": objective},
-            build_ipopt_solver_options(
-                max_iter=max_iter,
-                print_level=print_level,
-                print_time=print_time,
-            ),
+        lower_bound = float(np.asarray(chosen_bounds.lower, dtype=float).reshape(-1)[0])
+        upper_bound = float(np.asarray(chosen_bounds.upper, dtype=float).reshape(-1)[0])
+        first_node = int(round(lower_bound / step))
+        last_node = int(round(upper_bound / step))
+        start_times = step * np.arange(first_node, last_node + 1, dtype=float)
+        candidate_results: list[TwistOptimizationResult] = []
+
+        for start_time in start_times:
+            variables = self.zero_plane_variables(float(start_time))
+            objective, simulation = self.evaluate(self.to_vector(variables))
+            candidate_results.append(
+                TwistOptimizationResult(
+                    variables=variables,
+                    final_twist_angle=simulation.final_twist_angle,
+                    final_twist_turns=simulation.final_twist_turns,
+                    objective=float(objective),
+                    solver_status="Discrete_Sweep",
+                    success=True,
+                )
+            )
+
+        candidate_results_tuple = tuple(candidate_results)
+        best_result = min(candidate_results_tuple, key=lambda result: result.objective)
+        return RightArmStartSweepResult(
+            best_result=best_result,
+            candidate_results=candidate_results_tuple,
         )
-        solution = solver(
-            x0=np.array([initial_right_arm_start], dtype=float),
-            lbx=np.asarray(chosen_bounds.lower, dtype=float),
-            ubx=np.asarray(chosen_bounds.upper, dtype=float),
-        )
-        status = solver.stats()["return_status"]
-        solution_vector = np.asarray(solution["x"].full(), dtype=float).reshape(-1)
-        variables = self.zero_plane_variables(solution_vector[0])
-        _, simulation = self.evaluate(self.to_vector(variables))
-        normalized_status = status.lower().replace("_", " ")
-        return TwistOptimizationResult(
-            variables=variables,
-            final_twist_angle=simulation.final_twist_angle,
-            final_twist_turns=simulation.final_twist_turns,
-            objective=float(solution["f"]),
-            solver_status=status,
-            success=(
-                "success" in normalized_status
-                or "succeeded" in normalized_status
-                or "solved" in normalized_status
-            ),
-        )
+
+
+def create_right_arm_start_sweep_figure(
+    *,
+    start_times: np.ndarray,
+    final_twist_turns: np.ndarray,
+    objective_values: np.ndarray,
+    best_start_time: float,
+):
+    """Create one figure summarizing the discrete 1D sweep over the right-arm start time."""
+
+    import matplotlib.pyplot as plt
+
+    del objective_values
+    times = np.asarray(start_times, dtype=float)
+    twists = np.asarray(final_twist_turns, dtype=float)
+    best_index = int(np.argmin(np.abs(times - float(best_start_time))))
+
+    figure, axis = plt.subplots(1, 1, figsize=(7.5, 4.5), tight_layout=True)
+    axis.plot(times, twists, color="tab:blue", linewidth=1.6, marker="o", markersize=4.0)
+    axis.scatter(
+        [times[best_index]],
+        [twists[best_index]],
+        color="tab:orange",
+        s=64,
+        zorder=3,
+        label="Meilleure solution",
+    )
+    axis.set_ylabel("Vrille finale (tours)")
+    axis.set_xlabel("Debut bras droit t1 (s)")
+    axis.set_title("Balayage 1D sur les noeuds de t1")
+    axis.grid(True, alpha=0.3)
+    axis.legend(loc="best")
+    return figure, axis
+
+
+def show_right_arm_start_sweep_figure(
+    *,
+    start_times: np.ndarray,
+    final_twist_turns: np.ndarray,
+    objective_values: np.ndarray,
+    best_start_time: float,
+):
+    """Open an external figure summarizing the discrete 1D sweep."""
+
+    import matplotlib.pyplot as plt
+
+    figure, axis = create_right_arm_start_sweep_figure(
+        start_times=start_times,
+        final_twist_turns=final_twist_turns,
+        objective_values=objective_values,
+        best_start_time=best_start_time,
+    )
+    figure.canvas.draw_idle()
+    plt.show(block=False)
+    return figure, axis

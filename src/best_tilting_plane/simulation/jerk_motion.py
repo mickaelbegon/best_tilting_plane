@@ -13,6 +13,8 @@ from best_tilting_plane.simulation.arm_motion import (
 )
 from best_tilting_plane.trajectories import QuinticBoundaryTrajectory
 
+DEFAULT_ARM_MOTION_DURATION = 0.3
+
 
 def _advance_constant_acceleration(
     q: float,
@@ -212,29 +214,43 @@ class PiecewiseConstantJerkArmMotion:
         right_plane: PiecewiseConstantJerkTrajectory,
         *,
         right_arm_start: float,
+        left_elevation: PiecewiseConstantJerkTrajectory | None = None,
+        right_elevation: PiecewiseConstantJerkTrajectory | None = None,
         left_elevation_initial: float = -np.pi,
         left_elevation_final: float = 0.0,
         right_elevation_initial: float = np.pi,
         right_elevation_final: float = 0.0,
-        duration: float = 0.3,
+        duration: float = DEFAULT_ARM_MOTION_DURATION,
     ) -> None:
-        """Store the plane trajectories and keep the fixed-elevation quintics."""
+        """Store the plane trajectories and keep jerk-driven elevation profiles."""
 
         self.left_plane = left_plane
         self.right_plane = right_plane
         self.right_arm_start = float(right_arm_start)
         self.duration = float(duration)
-        self._left_elevation = QuinticBoundaryTrajectory(
-            t0=0.0,
-            t1=self.duration,
-            q0=left_elevation_initial,
-            q1=left_elevation_final,
+        self.left_elevation = (
+            left_elevation
+            if left_elevation is not None
+            else approximate_quintic_segment_with_piecewise_constant_jerk(
+                total_time=self.left_plane.duration,
+                step=self.left_plane.step,
+                active_start=0.0,
+                active_duration=self.duration,
+                q0=left_elevation_initial,
+                q1=left_elevation_final,
+            )
         )
-        self._right_elevation = QuinticBoundaryTrajectory(
-            t0=self.right_arm_start,
-            t1=self.right_arm_start + self.duration,
-            q0=right_elevation_initial,
-            q1=right_elevation_final,
+        self.right_elevation = (
+            right_elevation
+            if right_elevation is not None
+            else approximate_quintic_segment_with_piecewise_constant_jerk(
+                total_time=self.right_plane.duration,
+                step=self.right_plane.step,
+                active_start=0.0,
+                active_duration=self.duration,
+                q0=right_elevation_initial,
+                q1=right_elevation_final,
+            )
         )
 
     def left(self, time: float) -> ArmKinematics:
@@ -247,9 +263,9 @@ class PiecewiseConstantJerkArmMotion:
                 acceleration=float(self.left_plane.acceleration(time)),
             ),
             elevation=ArmJointKinematics(
-                position=float(self._left_elevation.position(time)),
-                velocity=float(self._left_elevation.velocity(time)),
-                acceleration=float(self._left_elevation.acceleration(time)),
+                position=float(self.left_elevation.position(time)),
+                velocity=float(self.left_elevation.velocity(time)),
+                acceleration=float(self.left_elevation.acceleration(time)),
             ),
         )
 
@@ -264,11 +280,63 @@ class PiecewiseConstantJerkArmMotion:
                 acceleration=float(self.right_plane.acceleration(local_time)),
             ),
             elevation=ArmJointKinematics(
-                position=float(self._right_elevation.position(time)),
-                velocity=float(self._right_elevation.velocity(time)),
-                acceleration=float(self._right_elevation.acceleration(time)),
+                position=float(self.right_elevation.position(local_time)),
+                velocity=float(self.right_elevation.velocity(local_time)),
+                acceleration=float(self.right_elevation.acceleration(local_time)),
             ),
         )
+
+
+def build_piecewise_constant_jerk_arm_motion(
+    variables: TwistOptimizationVariables,
+    *,
+    total_time: float = 1.0,
+    step: float = 0.02,
+    duration: float = DEFAULT_ARM_MOTION_DURATION,
+) -> PiecewiseConstantJerkArmMotion:
+    """Build the default jerk-driven left/right arm motion used across the project."""
+
+    right_total_time = max(float(step), float(total_time - variables.right_arm_start))
+    left_plane = approximate_quintic_segment_with_piecewise_constant_jerk(
+        total_time=total_time,
+        step=step,
+        active_start=0.0,
+        active_duration=duration,
+        q0=variables.left_plane_initial,
+        q1=variables.left_plane_final,
+    )
+    right_plane = approximate_quintic_segment_with_piecewise_constant_jerk(
+        total_time=right_total_time,
+        step=step,
+        active_start=0.0,
+        active_duration=duration,
+        q0=variables.right_plane_initial,
+        q1=variables.right_plane_final,
+    )
+    left_elevation = approximate_quintic_segment_with_piecewise_constant_jerk(
+        total_time=total_time,
+        step=step,
+        active_start=0.0,
+        active_duration=duration,
+        q0=-np.pi,
+        q1=0.0,
+    )
+    right_elevation = approximate_quintic_segment_with_piecewise_constant_jerk(
+        total_time=right_total_time,
+        step=step,
+        active_start=0.0,
+        active_duration=duration,
+        q0=np.pi,
+        q1=0.0,
+    )
+    return PiecewiseConstantJerkArmMotion(
+        left_plane=left_plane,
+        right_plane=right_plane,
+        left_elevation=left_elevation,
+        right_elevation=right_elevation,
+        right_arm_start=variables.right_arm_start,
+        duration=duration,
+    )
 
 
 def approximate_quintic_segment_with_piecewise_constant_jerk(

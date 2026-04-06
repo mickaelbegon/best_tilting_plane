@@ -384,6 +384,10 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
         "best_tilting_plane.gui.app.TwistStrategyOptimizer.from_builder",
         lambda *_args, **_kwargs: FakeOptimizer(),
     )
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.show_right_arm_start_sweep_figure",
+        lambda **_kwargs: None,
+    )
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app.root = FakeScheduler()
@@ -415,7 +419,7 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
                 "right_plane_initial": 0.0,
                 "right_plane_final": 0.0,
             },
-            "optimum IPOPT: -0.75 tours (Solve_Succeeded)",
+            "optimum balayage 1D: -0.75 tours (Solve_Succeeded)",
         )
     ]
 
@@ -469,6 +473,10 @@ def test_optimize_strategy_uses_cache_without_running_ipopt(monkeypatch, tmp_pat
     monkeypatch.setattr(
         "best_tilting_plane.gui.app.TwistStrategyOptimizer.from_builder",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("optimizer should not run")),
+    )
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.show_right_arm_start_sweep_figure",
+        lambda **_kwargs: None,
     )
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
@@ -555,6 +563,10 @@ def test_optimize_strategy_can_ignore_cached_ipopt_solution(monkeypatch, tmp_pat
         "best_tilting_plane.gui.app.TwistStrategyOptimizer.from_builder",
         lambda *_args, **_kwargs: FakeOptimizer(),
     )
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.show_right_arm_start_sweep_figure",
+        lambda **_kwargs: None,
+    )
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app.root = FakeScheduler()
@@ -605,7 +617,7 @@ def test_optimize_strategy_can_ignore_cached_ipopt_solution(monkeypatch, tmp_pat
                 "right_plane_initial": 0.0,
                 "right_plane_final": 0.0,
             },
-            "optimum IPOPT: -0.75 tours (Solve_Succeeded)",
+            "optimum balayage 1D: -0.75 tours (Solve_Succeeded)",
         )
     ]
 
@@ -621,6 +633,10 @@ def test_optimize_strategy_reports_errors_instead_of_raising(monkeypatch, tmp_pa
     monkeypatch.setattr(
         "best_tilting_plane.gui.app.TwistStrategyOptimizer.from_builder",
         lambda *_args, **_kwargs: FakeOptimizer(),
+    )
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.show_right_arm_start_sweep_figure",
+        lambda **_kwargs: None,
     )
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
@@ -673,6 +689,10 @@ def test_optimize_strategy_writes_cache_after_ipopt(monkeypatch, tmp_path: Path)
         "best_tilting_plane.gui.app.TwistStrategyOptimizer.from_builder",
         lambda *_args, **_kwargs: FakeOptimizer(),
     )
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.show_right_arm_start_sweep_figure",
+        lambda **_kwargs: None,
+    )
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app.root = FakeScheduler()
@@ -714,7 +734,7 @@ def test_optimize_strategy_writes_cache_after_ipopt(monkeypatch, tmp_path: Path)
                 "right_plane_initial": 0.0,
                 "right_plane_final": 0.0,
             },
-            "optimum IPOPT: -0.75 tours (Solve_Succeeded)",
+            "optimum balayage 1D: -0.75 tours (Solve_Succeeded)",
         )
     ]
 

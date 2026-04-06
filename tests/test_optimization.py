@@ -174,26 +174,11 @@ def test_right_arm_start_only_optimizer_keeps_both_arm_planes_at_zero(
     assert result.variables.right_plane_initial == pytest.approx(0.0)
     assert result.variables.right_plane_final == pytest.approx(0.0)
     assert 0.0 <= result.variables.right_arm_start <= 0.7
+    assert result.solver_status == "Discrete_Sweep"
 
 
-def test_symbolic_objective_matches_black_box_evaluation_for_5d_mode(tmp_path: Path) -> None:
-    """The symbolic RK4 objective should match the classic simulator-backed evaluation."""
-
-    optimizer = TwistStrategyOptimizer.from_builder(
-        tmp_path / "reduced.bioMod",
-        model_builder=ReducedAerialBiomod(),
-        configuration=SimulationConfiguration(final_time=0.08, steps=9, integrator="rk4", rk4_step=0.01),
-    )
-    vector = np.array([0.2, -0.1, 0.0, 0.1, 0.0], dtype=float)
-
-    symbolic_value = float(optimizer._build_symbolic_objective_function(5)(vector))
-    objective, _result = optimizer.evaluate(vector)
-
-    assert symbolic_value == pytest.approx(objective, rel=1e-8, abs=1e-8)
-
-
-def test_symbolic_objective_matches_black_box_evaluation_for_1d_mode(tmp_path: Path) -> None:
-    """The reduced symbolic RK4 objective should match the reduced classic evaluation."""
+def test_right_arm_start_only_sweep_uses_the_discrete_0p02_grid(tmp_path: Path) -> None:
+    """The reduced 1D mode should scan the admissible start times on the 0.02 s grid."""
 
     optimizer = TwistStrategyOptimizer.from_builder(
         tmp_path / "reduced.bioMod",
@@ -201,7 +186,31 @@ def test_symbolic_objective_matches_black_box_evaluation_for_1d_mode(tmp_path: P
         configuration=SimulationConfiguration(final_time=0.08, steps=9, integrator="rk4", rk4_step=0.01),
     )
 
-    symbolic_value = float(optimizer._build_symbolic_objective_function(1)(np.array([0.2], dtype=float)))
-    objective, _result = optimizer.evaluate_right_arm_start_only(0.2)
+    sweep = optimizer.sweep_right_arm_start_only(step=0.02)
 
-    assert symbolic_value == pytest.approx(objective, rel=1e-8, abs=1e-8)
+    np.testing.assert_allclose(sweep.start_times, np.arange(0.0, 0.7 + 0.001, 0.02))
+    assert sweep.best_result.variables.left_plane_initial == pytest.approx(0.0)
+    assert sweep.best_result.variables.left_plane_final == pytest.approx(0.0)
+    assert sweep.best_result.variables.right_plane_initial == pytest.approx(0.0)
+    assert sweep.best_result.variables.right_plane_final == pytest.approx(0.0)
+    assert sweep.objective_values.shape == sweep.start_times.shape
+    assert sweep.final_twist_turns.shape == sweep.start_times.shape
+
+
+def test_twist_strategy_optimizer_evaluate_right_arm_start_only_matches_zero_plane_vector(
+    tmp_path: Path,
+) -> None:
+    """The reduced evaluation helper should match the full vector evaluation at zero plane angles."""
+
+    optimizer = TwistStrategyOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.08, steps=9, integrator="rk4", rk4_step=0.01),
+    )
+    right_arm_start = 0.2
+    variables = optimizer.zero_plane_variables(right_arm_start)
+
+    reduced_objective, _ = optimizer.evaluate_right_arm_start_only(right_arm_start)
+    full_objective, _ = optimizer.evaluate(optimizer.to_vector(variables))
+
+    assert reduced_objective == pytest.approx(full_objective)

@@ -17,6 +17,7 @@ from best_tilting_plane.optimization.solver_options import (
 )
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
+    build_piecewise_constant_jerk_arm_motion,
     PiecewiseConstantJerkArmMotion,
     PiecewiseConstantJerkTrajectory,
     PredictiveAerialTwistSimulator,
@@ -134,6 +135,10 @@ class DirectMultipleShootingOptimizer:
         self._constraint_count = 0
         self._interval_parallelization = "serial"
         self._nlpsol_expand = True
+        self._elevation_trajectory_cache: dict[
+            float,
+            tuple[PiecewiseConstantJerkTrajectory, PiecewiseConstantJerkTrajectory],
+        ] = {}
 
         if self.shooting_step <= 0.0:
             raise ValueError("The shooting step must be strictly positive.")
@@ -220,27 +225,50 @@ class DirectMultipleShootingOptimizer:
         time: float,
         right_arm_start: float,
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return the known elevation kinematics at one fixed time for one fixed second-arm start."""
+        """Return the known jerk-driven elevation kinematics at one fixed time."""
 
-        left_q, left_qdot, left_qddot = self._numeric_quintic_segment(
-            time=time,
-            start=0.0,
-            duration=LEFT_ARM_ACTIVE_DURATION,
-            q0=-np.pi,
-            q1=0.0,
+        left_trajectory, right_trajectory = self._fixed_elevation_trajectories(
+            right_arm_start=right_arm_start
         )
-        right_q, right_qdot, right_qddot = self._numeric_quintic_segment(
-            time=time,
-            start=right_arm_start,
-            duration=RIGHT_ARM_ACTIVE_DURATION,
-            q0=np.pi,
-            q1=0.0,
-        )
+        left_q, left_qdot, left_qddot = left_trajectory.state(time)
+        right_local_time = max(0.0, float(time) - float(right_arm_start))
+        right_q, right_qdot, right_qddot = right_trajectory.state(right_local_time)
         return (
             np.array([left_q, right_q], dtype=float),
             np.array([left_qdot, right_qdot], dtype=float),
             np.array([left_qddot, right_qddot], dtype=float),
         )
+
+    def _fixed_elevation_trajectories(
+        self,
+        *,
+        right_arm_start: float,
+    ) -> tuple[PiecewiseConstantJerkTrajectory, PiecewiseConstantJerkTrajectory]:
+        """Return the cached jerk-driven elevation trajectories for one fixed second-arm start."""
+
+        cache_key = round(float(right_arm_start), 10)
+        cached = self._elevation_trajectory_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        left_trajectory = approximate_quintic_segment_with_piecewise_constant_jerk(
+            total_time=self.configuration.final_time,
+            step=self.shooting_step,
+            active_start=0.0,
+            active_duration=LEFT_ARM_ACTIVE_DURATION,
+            q0=-np.pi,
+            q1=0.0,
+        )
+        right_trajectory = approximate_quintic_segment_with_piecewise_constant_jerk(
+            total_time=self.configuration.final_time - float(right_arm_start),
+            step=self.shooting_step,
+            active_start=0.0,
+            active_duration=RIGHT_ARM_ACTIVE_DURATION,
+            q0=np.pi,
+            q1=0.0,
+        )
+        self._elevation_trajectory_cache[cache_key] = (left_trajectory, right_trajectory)
+        return left_trajectory, right_trajectory
 
     def _elevation_parameter_values(self, *, right_arm_start: float) -> np.ndarray:
         """Return the known elevation values injected into the root dynamics over the whole horizon."""
@@ -471,46 +499,16 @@ class DirectMultipleShootingOptimizer:
         """Return a piecewise-constant-jerk motion used as a warm start for one fixed-start problem."""
 
         fixed_right_arm_start = variables.right_arm_start if right_arm_start is None else float(right_arm_start)
-        left_fit = approximate_quintic_segment_with_piecewise_constant_jerk(
-            total_time=LEFT_ARM_ACTIVE_DURATION,
+        return build_piecewise_constant_jerk_arm_motion(
+            TwistOptimizationVariables(
+                right_arm_start=fixed_right_arm_start,
+                left_plane_initial=variables.left_plane_initial,
+                left_plane_final=variables.left_plane_final,
+                right_plane_initial=variables.right_plane_initial,
+                right_plane_final=variables.right_plane_final,
+            ),
+            total_time=self.configuration.final_time,
             step=self.shooting_step,
-            active_start=0.0,
-            active_duration=LEFT_ARM_ACTIVE_DURATION,
-            q0=variables.left_plane_initial,
-            q1=variables.left_plane_final,
-        )
-        right_fit = approximate_quintic_segment_with_piecewise_constant_jerk(
-            total_time=RIGHT_ARM_ACTIVE_DURATION,
-            step=self.shooting_step,
-            active_start=0.0,
-            active_duration=RIGHT_ARM_ACTIVE_DURATION,
-            q0=variables.right_plane_initial,
-            q1=variables.right_plane_final,
-        )
-        left_plane = PiecewiseConstantJerkTrajectory(
-            q0=variables.left_plane_initial,
-            qdot0=0.0,
-            qddot0=0.0,
-            step=self.shooting_step,
-            jerks=left_fit.jerks.copy(),
-            active_start=0.0,
-            active_end=LEFT_ARM_ACTIVE_DURATION,
-            total_duration=self.configuration.final_time,
-        )
-        right_plane = PiecewiseConstantJerkTrajectory(
-            q0=variables.right_plane_initial,
-            qdot0=0.0,
-            qddot0=0.0,
-            step=self.shooting_step,
-            jerks=right_fit.jerks.copy(),
-            active_start=0.0,
-            active_end=RIGHT_ARM_ACTIVE_DURATION,
-            total_duration=self.configuration.final_time - fixed_right_arm_start,
-        )
-        return PiecewiseConstantJerkArmMotion(
-            left_plane=left_plane,
-            right_plane=right_plane,
-            right_arm_start=fixed_right_arm_start,
         )
 
     def _initial_guess_root_state_history(
@@ -1122,5 +1120,6 @@ def show_dms_jerk_bounds_figure(
         right_arm_start=right_arm_start,
     )
     figure.canvas.draw_idle()
-    plt.show(block=False)
+    if "agg" not in plt.get_backend().lower():
+        plt.show(block=False)
     return figure, axes
