@@ -35,10 +35,13 @@ from best_tilting_plane.optimization import (
     show_right_arm_start_sweep_figure,
 )
 from best_tilting_plane.optimization.dms import (
+    DEFAULT_DMS_BTP_DEVIATION_WEIGHT,
     DEFAULT_DMS_JERK_REGULARIZATION,
     JERK_BOUND_SCALE,
     MULTISTART_REFERENCE_T1,
     MULTISTART_START_COUNT,
+    OBJECTIVE_MODE_TWIST,
+    OBJECTIVE_MODE_TWIST_BTP,
     RIGHT_ARM_START_BOUNDS,
     show_dms_jerk_bounds_figure,
 )
@@ -88,7 +91,7 @@ PLOT_X_OPTIONS = ("Temps", "Somersault", "Vrille")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
 ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Best tilting plane")
-OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize DMS")
+OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 3D", "Optimize 3D BTP")
 PLOT_Y_OPTIONS = (
     "Somersault",
     "Tilt",
@@ -113,12 +116,13 @@ ALL_FRAME_SEGMENTS = tuple(
 )
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
-OPTIMIZATION_CACHE_VERSION = 3
+OPTIMIZATION_CACHE_VERSION = 4
 DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.0
 DMS_SCAN_END = 0.7
 DMS_JERK_REGULARIZATION = DEFAULT_DMS_JERK_REGULARIZATION
+DMS_BTP_DEVIATION_WEIGHT = DEFAULT_DMS_BTP_DEVIATION_WEIGHT
 ARM_KINEMATICS_LABELS = (
     "Plan bras gauche",
     "Elevation bras gauche",
@@ -133,8 +137,30 @@ ARM_KINEMATICS_BOUNDS_DEG = (
 )
 SCAN_PLOT_STYLE_BY_MODE = {
     "Optimize 2D": {"color": "tab:blue", "marker": "o", "label": "Optimize 2D"},
-    "Optimize DMS": {"color": "tab:orange", "marker": "s", "label": "Optimize DMS"},
+    "Optimize 3D": {"color": "tab:orange", "marker": "s", "label": "Optimize 3D"},
+    "Optimize 3D BTP": {"color": "tab:green", "marker": "^", "label": "Optimize 3D BTP"},
+    "Optimize DMS": {"color": "tab:orange", "marker": "s", "label": "Optimize 3D"},
 }
+
+
+def _is_three_d_optimization_mode(mode: str) -> bool:
+    """Return whether one optimization mode uses the 3D DMS backend."""
+
+    return mode in {"Optimize DMS", "Optimize 3D", "Optimize 3D BTP"}
+
+
+def _three_d_objective_mode(mode: str) -> str:
+    """Map one GUI optimization mode to the underlying DMS objective."""
+
+    if mode == "Optimize 3D BTP":
+        return OBJECTIVE_MODE_TWIST_BTP
+    return OBJECTIVE_MODE_TWIST
+
+
+def _optimization_mode_label(mode: str) -> str:
+    """Return one short user-facing optimization label."""
+
+    return "DMS" if mode == "Optimize DMS" else mode
 
 
 def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
@@ -500,12 +526,14 @@ class BestTiltingPlaneApp:
             "integrator": configuration.integrator,
             "rk4_step": float(configuration.rk4_step) if configuration.rk4_step is not None else None,
         }
-        if mode == "Optimize DMS":
+        if _is_three_d_optimization_mode(mode):
             signature["dms_shooting_step"] = DMS_SHOOTING_STEP
             signature["dms_active_duration"] = DMS_ACTIVE_DURATION
             signature["dms_scan_start"] = DMS_SCAN_START
             signature["dms_scan_end"] = DMS_SCAN_END
             signature["dms_jerk_regularization"] = DMS_JERK_REGULARIZATION
+            signature["dms_btp_deviation_weight"] = DMS_BTP_DEVIATION_WEIGHT
+            signature["dms_objective_mode"] = _three_d_objective_mode(mode)
             signature["dms_start_bounds"] = [float(value) for value in RIGHT_ARM_START_BOUNDS]
             signature["dms_multistart_reference_t1"] = float(MULTISTART_REFERENCE_T1)
             signature["dms_multistart_start_count"] = int(MULTISTART_START_COUNT)
@@ -673,20 +701,32 @@ class BestTiltingPlaneApp:
         success_mask: list[bool] | np.ndarray,
         best_start_time: float,
     ) -> None:
-        """Open the discrete DMS sweep figure in an external matplotlib window."""
+        """Open the discrete 3D sweep figure in an external matplotlib window."""
 
         if len(start_times) == 0:
             return
+        mode = str(self.optimization_mode_var.get())
         primary_scan = {
-            "mode": "Optimize DMS",
+            "mode": mode,
             "start_times": np.asarray(start_times, dtype=float),
             "final_twist_turns": np.asarray(final_twist_turns, dtype=float),
             "objective_values": np.asarray(objective_values, dtype=float),
             "success_mask": np.asarray(success_mask, dtype=bool),
             "best_start_time": float(best_start_time),
         }
-        comparison_scan = self._load_cached_scan_bundle_for_mode("Optimize 2D")
-        self._show_scan_comparison_figure(primary_scan=primary_scan, comparison_scan=comparison_scan)
+        comparison_scans = [
+            bundle
+            for bundle in (
+                self._load_cached_scan_bundle_for_mode("Optimize 2D"),
+                self._load_cached_scan_bundle_for_mode("Optimize 3D"),
+                self._load_cached_scan_bundle_for_mode("Optimize 3D BTP"),
+            )
+            if bundle is not None and bundle.get("mode") != mode
+        ]
+        if len(comparison_scans) == 1:
+            self._show_scan_comparison_figure(primary_scan=primary_scan, comparison_scan=comparison_scans[0])
+        else:
+            self._show_scan_comparison_figure(primary_scan=primary_scan, comparison_scans=comparison_scans)
 
     def _schedule_external_callback(self, callback) -> None:
         """Run one external-window callback after Tk regains control."""
@@ -799,16 +839,27 @@ class BestTiltingPlaneApp:
             "success_mask": np.ones(len(start_times), dtype=bool),
             "best_start_time": float(best_start_time),
         }
-        comparison_scan = self._load_cached_scan_bundle_for_mode("Optimize DMS")
-        self._show_scan_comparison_figure(primary_scan=primary_scan, comparison_scan=comparison_scan)
+        comparison_scans = [
+            bundle
+            for bundle in (
+                self._load_cached_scan_bundle_for_mode("Optimize 3D"),
+                self._load_cached_scan_bundle_for_mode("Optimize 3D BTP"),
+            )
+            if bundle is not None
+        ]
+        if len(comparison_scans) == 1:
+            self._show_scan_comparison_figure(primary_scan=primary_scan, comparison_scan=comparison_scans[0])
+        else:
+            self._show_scan_comparison_figure(primary_scan=primary_scan, comparison_scans=comparison_scans)
 
     @staticmethod
     def _show_scan_comparison_figure(
         *,
         primary_scan: dict[str, object],
         comparison_scan: dict[str, object] | None = None,
+        comparison_scans: list[dict[str, object]] | None = None,
     ) -> None:
-        """Open one external figure comparing the 2D and DMS scans on the same axes."""
+        """Open one external figure comparing the available optimization scans on the same axes."""
 
         import matplotlib.pyplot as plt
 
@@ -816,6 +867,9 @@ class BestTiltingPlaneApp:
         datasets = [primary_scan]
         if comparison_scan is not None and comparison_scan.get("mode") != primary_scan.get("mode"):
             datasets.append(comparison_scan)
+        for comparison_scan in comparison_scans or []:
+            if comparison_scan.get("mode") != primary_scan.get("mode"):
+                datasets.append(comparison_scan)
 
         for dataset in datasets:
             mode = str(dataset["mode"])
@@ -855,7 +909,7 @@ class BestTiltingPlaneApp:
 
         axis.set_ylabel("Vrille finale (tours)")
         axis.set_xlabel("Debut bras droit t1 (s)")
-        axis.set_title("Comparaison des scans 2D et DMS")
+        axis.set_title("Comparaison des scans d'optimisation")
         axis.grid(True, alpha=0.3)
         axis.legend(loc="best")
         figure.canvas.draw_idle()
@@ -873,9 +927,9 @@ class BestTiltingPlaneApp:
     ) -> None:
         """Open the figure associated with the current optimization mode scan."""
 
-        if self.optimization_mode_var.get() == "Optimize DMS":
+        if _is_three_d_optimization_mode(self.optimization_mode_var.get()):
             if success_mask is None:
-                raise ValueError("The DMS scan figure requires a success mask.")
+                raise ValueError("The 3D scan figure requires a success mask.")
             self._show_dms_sweep_figure(
                 start_times=start_times,
                 final_twist_turns=final_twist_turns,
@@ -1974,13 +2028,14 @@ class BestTiltingPlaneApp:
             current_values = self._current_values()
             initial_guess = _variables_from_gui(current_values)
             mode = self.optimization_mode_var.get()
+            mode_label = _optimization_mode_label(mode)
             self._auto_runner.cancel()
             self.result_var.set("Optimisation en cours... voir les iterations IPOPT dans le terminal.")
             self.root.update_idletasks()
 
             use_cache = not self._should_ignore_optimization_cache()
 
-            if mode == "Optimize DMS" and use_cache:
+            if _is_three_d_optimization_mode(mode) and use_cache:
                 cached_dms_solution = self._load_cached_dms_solution()
                 if cached_dms_solution is not None:
                     cached_values, cached_motion, cached_final_twist_turns, cached_solver_status, cached_scan_data = (
@@ -1998,12 +2053,12 @@ class BestTiltingPlaneApp:
                         cached_values,
                         prescribed_motion=cached_motion,
                         status_suffix=(
-                            f"optimum DMS charge depuis le cache: "
+                            f"optimum {mode_label} charge depuis le cache: "
                             f"{cached_final_twist_turns:.2f} tours ({cached_solver_status})"
                         ),
                     )
                     return
-            elif mode != "Optimize DMS" and use_cache:
+            elif not _is_three_d_optimization_mode(mode) and use_cache:
                 cached_values = self._load_cached_optimized_values()
                 if cached_values is not None:
                     cached_scan_data = self._load_cached_optimized_scan_data()
@@ -2021,12 +2076,14 @@ class BestTiltingPlaneApp:
                     )
                     return
 
-            if mode == "Optimize DMS":
+            if _is_three_d_optimization_mode(mode):
                 optimizer = DirectMultipleShootingOptimizer.from_builder(
                     self._model_path(),
                     configuration=self._standard_optimization_configuration(),
                     shooting_step=DMS_SHOOTING_STEP,
                     jerk_regularization=DMS_JERK_REGULARIZATION,
+                    objective_mode=_three_d_objective_mode(mode),
+                    btp_deviation_weight=DMS_BTP_DEVIATION_WEIGHT,
                 )
                 candidate_start_times = np.asarray(optimizer.candidate_start_times(), dtype=float)
                 cached_progress = None if not use_cache else self._load_cached_dms_progress()
@@ -2090,7 +2147,7 @@ class BestTiltingPlaneApp:
                 for index in range(start_index, len(candidate_start_times)):
                     current_start_time = float(candidate_start_times[index])
                     self.result_var.set(
-                        f"Optimisation DMS en cours... t1={current_start_time:.2f} s "
+                        f"{mode_label} en cours... t1={current_start_time:.2f} s "
                         f"({index + 1}/{len(candidate_start_times)})"
                     )
                     self.root.update_idletasks()
@@ -2190,7 +2247,7 @@ class BestTiltingPlaneApp:
                 self._apply_optimized_values(
                     optimized_values,
                     prescribed_motion=result.prescribed_motion,
-                    status_suffix=f"optimum DMS: {result.final_twist_turns:.2f} tours ({result.solver_status})",
+                    status_suffix=f"optimum {mode_label}: {result.final_twist_turns:.2f} tours ({result.solver_status})",
                 )
                 return
 

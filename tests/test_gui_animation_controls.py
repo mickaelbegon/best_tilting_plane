@@ -443,10 +443,10 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
     assert refresh_calls == ["refresh"]
 
 
-def test_optimization_mode_options_keep_only_2d_and_dms() -> None:
-    """The GUI should expose only the reduced IPOPT and DMS optimization modes."""
+def test_optimization_mode_options_expose_2d_and_two_3d_modes() -> None:
+    """The GUI should expose the 2D sweep and both 3D optimization modes."""
 
-    assert OPTIMIZATION_MODE_OPTIONS == ("Optimize 2D", "Optimize DMS")
+    assert OPTIMIZATION_MODE_OPTIONS == ("Optimize 2D", "Optimize 3D", "Optimize 3D BTP")
 
 
 def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> None:
@@ -1104,6 +1104,87 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     np.testing.assert_array_equal(shown[0]["success_mask"], [True, True, True])
     assert shown[0]["best_start_time"] == 0.28
     assert len(jerk_diagnostics) == 1
+
+
+def test_optimize_strategy_uses_btp_objective_for_optimize_3d_btp(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The `Optimize 3D BTP` mode should request the DMS objective with the BTP Lagrange term."""
+
+    captured: dict[str, object] = {}
+
+    class FakeDmsOptimizer:
+        def candidate_start_times(self):
+            return np.array([0.10], dtype=float)
+
+        def solve_fixed_start(self, initial_guess, *, right_arm_start, **_kwargs):
+            assert initial_guess.right_arm_start == 0.1
+            return type(
+                "DmsResult",
+                (),
+                {
+                    "variables": type(
+                        "Variables",
+                        (),
+                        {
+                            "right_arm_start": right_arm_start,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    )(),
+                    "prescribed_motion": "dms-btp-motion",
+                    "left_plane_jerk": np.zeros(15),
+                    "right_plane_jerk": np.zeros(15),
+                    "final_twist_turns": -0.52,
+                    "objective": -0.50,
+                    "solver_status": "Solve_Succeeded",
+                    "success": True,
+                    "warm_start_primal": np.full(20, right_arm_start),
+                    "warm_start_lam_x": np.full(20, 1.0),
+                    "warm_start_lam_g": np.full(10, 2.0),
+                },
+            )()
+
+    def fake_from_builder(*_args, **kwargs):
+        captured.update(kwargs)
+        return FakeDmsOptimizer()
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.DirectMultipleShootingOptimizer.from_builder",
+        fake_from_builder,
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    scheduler = FakeScheduler()
+    app.root = scheduler
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize 3D BTP")
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+    app._show_dms_sweep_figure = lambda **kwargs: None
+    app._schedule_dms_jerk_diagnostic_figure = lambda **kwargs: None
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: None
+
+    app._optimize_strategy()
+    scheduler.run_pending()
+
+    assert captured["objective_mode"] == "twist_btp"
+    assert captured["btp_deviation_weight"] > 0.0
 
 
 def test_optimize_strategy_uses_multistart_for_t1_equal_0_30_when_available(

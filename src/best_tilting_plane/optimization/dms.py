@@ -33,10 +33,13 @@ RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
 RIGHT_ARM_SWEEP_BOUNDS = (0.0, 0.7)
 MULTISTART_REFERENCE_T1 = 0.30
 MULTISTART_START_COUNT = 10
+OBJECTIVE_MODE_TWIST = "twist"
+OBJECTIVE_MODE_TWIST_BTP = "twist_btp"
 PLANE_STATE_SIZE = 3
 ROOT_STATE_SIZE = 12
 ELEVATION_STAGE_BLOCK_SIZE = 18
 DEFAULT_DMS_JERK_REGULARIZATION = 1e-9
+DEFAULT_DMS_BTP_DEVIATION_WEIGHT = 1e-2
 START_TIME_TOLERANCE = 1e-9
 JERK_BOUND_SCALE = 2.0
 
@@ -59,6 +62,7 @@ class DirectMultipleShootingResult:
     objective: float
     solver_status: str
     success: bool
+    btp_deviation_lagrange: float = 0.0
     warm_start_primal: np.ndarray | None = field(default=None, repr=False)
     warm_start_lam_x: np.ndarray | None = field(default=None, repr=False)
     warm_start_lam_g: np.ndarray | None = field(default=None, repr=False)
@@ -124,6 +128,8 @@ class DirectMultipleShootingOptimizer:
         configuration: SimulationConfiguration | None = None,
         shooting_step: float = 0.02,
         jerk_regularization: float = DEFAULT_DMS_JERK_REGULARIZATION,
+        objective_mode: str = OBJECTIVE_MODE_TWIST,
+        btp_deviation_weight: float = DEFAULT_DMS_BTP_DEVIATION_WEIGHT,
         model: biorbd.Model | None = None,
     ) -> None:
         """Store the models and the direct multiple-shooting settings."""
@@ -132,10 +138,12 @@ class DirectMultipleShootingOptimizer:
         self.configuration = configuration or SimulationConfiguration(integrator="rk4", rk4_step=0.005)
         self.shooting_step = float(shooting_step)
         self.jerk_regularization = float(jerk_regularization)
+        self.objective_mode = str(objective_mode)
+        self.btp_deviation_weight = float(btp_deviation_weight)
         self.model = model if model is not None else biorbd.Model(self.model_path)
         self.symbolic_model = biorbd_ca.Model(self.model_path)
         self._solver = None
-        self._solver_options_key: tuple[int, int, bool] | None = None
+        self._solver_options_key: tuple[int, int, bool, str, float] | None = None
         self._constraint_count = 0
         self._interval_parallelization = "serial"
         self._nlpsol_expand = True
@@ -143,9 +151,14 @@ class DirectMultipleShootingOptimizer:
             float,
             tuple[PiecewiseConstantJerkTrajectory, PiecewiseConstantJerkTrajectory],
         ] = {}
+        self._segment_index_by_name = self._build_segment_index_by_name()
 
         if self.shooting_step <= 0.0:
             raise ValueError("The shooting step must be strictly positive.")
+        if self.objective_mode not in {OBJECTIVE_MODE_TWIST, OBJECTIVE_MODE_TWIST_BTP}:
+            raise ValueError(f"Unsupported DMS objective mode '{self.objective_mode}'.")
+        if self.btp_deviation_weight < 0.0:
+            raise ValueError("The BTP deviation weight must be non-negative.")
 
         step_count = int(round(self.configuration.final_time / self.shooting_step))
         if abs(step_count * self.shooting_step - self.configuration.final_time) > 1e-12:
@@ -173,6 +186,8 @@ class DirectMultipleShootingOptimizer:
         configuration: SimulationConfiguration | None = None,
         shooting_step: float = 0.02,
         jerk_regularization: float = DEFAULT_DMS_JERK_REGULARIZATION,
+        objective_mode: str = OBJECTIVE_MODE_TWIST,
+        btp_deviation_weight: float = DEFAULT_DMS_BTP_DEVIATION_WEIGHT,
     ) -> "DirectMultipleShootingOptimizer":
         """Generate the model file and build a DMS optimizer on top of it."""
 
@@ -183,7 +198,19 @@ class DirectMultipleShootingOptimizer:
             configuration=configuration,
             shooting_step=shooting_step,
             jerk_regularization=jerk_regularization,
+            objective_mode=objective_mode,
+            btp_deviation_weight=btp_deviation_weight,
         )
+
+    def _build_segment_index_by_name(self) -> dict[str, int]:
+        """Return the segment-index map shared by the numeric and symbolic models."""
+
+        index_by_name: dict[str, int] = {}
+        for index in range(self.model.nbSegment()):
+            segment = self.model.segment(index)
+            name = segment.name().to_string() if hasattr(segment.name(), "to_string") else str(segment.name())
+            index_by_name[name] = index
+        return index_by_name
 
     @staticmethod
     def _quintic_profile(phase: float) -> tuple[float, float, float]:
@@ -375,6 +402,53 @@ class DirectMultipleShootingOptimizer:
         ).to_mx()
         return ca.vertcat(qdot_root, qddot_root)
 
+    def _symbolic_segment_origin(self, q_full: ca.MX, segment_name: str) -> ca.MX:
+        """Return the symbolic origin of one segment."""
+
+        return self.symbolic_model.globalJCS(q_full, self._segment_index_by_name[segment_name]).to_mx()[:3, 3]
+
+    @staticmethod
+    def _symbolic_signed_plane_deviation(vector: ca.MX, somersault_angle: ca.MX) -> ca.MX:
+        """Return the symbolic signed deviation angle relative to the BTP."""
+
+        normal = ca.vertcat(0.0, -ca.cos(somersault_angle), -ca.sin(somersault_angle))
+        vector_norm = ca.sqrt(ca.sumsqr(vector) + 1e-12)
+        direction_unit = vector / vector_norm
+        normal_component = ca.dot(direction_unit, normal)
+        tangential_norm = ca.sqrt(ca.fmax(0.0, 1.0 - normal_component * normal_component) + 1e-12)
+        return ca.atan2(normal_component, tangential_norm)
+
+    def _symbolic_btp_deviation_cost(
+        self,
+        root_state: ca.MX,
+        left_plane_state: ca.MX,
+        right_plane_state: ca.MX,
+        elevation_q: ca.MX,
+    ) -> ca.MX:
+        """Return the squared BTP arm-deviation cost at one state."""
+
+        q_full = ca.vertcat(
+            root_state[:6],
+            ca.vertcat(
+                left_plane_state[0],
+                elevation_q[0],
+                right_plane_state[0],
+                elevation_q[1],
+            ),
+        )
+        left_vector = self._symbolic_segment_origin(q_full, "forearm_left") - self._symbolic_segment_origin(
+            q_full,
+            "upper_arm_left",
+        )
+        right_vector = self._symbolic_segment_origin(q_full, "forearm_right") - self._symbolic_segment_origin(
+            q_full,
+            "upper_arm_right",
+        )
+        somersault_angle = root_state[3]
+        left_deviation = self._symbolic_signed_plane_deviation(left_vector, somersault_angle)
+        right_deviation = self._symbolic_signed_plane_deviation(right_vector, somersault_angle)
+        return left_deviation * left_deviation + right_deviation * right_deviation
+
     def _integrate_root_interval(
         self,
         root_state: ca.MX,
@@ -478,6 +552,20 @@ class DirectMultipleShootingOptimizer:
             left_plane_state_next - left_plane_prediction,
             right_plane_state_next - right_plane_prediction,
         )
+        running_cost = 0.5 * (
+            self._symbolic_btp_deviation_cost(
+                root_state,
+                left_plane_state,
+                right_plane_state,
+                elevation_block[0:2],
+            )
+            + self._symbolic_btp_deviation_cost(
+                root_state_prediction,
+                left_plane_prediction,
+                right_plane_prediction,
+                elevation_block[12:14],
+            )
+        )
         return ca.Function(
             "dms_interval_defect",
             [
@@ -491,7 +579,7 @@ class DirectMultipleShootingOptimizer:
                 right_jerk,
                 elevation_block,
             ],
-            [defect],
+            [defect, running_cost],
         )
 
     def _initial_guess_motion(
@@ -603,7 +691,13 @@ class DirectMultipleShootingOptimizer:
     ):
         """Build one global DMS solver and cache it."""
 
-        options_key = (int(max_iter), int(print_level), bool(print_time))
+        options_key = (
+            int(max_iter),
+            int(print_level),
+            bool(print_time),
+            self.objective_mode,
+            float(self.btp_deviation_weight),
+        )
         if self._solver is not None and self._solver_options_key == options_key:
             return self._solver
 
@@ -637,7 +731,7 @@ class DirectMultipleShootingOptimizer:
             mapped_interval_defect = interval_defect.map(self.interval_count, parallelization)
         self._interval_parallelization = parallelization
 
-        mapped_defects = mapped_interval_defect(
+        mapped_defects, mapped_running_costs = mapped_interval_defect(
             ca.horzcat(*root_state_symbols[:-1]),
             ca.horzcat(*root_state_symbols[1:]),
             ca.horzcat(*left_plane_state_symbols[:-1]),
@@ -648,6 +742,8 @@ class DirectMultipleShootingOptimizer:
             ca.reshape(right_control_symbols, 1, self.interval_count),
             ca.reshape(parameters, ELEVATION_STAGE_BLOCK_SIZE, self.interval_count),
         )
+        if self.objective_mode == OBJECTIVE_MODE_TWIST_BTP:
+            objective += self.btp_deviation_weight * self.shooting_step * ca.sum2(mapped_running_costs)
         constraints = [ca.reshape(mapped_defects, -1, 1)]
 
         decision_vector = ca.vertcat(
@@ -659,7 +755,7 @@ class DirectMultipleShootingOptimizer:
         )
         self._constraint_count = int(sum(component.shape[0] for component in constraints))
         self._solver = ca.nlpsol(
-            "dms_solver",
+            f"dms_solver_{self.objective_mode}",
             "ipopt",
             {
                 "x": decision_vector,
@@ -677,6 +773,63 @@ class DirectMultipleShootingOptimizer:
         )
         self._solver_options_key = options_key
         return self._solver
+
+    def _numeric_segment_origin(self, q_full: np.ndarray, segment_name: str) -> np.ndarray:
+        """Return the numeric origin of one segment."""
+
+        q_biorbd = biorbd.GeneralizedCoordinates(np.asarray(q_full, dtype=float))
+        return np.asarray(
+            self.model.globalJCS(q_biorbd, self._segment_index_by_name[segment_name]).to_array()[:3, 3],
+            dtype=float,
+        )
+
+    def _btp_deviation_lagrange_from_state_nodes(
+        self,
+        *,
+        root_state_nodes: np.ndarray,
+        left_plane_state_nodes: np.ndarray,
+        right_plane_state_nodes: np.ndarray,
+        right_arm_start: float,
+    ) -> float:
+        """Return the node-wise BTP deviation Lagrange term used by the 3D-BTP objective."""
+
+        if self.objective_mode != OBJECTIVE_MODE_TWIST_BTP:
+            return 0.0
+
+        deviation_costs = np.zeros(self.interval_count, dtype=float)
+        for interval_index in range(self.interval_count):
+            node_time = float(self.node_times[interval_index])
+            elevation_q, _, _ = self._fixed_elevation_kinematics(
+                time=node_time,
+                right_arm_start=right_arm_start,
+            )
+            q_full = np.array(
+                [
+                    *root_state_nodes[:6, interval_index],
+                    left_plane_state_nodes[0, interval_index],
+                    elevation_q[0],
+                    right_plane_state_nodes[0, interval_index],
+                    elevation_q[1],
+                ],
+                dtype=float,
+            )
+            left_vector = self._numeric_segment_origin(q_full, "forearm_left") - self._numeric_segment_origin(
+                q_full,
+                "upper_arm_left",
+            )
+            right_vector = self._numeric_segment_origin(q_full, "forearm_right") - self._numeric_segment_origin(
+                q_full,
+                "upper_arm_right",
+            )
+            somersault_angle = float(root_state_nodes[3, interval_index])
+            left_deviation = float(
+                self._symbolic_signed_plane_deviation(ca.DM(left_vector), ca.DM(somersault_angle))
+            )
+            right_deviation = float(
+                self._symbolic_signed_plane_deviation(ca.DM(right_vector), ca.DM(somersault_angle))
+            )
+            deviation_costs[interval_index] = left_deviation * left_deviation + right_deviation * right_deviation
+        return float(self.btp_deviation_weight * self.shooting_step * np.sum(deviation_costs))
 
     @staticmethod
     def _project_initial_guess_to_bounds(
@@ -852,14 +1005,6 @@ class DirectMultipleShootingOptimizer:
             * self.shooting_step
             * (np.sum(left_control_global_values**2) + np.sum(right_control_global_values**2))
         )
-        total_objective_value = twist_objective_value + jerk_regularization_value
-        print(
-            "DMS objective terms: "
-            f"twist={twist_objective_value:.6f}, "
-            f"jerk_reg={jerk_regularization_value:.6e}, "
-            f"total={total_objective_value:.6f}, "
-            f"ipopt_f={float(solution['f']):.6f}"
-        )
         if show_jerk_diagnostics:
             show_dms_jerk_bounds_figure(
                 node_times=self.node_times,
@@ -907,10 +1052,27 @@ class DirectMultipleShootingOptimizer:
             configuration=self.configuration,
             model=self.model,
         ).simulate()
-
-        normalized_status = status.lower().replace("_", " ")
         left_plane_global_states = left_plane_global_values.reshape(self.interval_count + 1, PLANE_STATE_SIZE).T
         right_plane_global_states = right_plane_global_values.reshape(self.interval_count + 1, PLANE_STATE_SIZE).T
+        btp_deviation_lagrange_value = self._btp_deviation_lagrange_from_state_nodes(
+            root_state_nodes=root_state_nodes,
+            left_plane_state_nodes=left_plane_global_states,
+            right_plane_state_nodes=right_plane_global_states,
+            right_arm_start=right_arm_start,
+        )
+        total_objective_value = (
+            twist_objective_value + jerk_regularization_value + btp_deviation_lagrange_value
+        )
+        print(
+            "DMS objective terms: "
+            f"twist={twist_objective_value:.6f}, "
+            f"jerk_reg={jerk_regularization_value:.6e}, "
+            f"btp_lagrange={btp_deviation_lagrange_value:.6e}, "
+            f"total={total_objective_value:.6f}, "
+            f"ipopt_f={float(solution['f']):.6f}"
+        )
+
+        normalized_status = status.lower().replace("_", " ")
         return DirectMultipleShootingResult(
             variables=fixed_variables,
             right_arm_start_node_index=right_start_node_index,
@@ -927,6 +1089,7 @@ class DirectMultipleShootingOptimizer:
             prescribed_motion=motion,
             simulation=simulation,
             objective=float(solution["f"]),
+            btp_deviation_lagrange=btp_deviation_lagrange_value,
             solver_status=status,
             success=(
                 "success" in normalized_status
