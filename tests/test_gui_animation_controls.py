@@ -405,6 +405,7 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app.root = FakeScheduler()
     app.result_var = FakeVar("")
+    app.plot_y_var = FakeVar("Twist")
     app.optimization_mode_var = FakeVar("Optimize 2D")
     app._auto_runner = FakeRunner()
     app._current_values = lambda: {
@@ -415,6 +416,8 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
         "right_plane_final": 0.0,
     }
     app._model_path = lambda: tmp_path / "reduced.bioMod"
+    refresh_calls: list[str] = []
+    app._refresh_plot = lambda: refresh_calls.append("refresh")
     applied: list[tuple[dict[str, float], str | None]] = []
     app._apply_optimized_values = lambda values, status_suffix=None: applied.append(
         (dict(values), status_suffix)
@@ -435,6 +438,8 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
             "optimum balayage 1D: -0.75 tours (Solve_Succeeded)",
         )
     ]
+    assert app.plot_y_var.get() == "Vrilles selon t1"
+    assert refresh_calls == ["refresh"]
 
 
 def test_optimization_mode_options_keep_only_2d_and_dms() -> None:

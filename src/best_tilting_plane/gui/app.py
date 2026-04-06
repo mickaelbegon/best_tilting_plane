@@ -723,6 +723,14 @@ class BestTiltingPlaneApp:
             )
         )
 
+    def _show_embedded_scan_plot(self) -> None:
+        """Switch the embedded figure to the `vrilles selon t1` view and refresh it."""
+
+        if not hasattr(self, "plot_y_var"):
+            return
+        self.plot_y_var.set("Vrilles selon t1")
+        self._refresh_plot()
+
     def _schedule_dms_jerk_diagnostic_figure(
         self,
         *,
@@ -1995,6 +2003,7 @@ class BestTiltingPlaneApp:
                             objective_values=cached_scan_data["objective_values"],
                             best_start_time=cached_values["right_arm_start"],
                         )
+                        self._show_embedded_scan_plot()
                     self._apply_optimized_values(
                         cached_values,
                         status_suffix="optimum charge depuis le cache",
@@ -2189,6 +2198,7 @@ class BestTiltingPlaneApp:
                 objective_values=sweep.objective_values,
                 best_start_time=result.variables.right_arm_start,
             )
+            self._show_embedded_scan_plot()
             self._store_cached_optimized_values(
                 optimized_values,
                 final_twist_turns=result.final_twist_turns,
