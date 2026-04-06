@@ -96,6 +96,21 @@ def test_direct_multiple_shooting_candidate_start_times_cover_the_full_admissibl
     )
 
 
+def test_direct_multiple_shooting_snaps_upper_bound_with_floating_point_noise(
+    tmp_path: Path,
+) -> None:
+    """A value like `0.7000000000000001` should snap back to the admissible upper-bound node."""
+
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=1.0, steps=201, integrator="rk4", rk4_step=0.005),
+        shooting_step=0.02,
+    )
+
+    assert optimizer._snap_start_time_to_grid(0.7000000000000001) == pytest.approx(0.7)
+
+
 def test_direct_multiple_shooting_uses_a_very_small_default_jerk_regularization(
     tmp_path: Path,
 ) -> None:

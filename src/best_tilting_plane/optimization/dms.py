@@ -37,6 +37,7 @@ PLANE_STATE_SIZE = 3
 ROOT_STATE_SIZE = 12
 ELEVATION_STAGE_BLOCK_SIZE = 18
 DEFAULT_DMS_JERK_REGULARIZATION = 1e-9
+START_TIME_TOLERANCE = 1e-9
 
 
 @dataclass(frozen=True)
@@ -562,7 +563,16 @@ class DirectMultipleShootingOptimizer:
             raise ValueError("The discrete second-arm start-time sweep is empty.")
         first_node = int(round(lower_bound / self.shooting_step))
         last_node = int(round(upper_bound / self.shooting_step))
-        return self.shooting_step * np.arange(first_node, last_node + 1, dtype=float)
+        return np.round(self.shooting_step * np.arange(first_node, last_node + 1, dtype=float), decimals=10)
+
+    def _snap_start_time_to_grid(self, right_arm_start: float) -> float:
+        """Project one start time onto the shooting grid while tolerating floating-point noise."""
+
+        clipped_start = float(
+            np.clip(right_arm_start, RIGHT_ARM_START_BOUNDS[0], RIGHT_ARM_START_BOUNDS[1])
+        )
+        snapped_start = self.shooting_step * round(clipped_start / self.shooting_step)
+        return float(np.round(snapped_start, decimals=10))
 
     def _global_jerk_bounds(
         self,
@@ -696,8 +706,12 @@ class DirectMultipleShootingOptimizer:
     ) -> DirectMultipleShootingResult:
         """Solve one direct multiple-shooting problem with a fixed second-arm start time."""
 
-        if not RIGHT_ARM_START_BOUNDS[0] <= right_arm_start <= RIGHT_ARM_START_BOUNDS[1]:
+        if (
+            right_arm_start < RIGHT_ARM_START_BOUNDS[0] - START_TIME_TOLERANCE
+            or right_arm_start > RIGHT_ARM_START_BOUNDS[1] + START_TIME_TOLERANCE
+        ):
             raise ValueError("The fixed second-arm start time is outside the admissible bounds.")
+        right_arm_start = self._snap_start_time_to_grid(float(right_arm_start))
 
         solver = self._build_solver(max_iter=max_iter, print_level=print_level, print_time=print_time)
         fixed_variables = TwistOptimizationVariables(
