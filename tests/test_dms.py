@@ -92,7 +92,7 @@ def test_direct_multiple_shooting_candidate_start_times_use_the_reduced_search_w
 
     np.testing.assert_allclose(
         optimizer.candidate_start_times(),
-        np.arange(0.24, 0.44 + 0.001, 0.02, dtype=float),
+        np.arange(0.16, 0.36 + 0.001, 0.02, dtype=float),
     )
 
 
