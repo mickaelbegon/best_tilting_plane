@@ -224,6 +224,31 @@ def test_on_close_stops_animation_before_destroying_root() -> None:
     assert destroyed == ["destroyed"]
 
 
+def test_on_close_cancels_pending_matplotlib_idle_draws() -> None:
+    """Closing the GUI should cancel pending Tk idle draws scheduled by Matplotlib canvases."""
+
+    app, _drawn_frames, _scheduler = _build_app_for_animation()
+    cancelled: list[object] = []
+
+    class FakeTkCanvas:
+        def after_cancel(self, handle) -> None:
+            cancelled.append(handle)
+
+    class FakeCanvas:
+        def __init__(self, handle) -> None:
+            self._idle_draw_id = handle
+            self._tkcanvas = FakeTkCanvas()
+
+    app._animation_canvas = FakeCanvas("6309343552idle_draw")
+    app._plot_canvas = FakeCanvas("6309343553idle_draw")
+
+    app._on_close()
+
+    assert cancelled == ["6309343552idle_draw", "6309343553idle_draw"]
+    assert app._animation_canvas._idle_draw_id is None
+    assert app._plot_canvas._idle_draw_id is None
+
+
 def test_configure_time_slider_uses_simulation_time_bounds() -> None:
     """The time slider range should match the current simulation span."""
 

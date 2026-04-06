@@ -1606,11 +1606,38 @@ class BestTiltingPlaneApp:
         self._animation_playing = False
         self.play_pause_label.set("Play")
 
+    @staticmethod
+    def _cancel_canvas_idle_draw(canvas) -> None:
+        """Cancel one pending matplotlib Tk idle draw callback, if present."""
+
+        if canvas is None:
+            return
+        idle_draw_id = getattr(canvas, "_idle_draw_id", None)
+        if idle_draw_id is None:
+            return
+        tk_canvas = getattr(canvas, "_tkcanvas", None)
+        if tk_canvas is None:
+            widget_getter = getattr(canvas, "get_tk_widget", None)
+            if callable(widget_getter):
+                tk_canvas = widget_getter()
+        try:
+            if tk_canvas is not None:
+                tk_canvas.after_cancel(idle_draw_id)
+        except tk.TclError:
+            pass
+        finally:
+            try:
+                canvas._idle_draw_id = None
+            except Exception:
+                pass
+
     def _on_close(self) -> None:
         """Close the GUI after cancelling any pending Tk callbacks."""
 
         self._is_closing = True
         self._stop_animation_loop()
+        self._cancel_canvas_idle_draw(getattr(self, "_animation_canvas", None))
+        self._cancel_canvas_idle_draw(getattr(self, "_plot_canvas", None))
         optimization_poll_after_id = getattr(self, "_optimization_poll_after_id", None)
         if optimization_poll_after_id is not None:
             try:
