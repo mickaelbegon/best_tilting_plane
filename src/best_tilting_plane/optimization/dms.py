@@ -708,38 +708,9 @@ class DirectMultipleShootingOptimizer:
 
         initial_motion = self._initial_guess_motion(fixed_variables, right_arm_start=right_arm_start)
         initial_root_states = self._initial_guess_root_state_history(fixed_variables, initial_motion)
-
-        left_global_motion = PiecewiseConstantJerkTrajectory(
-            q0=fixed_variables.left_plane_initial,
-            qdot0=0.0,
-            qddot0=0.0,
-            step=self.shooting_step,
-            jerks=np.concatenate(
-                (
-                    np.asarray(initial_motion.left_plane.jerks, dtype=float),
-                    np.zeros(self.interval_count - self.active_control_count, dtype=float),
-                )
-            ),
-            active_start=0.0,
-            active_end=self.configuration.final_time,
-            total_duration=self.configuration.final_time,
-        )
-        right_global_jerks = np.zeros(self.interval_count, dtype=float)
-        right_global_jerks[
-            right_start_node_index : right_start_node_index + self.active_control_count
-        ] = np.asarray(initial_motion.right_plane.jerks, dtype=float)
-        right_global_motion = PiecewiseConstantJerkTrajectory(
-            q0=fixed_variables.right_plane_initial,
-            qdot0=0.0,
-            qddot0=0.0,
-            step=self.shooting_step,
-            jerks=right_global_jerks,
-            active_start=0.0,
-            active_end=self.configuration.final_time,
-            total_duration=self.configuration.final_time,
-        )
-        initial_left_states = self._plane_state_history(left_global_motion, self.node_times)
-        initial_right_states = self._plane_state_history(right_global_motion, self.node_times)
+        initial_left_states = self._plane_state_history(initial_motion.left_plane, self.node_times)
+        right_local_times = np.maximum(0.0, self.node_times - right_arm_start)
+        initial_right_states = self._plane_state_history(initial_motion.right_plane, right_local_times)
 
         initial_root_state = self._symbolic_initial_root_state(fixed_variables)
         initial_left_plane_state = self._plane_state_vector(fixed_variables.left_plane_initial)
