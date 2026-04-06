@@ -564,6 +564,25 @@ class DirectMultipleShootingOptimizer:
         last_node = int(round(upper_bound / self.shooting_step))
         return self.shooting_step * np.arange(first_node, last_node + 1, dtype=float)
 
+    def _global_jerk_bounds(
+        self,
+        *,
+        right_start_node_index: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Return the lower/upper jerk bounds applied on the 50-node horizon."""
+
+        left_lower = np.zeros(self.interval_count, dtype=float)
+        left_upper = np.zeros(self.interval_count, dtype=float)
+        left_lower[: self.active_control_count] = -self.jerk_bound
+        left_upper[: self.active_control_count] = self.jerk_bound
+
+        right_lower = np.zeros(self.interval_count, dtype=float)
+        right_upper = np.zeros(self.interval_count, dtype=float)
+        right_terminal_node_index = right_start_node_index + self.active_control_count
+        right_lower[right_start_node_index:right_terminal_node_index] = -self.jerk_bound
+        right_upper[right_start_node_index:right_terminal_node_index] = self.jerk_bound
+        return left_lower, left_upper, right_lower, right_upper
+
     def _build_solver(
         self,
         *,
@@ -729,6 +748,9 @@ class DirectMultipleShootingOptimizer:
         initial_right_plane_state = self._plane_state_vector(fixed_variables.right_plane_initial)
         terminal_left_plane_state = self._plane_state_vector(fixed_variables.left_plane_final)
         terminal_right_plane_state = self._plane_state_vector(fixed_variables.right_plane_final)
+        left_lower_bounds, left_upper_bounds, right_lower_bounds, right_upper_bounds = (
+            self._global_jerk_bounds(right_start_node_index=right_start_node_index)
+        )
 
         x0: list[float] = []
         lbx: list[float] = []
@@ -776,12 +798,8 @@ class DirectMultipleShootingOptimizer:
                 else 0.0
             )
             x0.append(float(jerk_guess))
-            if control_index < self.active_control_count:
-                lbx.append(-self.jerk_bound)
-                ubx.append(self.jerk_bound)
-            else:
-                lbx.append(0.0)
-                ubx.append(0.0)
+            lbx.append(float(left_lower_bounds[control_index]))
+            ubx.append(float(left_upper_bounds[control_index]))
 
         for control_index in range(self.interval_count):
             active = right_start_node_index <= control_index < right_terminal_node_index
@@ -791,12 +809,8 @@ class DirectMultipleShootingOptimizer:
                 else 0.0
             )
             x0.append(float(jerk_guess))
-            if active:
-                lbx.append(-self.jerk_bound)
-                ubx.append(self.jerk_bound)
-            else:
-                lbx.append(0.0)
-                ubx.append(0.0)
+            lbx.append(float(right_lower_bounds[control_index]))
+            ubx.append(float(right_upper_bounds[control_index]))
 
         x0_array = np.asarray(x0, dtype=float)
         lbx_array = np.asarray(lbx, dtype=float)
@@ -851,6 +865,16 @@ class DirectMultipleShootingOptimizer:
             f"jerk_reg={jerk_regularization_value:.6e}, "
             f"total={total_objective_value:.6f}, "
             f"ipopt_f={float(solution['f']):.6f}"
+        )
+        show_dms_jerk_bounds_figure(
+            node_times=self.node_times,
+            left_jerk=np.asarray(left_control_global_values, dtype=float),
+            right_jerk=np.asarray(right_control_global_values, dtype=float),
+            left_lower_bounds=left_lower_bounds,
+            left_upper_bounds=left_upper_bounds,
+            right_lower_bounds=right_lower_bounds,
+            right_upper_bounds=right_upper_bounds,
+            right_arm_start=right_arm_start,
         )
 
         left_control_values = left_control_global_values[: self.active_control_count]
@@ -1023,3 +1047,80 @@ def show_dms_start_time_sweep_figure(
     figure.canvas.draw_idle()
     plt.show(block=False)
     return figure, axis
+
+
+def create_dms_jerk_bounds_figure(
+    *,
+    node_times: np.ndarray,
+    left_jerk: np.ndarray,
+    right_jerk: np.ndarray,
+    left_lower_bounds: np.ndarray,
+    left_upper_bounds: np.ndarray,
+    right_lower_bounds: np.ndarray,
+    right_upper_bounds: np.ndarray,
+    right_arm_start: float,
+):
+    """Create one temporary diagnostic figure showing jerk controls and their interval bounds."""
+
+    import matplotlib.pyplot as plt
+
+    interval_times = np.asarray(node_times[:-1], dtype=float)
+    figure, axes = plt.subplots(2, 1, sharex=True, figsize=(9.0, 6.0), tight_layout=True)
+
+    for axis, jerks, lower, upper, title in (
+        (
+            axes[0],
+            np.asarray(left_jerk, dtype=float),
+            np.asarray(left_lower_bounds, dtype=float),
+            np.asarray(left_upper_bounds, dtype=float),
+            f"Bras gauche | borne = +/-{float(np.max(np.abs(left_upper_bounds))):.2f} rad/s^3",
+        ),
+        (
+            axes[1],
+            np.asarray(right_jerk, dtype=float),
+            np.asarray(right_lower_bounds, dtype=float),
+            np.asarray(right_upper_bounds, dtype=float),
+            f"Bras droit | t1 = {right_arm_start:.2f} s | borne = +/-{float(np.max(np.abs(right_upper_bounds))):.2f} rad/s^3",
+        ),
+    ):
+        axis.step(interval_times, lower, where="post", color="0.55", linestyle="--", linewidth=1.2)
+        axis.step(interval_times, upper, where="post", color="0.55", linestyle="--", linewidth=1.2)
+        axis.step(interval_times, jerks, where="post", color="tab:blue", linewidth=1.8)
+        axis.axhline(0.0, color="0.8", linewidth=1.0)
+        axis.set_ylabel("Jerk (rad/s^3)")
+        axis.set_title(title)
+        axis.grid(True, alpha=0.3)
+
+    axes[-1].set_xlabel("Temps (s)")
+    figure.suptitle("Diagnostic DMS: jerks piecewise constants et bornes", fontsize=12)
+    return figure, axes
+
+
+def show_dms_jerk_bounds_figure(
+    *,
+    node_times: np.ndarray,
+    left_jerk: np.ndarray,
+    right_jerk: np.ndarray,
+    left_lower_bounds: np.ndarray,
+    left_upper_bounds: np.ndarray,
+    right_lower_bounds: np.ndarray,
+    right_upper_bounds: np.ndarray,
+    right_arm_start: float,
+):
+    """Open one external diagnostic figure right after one IPOPT solve."""
+
+    import matplotlib.pyplot as plt
+
+    figure, axes = create_dms_jerk_bounds_figure(
+        node_times=node_times,
+        left_jerk=left_jerk,
+        right_jerk=right_jerk,
+        left_lower_bounds=left_lower_bounds,
+        left_upper_bounds=left_upper_bounds,
+        right_lower_bounds=right_lower_bounds,
+        right_upper_bounds=right_upper_bounds,
+        right_arm_start=right_arm_start,
+    )
+    figure.canvas.draw_idle()
+    plt.show(block=False)
+    return figure, axes

@@ -106,6 +106,34 @@ def test_direct_multiple_shooting_uses_a_very_small_default_jerk_regularization(
     assert optimizer.jerk_regularization == 1e-9
 
 
+def test_direct_multiple_shooting_global_jerk_bounds_follow_the_active_windows(
+    tmp_path: Path,
+) -> None:
+    """The 50-node jerk bounds should be active only on the intended intervals."""
+
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=1.0, steps=201, integrator="rk4", rk4_step=0.005),
+        shooting_step=0.02,
+    )
+
+    left_lower, left_upper, right_lower, right_upper = optimizer._global_jerk_bounds(
+        right_start_node_index=15
+    )
+
+    np.testing.assert_allclose(left_lower[: optimizer.active_control_count], -optimizer.jerk_bound)
+    np.testing.assert_allclose(left_upper[: optimizer.active_control_count], optimizer.jerk_bound)
+    np.testing.assert_allclose(left_lower[optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(left_upper[optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(right_lower[:15], 0.0)
+    np.testing.assert_allclose(right_upper[:15], 0.0)
+    np.testing.assert_allclose(right_lower[15 : 15 + optimizer.active_control_count], -optimizer.jerk_bound)
+    np.testing.assert_allclose(right_upper[15 : 15 + optimizer.active_control_count], optimizer.jerk_bound)
+    np.testing.assert_allclose(right_lower[15 + optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(right_upper[15 + optimizer.active_control_count :], 0.0)
+
+
 def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_returns_motion(
     monkeypatch,
     tmp_path: Path,
@@ -153,6 +181,7 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     state_history = np.tile(initial_state.reshape(-1, 1), (1, optimizer.interval_count + 1))
     captured: dict[str, object] = {}
     configured_threads: list[int] = []
+    jerk_figure_calls: list[dict[str, np.ndarray | float]] = []
 
     monkeypatch.setattr(
         optimizer,
@@ -168,6 +197,11 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
         dms_module,
         "configure_optimization_threads",
         lambda thread_count=6: configured_threads.append(int(thread_count)) or int(thread_count),
+    )
+    monkeypatch.setattr(
+        dms_module,
+        "show_dms_jerk_bounds_figure",
+        lambda **kwargs: jerk_figure_calls.append(kwargs),
     )
 
     class FakeSimulator:
@@ -240,6 +274,9 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     assert "twist=" in stdout
     assert "jerk_reg=" in stdout
     assert "ipopt_f=" in stdout
+    assert len(jerk_figure_calls) == 1
+    assert np.asarray(jerk_figure_calls[0]["left_jerk"], dtype=float).shape == (optimizer.interval_count,)
+    assert np.asarray(jerk_figure_calls[0]["right_jerk"], dtype=float).shape == (optimizer.interval_count,)
     assert np.asarray(captured["p"], dtype=float).shape == (
         dms_module.ELEVATION_STAGE_BLOCK_SIZE * optimizer.interval_count,
     )
