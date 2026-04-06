@@ -22,6 +22,54 @@ class _FakeVar:
         return self._value
 
 
+class _FakeAxis:
+    """Very small axis stub storing the drawn lines and bounds."""
+
+    def __init__(self) -> None:
+        self.plot_calls: list[dict[str, object]] = []
+        self.axhline_calls: list[dict[str, object]] = []
+
+    def clear(self) -> None:
+        """Mirror the matplotlib API."""
+
+    def plot(self, x, y, **kwargs) -> None:
+        """Record one plotted curve."""
+
+        self.plot_calls.append({"x": np.asarray(x), "y": np.asarray(y), "kwargs": dict(kwargs)})
+
+    def axhline(self, y, **kwargs) -> None:
+        """Record one horizontal bound."""
+
+        self.axhline_calls.append({"y": float(y), "kwargs": dict(kwargs)})
+
+    def legend(self, **_kwargs) -> None:
+        """Mirror the matplotlib API."""
+
+    def set_xlabel(self, _label: str) -> None:
+        """Mirror the matplotlib API."""
+
+    def set_ylabel(self, _label: str) -> None:
+        """Mirror the matplotlib API."""
+
+    def set_title(self, _title: str) -> None:
+        """Mirror the matplotlib API."""
+
+    def grid(self, *_args, **_kwargs) -> None:
+        """Mirror the matplotlib API."""
+
+
+class _FakeCanvas:
+    """Small canvas stub recording refreshes."""
+
+    def __init__(self) -> None:
+        self.draw_idle_calls = 0
+
+    def draw_idle(self) -> None:
+        """Record one redraw."""
+
+        self.draw_idle_calls += 1
+
+
 def _build_app_for_plotting(
     *,
     plot_x: str = "Temps",
@@ -331,3 +379,21 @@ def test_scan_plot_datasets_returns_current_mode_then_other_cached_mode(tmp_path
     assert [dataset["mode"] for dataset in datasets] == ["Optimize DMS", "Optimize 2D"]
     assert datasets[0]["best_start_time"] == 0.28
     assert datasets[1]["best_start_time"] == 0.20
+
+
+def test_refresh_plot_adds_arm_angle_bounds_when_plotting_arm_kinematics() -> None:
+    """The arm-kinematics figure should display the validated angular bounds for all four DoFs."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Cinematique bras")
+    app._plot_axis = _FakeAxis()
+    app._plot_canvas = _FakeCanvas()
+
+    app._refresh_plot()
+
+    assert len(app._plot_axis.plot_calls) == 4
+    assert len(app._plot_axis.axhline_calls) == 8
+    np.testing.assert_allclose(
+        [call["y"] for call in app._plot_axis.axhline_calls],
+        [-135.0, 0.0, -180.0, 0.0, 0.0, 135.0, 0.0, 180.0],
+    )
+    assert app._plot_canvas.draw_idle_calls == 1

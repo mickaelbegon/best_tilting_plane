@@ -120,6 +120,12 @@ ARM_KINEMATICS_LABELS = (
     "Plan bras droit",
     "Elevation bras droit",
 )
+ARM_KINEMATICS_BOUNDS_DEG = (
+    LEFT_ARM_PLANE_BOUNDS_DEG,
+    LEFT_ARM_ELEVATION_BOUNDS_DEG,
+    RIGHT_ARM_PLANE_BOUNDS_DEG,
+    RIGHT_ARM_ELEVATION_BOUNDS_DEG,
+)
 SCAN_PLOT_STYLE_BY_MODE = {
     "Optimize 2D": {"color": "tab:blue", "marker": "o", "label": "Optimize 2D"},
     "Optimize DMS": {"color": "tab:orange", "marker": "s", "label": "Optimize DMS"},
@@ -1686,6 +1692,25 @@ class BestTiltingPlaneApp:
         self._plot_axis.legend(loc="best")
         self._plot_canvas.draw_idle()
 
+    def _add_arm_kinematic_bounds_to_plot(self, colors: tuple[str, ...]) -> None:
+        """Overlay the validated arm-angle bounds on the current kinematics plot."""
+
+        for color, (lower_bound, upper_bound) in zip(colors, ARM_KINEMATICS_BOUNDS_DEG, strict=False):
+            self._plot_axis.axhline(
+                lower_bound,
+                color=color,
+                linestyle="--",
+                linewidth=1.0,
+                alpha=0.35,
+            )
+            self._plot_axis.axhline(
+                upper_bound,
+                color=color,
+                linestyle="--",
+                linewidth=1.0,
+                alpha=0.35,
+            )
+
     def _plot_data(
         self,
     ) -> tuple[np.ndarray, np.ndarray, str, str, str, tuple[str, ...] | None]:
@@ -1869,6 +1894,8 @@ class BestTiltingPlaneApp:
                     linewidth=2.0,
                     label=curve_label,
                 )
+            if self.plot_y_var.get() == "Cinematique bras":
+                self._add_arm_kinematic_bounds_to_plot(colors)
             self._plot_axis.legend(loc="best")
         else:
             self._plot_axis.plot(x_data, y_data, color="tab:blue", linewidth=2.0)
