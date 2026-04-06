@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 
 from best_tilting_plane.gui.app import BestTiltingPlaneApp, ROOT_INITIAL_OPTIONS
+from best_tilting_plane.simulation import SimulationConfiguration
 
 
 class _FakeVar:
@@ -49,8 +52,32 @@ def _build_app_for_plotting(
                     ],
                     dtype=float,
                 ),
+                "qdot": np.array(
+                    [
+                        [0.0, 0.0, 0.0, 0.7, 0.8, 0.9, -0.4, -6.0, 0.4, 6.0],
+                        [0.0, 0.0, 0.0, 1.0, 1.1, 1.2, -0.2, -3.0, 0.2, 3.0],
+                        [0.0, 0.0, 0.0, 1.3, 1.4, 1.5, 0.0, 0.0, 0.0, 0.0],
+                    ],
+                    dtype=float,
+                ),
             },
         )(),
+        "display_q": np.array(
+            [
+                [0.0, 0.0, 0.0, 0.1, 0.2, 0.3, -0.2, -3.0, 0.2, 3.0],
+                [0.0, 0.0, 0.0, 0.4, 0.5, 0.6, -0.1, -1.5, 0.1, 1.5],
+                [0.0, 0.0, 0.0, 0.9, 1.0, 1.1, 0.0, 0.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        ),
+        "display_qdot": np.array(
+            [
+                [0.0, 0.0, 0.0, 0.7, 0.8, 0.9, -0.4, -6.0, 0.4, 6.0],
+                [0.0, 0.0, 0.0, 1.0, 1.1, 1.2, -0.2, -3.0, 0.2, 3.0],
+                [0.0, 0.0, 0.0, 1.3, 1.4, 1.5, 0.0, 0.0, 0.0, 0.0],
+            ],
+            dtype=float,
+        ),
         "deviations": {
             "left": np.array([0.0, 0.1, 0.2], dtype=float),
             "right": np.array([0.0, -0.1, -0.2], dtype=float),
@@ -158,6 +185,37 @@ def test_plot_data_can_return_the_four_arm_kinematic_curves() -> None:
     )
 
 
+def test_plot_data_can_return_the_four_arm_velocity_curves() -> None:
+    """The plot selector should expose the four arm DoF velocities as one 4-curve figure."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Vitesses bras")
+
+    x_data, y_data, x_label, y_label, title, curve_labels = app._plot_data()
+
+    np.testing.assert_allclose(x_data, np.array([0.0, 0.5, 1.0]))
+    np.testing.assert_allclose(
+        y_data,
+        np.rad2deg(
+            np.array(
+                [
+                    [-0.4, -6.0, 0.4, 6.0],
+                    [-0.2, -3.0, 0.2, 3.0],
+                    [0.0, 0.0, 0.0, 0.0],
+                ]
+            )
+        ),
+    )
+    assert x_label == "Temps (s)"
+    assert y_label == "Vitesses bras (deg/s)"
+    assert title == "Vitesses bras en fonction de temps"
+    assert curve_labels == (
+        "Plan bras gauche",
+        "Elevation bras gauche",
+        "Plan bras droit",
+        "Elevation bras droit",
+    )
+
+
 def test_plot_data_can_use_twist_as_the_horizontal_axis() -> None:
     """The x-axis selector should expose the root twist angle in degrees."""
 
@@ -218,3 +276,58 @@ def test_top_view_plot_data_can_neutralize_root_orientation_for_arm_visualizatio
 
     np.testing.assert_allclose(display_q[:, :6], 0.0)
     np.testing.assert_allclose(display_q[:, 6:], np.array([[11.0, 12.0], [13.0, 14.0], [15.0, 16.0]]))
+
+
+def test_scan_plot_datasets_returns_current_mode_then_other_cached_mode(tmp_path) -> None:
+    """The embedded scan figure should prioritize the current optimization mode and overlay the other one."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.optimization_mode_var = _FakeVar("Optimize DMS")
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_2d": {
+                        "signature": app._optimization_cache_signature_for_mode("Optimize 2D"),
+                        "values": {
+                            "right_arm_start": 0.20,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "scan_start_times": [0.16, 0.20],
+                        "scan_final_twist_turns": [-0.30, -0.50],
+                        "scan_objective_values": [-0.29, -0.49],
+                    },
+                    "optimize_dms": {
+                        "signature": app._optimization_cache_signature_for_mode("Optimize DMS"),
+                        "values": {
+                            "right_arm_start": 0.28,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "scan_start_times": [0.16, 0.18, 0.28],
+                        "scan_final_twist_turns": [-0.40, -0.55, -0.63],
+                        "scan_objective_values": [-0.39, -0.54, -0.62],
+                        "scan_success_mask": [True, True, True],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    datasets = app._scan_plot_datasets()
+
+    assert [dataset["mode"] for dataset in datasets] == ["Optimize DMS", "Optimize 2D"]
+    assert datasets[0]["best_start_time"] == 0.28
+    assert datasets[1]["best_start_time"] == 0.20

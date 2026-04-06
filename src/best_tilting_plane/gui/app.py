@@ -110,8 +110,10 @@ PLOT_Y_OPTIONS = (
     "Tilt",
     "Twist",
     "Cinematique bras",
+    "Vitesses bras",
     "Deviation bras gauche",
     "Deviation bras droit",
+    "Vrilles selon t1",
 )
 ROOT_INITIAL_OPTIONS = ("Avec q racine(0)=0", "Sans q racine(0)=0")
 TOP_VIEW_LEFT_CHAIN = ("shoulder_left", "elbow_left", "wrist_left", "hand_left")
@@ -139,6 +141,10 @@ ARM_KINEMATICS_LABELS = (
     "Plan bras droit",
     "Elevation bras droit",
 )
+SCAN_PLOT_STYLE_BY_MODE = {
+    "Optimize 2D": {"color": "tab:blue", "marker": "o", "label": "Optimize 2D"},
+    "Optimize DMS": {"color": "tab:orange", "marker": "s", "label": "Optimize DMS"},
+}
 
 
 def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
@@ -800,14 +806,9 @@ class BestTiltingPlaneApp:
         if comparison_scan is not None and comparison_scan.get("mode") != primary_scan.get("mode"):
             datasets.append(comparison_scan)
 
-        style_by_mode = {
-            "Optimize 2D": {"color": "tab:blue", "marker": "o", "label": "Optimize 2D"},
-            "Optimize DMS": {"color": "tab:orange", "marker": "s", "label": "Optimize DMS"},
-        }
-
         for dataset in datasets:
             mode = str(dataset["mode"])
-            style = style_by_mode[mode]
+            style = SCAN_PLOT_STYLE_BY_MODE[mode]
             times = np.asarray(dataset["start_times"], dtype=float)
             twists = np.asarray(dataset["final_twist_turns"], dtype=float)
             success_mask = np.asarray(dataset["success_mask"], dtype=bool)
@@ -1603,6 +1604,103 @@ class BestTiltingPlaneApp:
             return np.asarray(self._visualization_data["display_q"][:, 3 + root_index], dtype=float)
         return np.asarray(result.q[:, 3 + root_index], dtype=float)
 
+    def _arm_coordinate_series(self) -> np.ndarray:
+        """Return the four displayed arm coordinates currently shown in the GUI."""
+
+        if self._visualization_data is None:
+            raise RuntimeError("No simulation available for plotting.")
+        if "display_q" in self._visualization_data:
+            return np.asarray(self._visualization_data["display_q"][:, 6:10], dtype=float)
+        return np.asarray(self._visualization_data["result"].q[:, 6:10], dtype=float)
+
+    def _arm_velocity_series(self) -> np.ndarray:
+        """Return the four displayed arm velocities currently shown in the GUI."""
+
+        if self._visualization_data is None:
+            raise RuntimeError("No simulation available for plotting.")
+        if "display_qdot" in self._visualization_data:
+            return np.asarray(self._visualization_data["display_qdot"][:, 6:10], dtype=float)
+        return np.asarray(self._visualization_data["result"].qdot[:, 6:10], dtype=float)
+
+    def _scan_plot_datasets(self) -> list[dict[str, object]]:
+        """Return the scan datasets available for the embedded bottom-left figure."""
+
+        if not hasattr(self, "optimization_mode_var"):
+            return []
+
+        current_mode = str(self.optimization_mode_var.get())
+        datasets: list[dict[str, object]] = []
+        seen_modes: set[str] = set()
+        ordered_modes = [current_mode] + [
+            mode for mode in OPTIMIZATION_MODE_OPTIONS if mode != current_mode
+        ]
+        for mode in ordered_modes:
+            if mode in seen_modes:
+                continue
+            seen_modes.add(mode)
+            bundle = self._load_cached_scan_bundle_for_mode(mode)
+            if bundle is not None:
+                datasets.append(bundle)
+        return datasets
+
+    def _refresh_scan_plot(self) -> None:
+        """Draw the embedded scan figure showing the final twist count as a function of `t1`."""
+
+        self._plot_axis.clear()
+        datasets = self._scan_plot_datasets()
+        self._plot_axis.set_xlabel("Debut bras droit t1 (s)")
+        self._plot_axis.set_ylabel("Vrilles finales (tours)")
+        self._plot_axis.set_title("Vrilles finales en fonction de t1")
+        self._plot_axis.grid(True, alpha=0.3)
+        if not datasets:
+            self._plot_axis.text(
+                0.5,
+                0.5,
+                "Aucun scan disponible.\nLancez Optimize.",
+                ha="center",
+                va="center",
+                transform=self._plot_axis.transAxes,
+            )
+            self._plot_canvas.draw_idle()
+            return
+
+        for dataset in datasets:
+            mode = str(dataset["mode"])
+            style = SCAN_PLOT_STYLE_BY_MODE[mode]
+            start_times = np.asarray(dataset["start_times"], dtype=float)
+            final_twist_turns = np.asarray(dataset["final_twist_turns"], dtype=float)
+            success_mask = np.asarray(dataset["success_mask"], dtype=bool)
+            best_start_time = float(dataset["best_start_time"])
+            best_index = int(np.argmin(np.abs(start_times - best_start_time)))
+            self._plot_axis.plot(
+                start_times,
+                final_twist_turns,
+                color=style["color"],
+                linewidth=1.8,
+                marker=style["marker"],
+                markersize=4.0,
+                label=style["label"],
+            )
+            if np.any(~success_mask):
+                self._plot_axis.scatter(
+                    start_times[~success_mask],
+                    final_twist_turns[~success_mask],
+                    color=style["color"],
+                    marker="x",
+                    s=36,
+                )
+            self._plot_axis.scatter(
+                [start_times[best_index]],
+                [final_twist_turns[best_index]],
+                color=style["color"],
+                edgecolors="black",
+                linewidths=0.8,
+                s=64,
+                zorder=3,
+            )
+        self._plot_axis.legend(loc="best")
+        self._plot_canvas.draw_idle()
+
     def _plot_data(
         self,
     ) -> tuple[np.ndarray, np.ndarray, str, str, str, tuple[str, ...] | None]:
@@ -1635,8 +1733,12 @@ class BestTiltingPlaneApp:
             y_data = np.rad2deg(self._root_series(result, 2))
             y_label = "Twist (deg)"
         elif y_choice == "Cinematique bras":
-            y_data = np.rad2deg(np.asarray(result.q[:, 6:10], dtype=float))
+            y_data = np.rad2deg(self._arm_coordinate_series())
             y_label = "Angles bras (deg)"
+            curve_labels = ARM_KINEMATICS_LABELS
+        elif y_choice == "Vitesses bras":
+            y_data = np.rad2deg(self._arm_velocity_series())
+            y_label = "Vitesses bras (deg/s)"
             curve_labels = ARM_KINEMATICS_LABELS
         elif y_choice == "Deviation bras gauche":
             y_data = np.rad2deg(deviations["left"])
@@ -1647,7 +1749,7 @@ class BestTiltingPlaneApp:
         else:
             y_data = np.rad2deg(deviations["right"])
             y_label = "Deviation bras droit / BTP (deg)"
-        if y_choice != "Cinematique bras":
+        if y_choice not in {"Cinematique bras", "Vitesses bras"}:
             curve_labels = None
 
         title = f"{y_choice} en fonction de {self.plot_x_var.get().lower()}"
@@ -1765,6 +1867,9 @@ class BestTiltingPlaneApp:
 
         if self.plot_mode_var.get() == PLOT_MODE_OPTIONS[1]:
             self._refresh_top_view_plot()
+            return
+        if self.plot_y_var.get() == "Vrilles selon t1":
+            self._refresh_scan_plot()
             return
 
         x_data, y_data, x_label, y_label, title, curve_labels = self._plot_data()
