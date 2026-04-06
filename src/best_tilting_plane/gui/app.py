@@ -71,35 +71,14 @@ class SliderDefinition:
 
 SLIDER_DEFINITIONS = (
     SliderDefinition("right_arm_start", "Start bras droit (s)", 0.0, 0.7, 0.10),
-    SliderDefinition(
-        "left_plane_initial",
-        "Plan init. gauche (deg)",
-        LEFT_ARM_PLANE_BOUNDS_DEG[0],
-        LEFT_ARM_PLANE_BOUNDS_DEG[1],
-        0.0,
-    ),
-    SliderDefinition(
-        "left_plane_final",
-        "Plan fin. gauche (deg)",
-        LEFT_ARM_PLANE_BOUNDS_DEG[0],
-        LEFT_ARM_PLANE_BOUNDS_DEG[1],
-        0.0,
-    ),
-    SliderDefinition(
-        "right_plane_initial",
-        "Plan init. droit (deg)",
-        RIGHT_ARM_PLANE_BOUNDS_DEG[0],
-        RIGHT_ARM_PLANE_BOUNDS_DEG[1],
-        0.0,
-    ),
-    SliderDefinition(
-        "right_plane_final",
-        "Plan fin. droit (deg)",
-        RIGHT_ARM_PLANE_BOUNDS_DEG[0],
-        RIGHT_ARM_PLANE_BOUNDS_DEG[1],
-        0.0,
-    ),
 )
+GUI_FIXED_VALUES = {
+    "left_plane_initial": 0.0,
+    "left_plane_final": 0.0,
+    "right_plane_initial": 0.0,
+    "right_plane_final": 0.0,
+}
+GUI_VALUE_NAMES = ("right_arm_start", *GUI_FIXED_VALUES.keys())
 PLOT_X_OPTIONS = ("Temps", "Somersault", "Vrille")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
@@ -151,11 +130,13 @@ def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
     """Convert GUI values into the optimization-variable structure."""
 
     return TwistOptimizationVariables(
-        right_arm_start=values["right_arm_start"],
-        left_plane_initial=np.deg2rad(values["left_plane_initial"]),
-        left_plane_final=np.deg2rad(values["left_plane_final"]),
-        right_plane_initial=np.deg2rad(values["right_plane_initial"]),
-        right_plane_final=np.deg2rad(values["right_plane_final"]),
+        right_arm_start=float(values["right_arm_start"]),
+        left_plane_initial=np.deg2rad(float(values.get("left_plane_initial", GUI_FIXED_VALUES["left_plane_initial"]))),
+        left_plane_final=np.deg2rad(float(values.get("left_plane_final", GUI_FIXED_VALUES["left_plane_final"]))),
+        right_plane_initial=np.deg2rad(
+            float(values.get("right_plane_initial", GUI_FIXED_VALUES["right_plane_initial"]))
+        ),
+        right_plane_final=np.deg2rad(float(values.get("right_plane_final", GUI_FIXED_VALUES["right_plane_final"]))),
     )
 
 
@@ -437,13 +418,17 @@ class BestTiltingPlaneApp:
     def _current_values(self) -> dict[str, float]:
         """Return the current GUI values as a plain dictionary."""
 
-        return {name: float(variable.get()) for name, variable in self._entries.items()}
+        values = dict(GUI_FIXED_VALUES)
+        values.update({name: float(variable.get()) for name, variable in self._entries.items()})
+        return values
 
     def _set_values(self, values: dict[str, float]) -> None:
         """Write a new set of values back to the sliders and entry boxes."""
 
         self._auto_simulation_suspended = True
         for name, value in values.items():
+            if name not in self._scales or name not in self._entries:
+                continue
             self._scales[name].set(float(value))
             self._entries[name].set(f"{float(value):.2f}")
         self._auto_simulation_suspended = False
@@ -544,7 +529,7 @@ class BestTiltingPlaneApp:
         values = record.get("values")
         if not isinstance(values, dict):
             return None
-        expected_names = {definition.name for definition in SLIDER_DEFINITIONS}
+        expected_names = set(GUI_VALUE_NAMES)
         if set(values) != expected_names:
             return None
         try:
@@ -898,7 +883,7 @@ class BestTiltingPlaneApp:
         right_plane_jerk = record.get("right_plane_jerk")
         if not isinstance(values, dict) or not isinstance(left_plane_jerk, list) or not isinstance(right_plane_jerk, list):
             return None
-        expected_names = {definition.name for definition in SLIDER_DEFINITIONS}
+        expected_names = set(GUI_VALUE_NAMES)
         if set(values) != expected_names:
             return None
         try:
@@ -976,7 +961,7 @@ class BestTiltingPlaneApp:
         ):
             return None
 
-        expected_names = {definition.name for definition in SLIDER_DEFINITIONS}
+        expected_names = set(GUI_VALUE_NAMES)
         if set(values) != expected_names:
             return None
 
