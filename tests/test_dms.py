@@ -109,6 +109,7 @@ def test_direct_multiple_shooting_uses_a_very_small_default_jerk_regularization(
 def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_returns_motion(
     monkeypatch,
     tmp_path: Path,
+    capsys,
 ) -> None:
     """One fixed-start DMS solve should assemble a float-bounded NLP and rebuild the jerk-controlled motion."""
 
@@ -212,6 +213,7 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
         print_level=5,
         print_time=True,
     )
+    stdout = capsys.readouterr().out
 
     assert result.success
     assert result.solver_status == "Solve_Succeeded"
@@ -234,6 +236,10 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
         dms_module.ROOT_STATE_SIZE + 2 * dms_module.PLANE_STATE_SIZE
     )
     assert np.asarray(captured["lbg"], dtype=float).shape == (optimizer._constraint_count,)
+    assert "DMS objective terms:" in stdout
+    assert "twist=" in stdout
+    assert "jerk_reg=" in stdout
+    assert "ipopt_f=" in stdout
     assert np.asarray(captured["p"], dtype=float).shape == (
         dms_module.ELEVATION_STAGE_BLOCK_SIZE * optimizer.interval_count,
     )

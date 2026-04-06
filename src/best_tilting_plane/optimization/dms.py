@@ -837,6 +837,21 @@ class DirectMultipleShootingOptimizer:
         left_control_global_values = raw_solution[offset : offset + self.interval_count]
         offset += self.interval_count
         right_control_global_values = raw_solution[offset : offset + self.interval_count]
+        root_state_nodes = root_state_values.reshape(self.interval_count + 1, ROOT_STATE_SIZE).T
+        twist_objective_value = float(root_state_nodes[5, -1] / (2.0 * np.pi))
+        jerk_regularization_value = float(
+            self.jerk_regularization
+            * self.shooting_step
+            * (np.sum(left_control_global_values**2) + np.sum(right_control_global_values**2))
+        )
+        total_objective_value = twist_objective_value + jerk_regularization_value
+        print(
+            "DMS objective terms: "
+            f"twist={twist_objective_value:.6f}, "
+            f"jerk_reg={jerk_regularization_value:.6e}, "
+            f"total={total_objective_value:.6f}, "
+            f"ipopt_f={float(solution['f']):.6f}"
+        )
 
         left_control_values = left_control_global_values[: self.active_control_count]
         right_control_values = right_control_global_values[
@@ -884,7 +899,7 @@ class DirectMultipleShootingOptimizer:
             right_plane_jerk=right_control_values.copy(),
             node_times=self.node_times.copy(),
             arm_node_times=self.arm_node_times.copy(),
-            root_state_nodes=root_state_values.reshape(self.interval_count + 1, ROOT_STATE_SIZE).T,
+            root_state_nodes=root_state_nodes,
             left_plane_state_nodes=left_plane_global_states[:, : self.active_control_count + 1].copy(),
             right_plane_state_nodes=right_plane_global_states[
                 :,
