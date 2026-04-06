@@ -813,6 +813,48 @@ def test_load_cached_dms_solution_rebuilds_the_prescribed_motion(tmp_path: Path)
     assert scan_data["start_times"] == [0.10, 0.12, 0.14]
 
 
+def test_load_cached_dms_solution_ignores_stale_signature(tmp_path: Path) -> None:
+    """An obsolete DMS cache entry should not be replayed after formulation changes."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.optimization_mode_var = FakeVar("Optimize DMS")
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+
+    stale_signature = dict(app._optimization_cache_signature())
+    stale_signature["version"] = stale_signature["version"] - 1
+    cache_path = tmp_path / "optimization_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_dms": {
+                        "signature": stale_signature,
+                        "values": {
+                            "right_arm_start": 0.28,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "left_plane_jerk": [100.0] * 15,
+                        "right_plane_jerk": [-100.0] * 15,
+                        "final_twist_turns": -0.63,
+                        "solver_status": "Solve_Succeeded",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert app._load_cached_dms_solution() is None
+
+
 def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
     monkeypatch,
     tmp_path: Path,

@@ -36,8 +36,10 @@ from best_tilting_plane.optimization import (
 )
 from best_tilting_plane.optimization.dms import (
     DEFAULT_DMS_JERK_REGULARIZATION,
+    JERK_BOUND_SCALE,
     MULTISTART_REFERENCE_T1,
     MULTISTART_START_COUNT,
+    RIGHT_ARM_START_BOUNDS,
     show_dms_jerk_bounds_figure,
 )
 from best_tilting_plane.simulation import (
@@ -111,7 +113,7 @@ ALL_FRAME_SEGMENTS = tuple(
 )
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
-OPTIMIZATION_CACHE_VERSION = 2
+OPTIMIZATION_CACHE_VERSION = 3
 DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.0
@@ -504,6 +506,10 @@ class BestTiltingPlaneApp:
             signature["dms_scan_start"] = DMS_SCAN_START
             signature["dms_scan_end"] = DMS_SCAN_END
             signature["dms_jerk_regularization"] = DMS_JERK_REGULARIZATION
+            signature["dms_start_bounds"] = [float(value) for value in RIGHT_ARM_START_BOUNDS]
+            signature["dms_multistart_reference_t1"] = float(MULTISTART_REFERENCE_T1)
+            signature["dms_multistart_start_count"] = int(MULTISTART_START_COUNT)
+            signature["dms_jerk_bound_scale"] = float(JERK_BOUND_SCALE)
         return signature
 
     def _read_optimization_cache_file(self) -> dict[str, object]:
