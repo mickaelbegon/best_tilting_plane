@@ -13,9 +13,9 @@ from best_tilting_plane.gui.app import (
     DEFAULT_CAMERA_AZIMUTH_DEG,
     DEFAULT_CAMERA_ELEVATION_DEG,
     OPTIMIZATION_MODE_OPTIONS,
+    ROOT_VIEW_CAMERA_AZIMUTH_DEG,
+    ROOT_VIEW_CAMERA_ELEVATION_DEG,
     ROOT_INITIAL_OPTIONS,
-    TOP_VIEW_CAMERA_AZIMUTH_DEG,
-    TOP_VIEW_CAMERA_ELEVATION_DEG,
     BestTiltingPlaneApp,
 )
 from best_tilting_plane.simulation import SimulationConfiguration
@@ -171,8 +171,8 @@ def test_configure_time_slider_uses_simulation_time_bounds() -> None:
     assert app.time_value_var.get() == "1.00 s"
 
 
-def test_apply_camera_view_uses_top_view_when_root_is_zeroed() -> None:
-    """The `q(root)=0` display mode should orient the camera on the `xOy` plane."""
+def test_apply_camera_view_uses_root_side_view_when_root_is_zeroed() -> None:
+    """The root display mode should orient the camera in the `xOz` plane."""
 
     app, _drawn_frames, _scheduler = _build_app_for_animation()
     app._animation_axis = FakeAxis()
@@ -181,8 +181,8 @@ def test_apply_camera_view_uses_top_view_when_root_is_zeroed() -> None:
     app._apply_camera_view()
 
     assert app._animation_axis.camera == (
-        TOP_VIEW_CAMERA_ELEVATION_DEG,
-        TOP_VIEW_CAMERA_AZIMUTH_DEG,
+        ROOT_VIEW_CAMERA_ELEVATION_DEG,
+        ROOT_VIEW_CAMERA_AZIMUTH_DEG,
     )
 
 

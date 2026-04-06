@@ -115,8 +115,8 @@ DEFAULT_CAMERA_ELEVATION_DEG = 20.0
 DEFAULT_CAMERA_AZIMUTH_DEG = -60.0
 BTP_CAMERA_ELEVATION_DEG = 20.0
 BTP_CAMERA_AZIMUTH_DEG = -55.0
-TOP_VIEW_CAMERA_ELEVATION_DEG = 90.0
-TOP_VIEW_CAMERA_AZIMUTH_DEG = -90.0
+ROOT_VIEW_CAMERA_ELEVATION_DEG = 0.0
+ROOT_VIEW_CAMERA_AZIMUTH_DEG = -90.0
 ALL_FRAME_SEGMENTS = tuple(
     dict.fromkeys(ARM_SEGMENTS_FOR_VISUALIZATION + ARM_SEGMENTS_FOR_DEVIATION)
 )
@@ -1049,12 +1049,12 @@ class BestTiltingPlaneApp:
         self._animate_next_frame()
 
     def _apply_camera_view(self) -> None:
-        """Apply the default or top-down camera depending on the root display mode."""
+        """Apply the default or root-aligned camera depending on the selected reference."""
 
         if self._animation_reference() == ANIMATION_REFERENCE_OPTIONS[1]:
             self._animation_axis.view_init(
-                elev=TOP_VIEW_CAMERA_ELEVATION_DEG,
-                azim=TOP_VIEW_CAMERA_AZIMUTH_DEG,
+                elev=ROOT_VIEW_CAMERA_ELEVATION_DEG,
+                azim=ROOT_VIEW_CAMERA_AZIMUTH_DEG,
             )
             return
         self._animation_axis.view_init(
