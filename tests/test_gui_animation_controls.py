@@ -37,6 +37,11 @@ class FakeScheduler:
         self.pending[self._next_handle] = callback
         return self._next_handle
 
+    def after_idle(self, callback):
+        """Schedule one idle callback with the same semantics as `after(0, ...)`."""
+
+        return self.after(0, callback)
+
     def after_cancel(self, handle) -> None:
         """Cancel a pending callback."""
 
@@ -51,6 +56,14 @@ class FakeScheduler:
 
     def destroy(self) -> None:
         """Mirror the Tk API used when closing the window."""
+
+    def run_pending(self) -> None:
+        """Execute and clear the currently pending callbacks."""
+
+        pending = list(self.pending.items())
+        self.pending.clear()
+        for _handle, callback in pending:
+            callback()
 
 
 class FakeVar:
@@ -806,7 +819,8 @@ def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
     )
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
-    app.root = FakeScheduler()
+    scheduler = FakeScheduler()
+    app.root = scheduler
     app.result_var = FakeVar("")
     app.optimization_mode_var = FakeVar("Optimize DMS")
     app._auto_runner = FakeRunner()
@@ -858,6 +872,7 @@ def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
     )
 
     app._optimize_strategy()
+    scheduler.run_pending()
 
     assert app._auto_runner.cancelled
     assert applied[0][0] == {
@@ -869,15 +884,12 @@ def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
     }
     assert applied[0][1] is not None
     assert applied[0][2] == "optimum DMS charge depuis le cache: -0.63 tours (Solve_Succeeded)"
-    assert shown == [
-        {
-            "start_times": [0.10, 0.12, 0.28],
-            "final_twist_turns": [-0.40, -0.55, -0.63],
-            "objective_values": [-0.39, -0.54, -0.62],
-            "success_mask": [True, True, True],
-            "best_start_time": 0.28,
-        }
-    ]
+    assert len(shown) == 1
+    np.testing.assert_allclose(shown[0]["start_times"], [0.10, 0.12, 0.28])
+    np.testing.assert_allclose(shown[0]["final_twist_turns"], [-0.40, -0.55, -0.63])
+    np.testing.assert_allclose(shown[0]["objective_values"], [-0.39, -0.54, -0.62])
+    np.testing.assert_array_equal(shown[0]["success_mask"], [True, True, True])
+    assert shown[0]["best_start_time"] == 0.28
 
 
 def test_show_dms_sweep_figure_overlays_cached_2d_scan_when_available(tmp_path: Path) -> None:
@@ -940,8 +952,19 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
         def candidate_start_times(self):
             return np.array([0.10, 0.28, 0.30])
 
+        def __init__(self) -> None:
+            self.interval_count = 50
+            self.active_control_count = 15
+            self.node_times = np.linspace(0.0, 1.0, self.interval_count + 1)
+
+        def _global_jerk_bounds(self, *, right_start_node_index):
+            lower = np.full(self.interval_count, -1.0, dtype=float)
+            upper = np.full(self.interval_count, 1.0, dtype=float)
+            return lower, upper, lower.copy(), upper.copy()
+
         def solve_fixed_start(self, initial_guess, *, right_arm_start, previous_result=None, **_kwargs):
             assert initial_guess.right_arm_start == 0.1
+            assert _kwargs["show_jerk_diagnostics"] is False
             if previous_result is None:
                 assert right_arm_start == 0.10
             elif np.isclose(right_arm_start, 0.28):
@@ -982,7 +1005,8 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     )
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
-    app.root = FakeScheduler()
+    scheduler = FakeScheduler()
+    app.root = scheduler
     app.result_var = FakeVar("")
     app.optimization_mode_var = FakeVar("Optimize DMS")
     app._auto_runner = FakeRunner()
@@ -1001,12 +1025,15 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     )
     shown: list[dict[str, object]] = []
     app._show_dms_sweep_figure = lambda **kwargs: shown.append(dict(kwargs))
+    jerk_diagnostics: list[dict[str, object]] = []
+    app._schedule_dms_jerk_diagnostic_figure = lambda **kwargs: jerk_diagnostics.append(dict(kwargs))
     applied: list[tuple[dict[str, float], object, str | None]] = []
     app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: applied.append(
         (dict(values), prescribed_motion, status_suffix)
     )
 
     app._optimize_strategy()
+    scheduler.run_pending()
 
     assert app._auto_runner.cancelled
     assert applied == [
@@ -1028,6 +1055,7 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     np.testing.assert_allclose(shown[0]["objective_values"], [-0.39, -0.62, -0.60])
     np.testing.assert_array_equal(shown[0]["success_mask"], [True, True, True])
     assert shown[0]["best_start_time"] == 0.28
+    assert len(jerk_diagnostics) == 1
 
 
 def test_report_callback_exception_updates_result_message() -> None:

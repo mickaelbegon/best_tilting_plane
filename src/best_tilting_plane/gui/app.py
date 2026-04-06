@@ -34,7 +34,10 @@ from best_tilting_plane.optimization import (
     show_dms_start_time_sweep_figure,
     show_right_arm_start_sweep_figure,
 )
-from best_tilting_plane.optimization.dms import DEFAULT_DMS_JERK_REGULARIZATION
+from best_tilting_plane.optimization.dms import (
+    DEFAULT_DMS_JERK_REGULARIZATION,
+    show_dms_jerk_bounds_figure,
+)
 from best_tilting_plane.simulation import (
     PiecewiseConstantJerkArmMotion,
     PiecewiseConstantJerkTrajectory,
@@ -678,6 +681,86 @@ class BestTiltingPlaneApp:
         }
         comparison_scan = self._load_cached_scan_bundle_for_mode("Optimize 2D")
         self._show_scan_comparison_figure(primary_scan=primary_scan, comparison_scan=comparison_scan)
+
+    def _schedule_external_callback(self, callback) -> None:
+        """Run one external-window callback after Tk regains control."""
+
+        def safe_callback() -> None:
+            if getattr(self, "_is_closing", False):
+                return
+            try:
+                callback()
+            except Exception as error:
+                traceback.print_exc()
+                self.result_var.set(f"Erreur figure externe: {error}")
+
+        after_idle = getattr(self.root, "after_idle", None)
+        if callable(after_idle):
+            after_idle(safe_callback)
+        else:
+            self.root.after(0, safe_callback)
+
+    def _schedule_scan_figure(
+        self,
+        *,
+        start_times: list[float] | np.ndarray,
+        final_twist_turns: list[float] | np.ndarray,
+        objective_values: list[float] | np.ndarray,
+        best_start_time: float,
+        success_mask: list[bool] | np.ndarray | None = None,
+    ) -> None:
+        """Open the scan figure after the current Tk callback returns."""
+
+        start_times_copy = np.asarray(start_times, dtype=float).copy()
+        final_twist_turns_copy = np.asarray(final_twist_turns, dtype=float).copy()
+        objective_values_copy = np.asarray(objective_values, dtype=float).copy()
+        success_mask_copy = None if success_mask is None else np.asarray(success_mask, dtype=bool).copy()
+        self._schedule_external_callback(
+            lambda: self._show_scan_figure(
+                start_times=start_times_copy,
+                final_twist_turns=final_twist_turns_copy,
+                objective_values=objective_values_copy,
+                success_mask=success_mask_copy,
+                best_start_time=float(best_start_time),
+            )
+        )
+
+    def _schedule_dms_jerk_diagnostic_figure(
+        self,
+        *,
+        optimizer: DirectMultipleShootingOptimizer,
+        result,
+    ) -> None:
+        """Open the final DMS jerk diagnostic after the current Tk callback returns."""
+
+        if (
+            not hasattr(optimizer, "_global_jerk_bounds")
+            or not hasattr(optimizer, "interval_count")
+            or not hasattr(optimizer, "node_times")
+        ):
+            return
+        left_lower_bounds, left_upper_bounds, right_lower_bounds, right_upper_bounds = optimizer._global_jerk_bounds(
+            right_start_node_index=int(result.right_arm_start_node_index)
+        )
+        left_jerk = np.zeros(optimizer.interval_count, dtype=float)
+        right_jerk = np.zeros(optimizer.interval_count, dtype=float)
+        left_jerk[: len(result.left_plane_jerk)] = np.asarray(result.left_plane_jerk, dtype=float)
+        right_start = int(result.right_arm_start_node_index)
+        right_stop = right_start + len(result.right_plane_jerk)
+        right_jerk[right_start:right_stop] = np.asarray(result.right_plane_jerk, dtype=float)
+        node_times = np.asarray(optimizer.node_times, dtype=float).copy()
+        self._schedule_external_callback(
+            lambda: show_dms_jerk_bounds_figure(
+                node_times=node_times,
+                left_jerk=left_jerk.copy(),
+                right_jerk=right_jerk.copy(),
+                left_lower_bounds=np.asarray(left_lower_bounds, dtype=float).copy(),
+                left_upper_bounds=np.asarray(left_upper_bounds, dtype=float).copy(),
+                right_lower_bounds=np.asarray(right_lower_bounds, dtype=float).copy(),
+                right_upper_bounds=np.asarray(right_upper_bounds, dtype=float).copy(),
+                right_arm_start=float(result.variables.right_arm_start),
+            )
+        )
 
     def _show_1d_sweep_figure(
         self,
@@ -1767,7 +1850,7 @@ class BestTiltingPlaneApp:
                         cached_dms_solution
                     )
                     if cached_scan_data is not None:
-                        self._show_scan_figure(
+                        self._schedule_scan_figure(
                             start_times=cached_scan_data["start_times"],
                             final_twist_turns=cached_scan_data["final_twist_turns"],
                             objective_values=cached_scan_data["objective_values"],
@@ -1788,7 +1871,7 @@ class BestTiltingPlaneApp:
                 if cached_values is not None:
                     cached_scan_data = self._load_cached_optimized_scan_data()
                     if cached_scan_data is not None:
-                        self._show_scan_figure(
+                        self._schedule_scan_figure(
                             start_times=cached_scan_data["start_times"],
                             final_twist_turns=cached_scan_data["final_twist_turns"],
                             objective_values=cached_scan_data["objective_values"],
@@ -1877,6 +1960,7 @@ class BestTiltingPlaneApp:
                         max_iter=50,
                         print_level=5,
                         print_time=True,
+                        show_jerk_diagnostics=False,
                     )
                     scan_start_times.append(current_start_time)
                     scan_final_twist_turns.append(current_result.final_twist_turns)
@@ -1930,13 +2014,14 @@ class BestTiltingPlaneApp:
                     objective_values=scan_objective_values,
                     success_mask=scan_success_mask,
                 )
-                self._show_scan_figure(
+                self._schedule_scan_figure(
                     start_times=scan_data["start_times"],
                     final_twist_turns=scan_data["final_twist_turns"],
                     objective_values=scan_data["objective_values"],
                     success_mask=scan_data["success_mask"],
                     best_start_time=result.variables.right_arm_start,
                 )
+                self._schedule_dms_jerk_diagnostic_figure(optimizer=optimizer, result=result)
                 self._store_cached_dms_solution(
                     optimized_values,
                     left_plane_jerk=result.left_plane_jerk,
@@ -1980,7 +2065,7 @@ class BestTiltingPlaneApp:
                 )
 
             optimized_values = _gui_values_from_variables(result.variables)
-            self._show_scan_figure(
+            self._schedule_scan_figure(
                 start_times=sweep.start_times,
                 final_twist_turns=sweep.final_twist_turns,
                 objective_values=sweep.objective_values,

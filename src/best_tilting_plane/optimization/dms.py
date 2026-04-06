@@ -689,6 +689,7 @@ class DirectMultipleShootingOptimizer:
         max_iter: int = 100,
         print_level: int = 0,
         print_time: bool = False,
+        show_jerk_diagnostics: bool = True,
     ) -> DirectMultipleShootingResult:
         """Solve one direct multiple-shooting problem with a fixed second-arm start time."""
 
@@ -835,16 +836,17 @@ class DirectMultipleShootingOptimizer:
             f"total={total_objective_value:.6f}, "
             f"ipopt_f={float(solution['f']):.6f}"
         )
-        show_dms_jerk_bounds_figure(
-            node_times=self.node_times,
-            left_jerk=np.asarray(left_control_global_values, dtype=float),
-            right_jerk=np.asarray(right_control_global_values, dtype=float),
-            left_lower_bounds=left_lower_bounds,
-            left_upper_bounds=left_upper_bounds,
-            right_lower_bounds=right_lower_bounds,
-            right_upper_bounds=right_upper_bounds,
-            right_arm_start=right_arm_start,
-        )
+        if show_jerk_diagnostics:
+            show_dms_jerk_bounds_figure(
+                node_times=self.node_times,
+                left_jerk=np.asarray(left_control_global_values, dtype=float),
+                right_jerk=np.asarray(right_control_global_values, dtype=float),
+                left_lower_bounds=left_lower_bounds,
+                left_upper_bounds=left_upper_bounds,
+                right_lower_bounds=right_lower_bounds,
+                right_upper_bounds=right_upper_bounds,
+                right_arm_start=right_arm_start,
+            )
 
         left_control_values = left_control_global_values[: self.active_control_count]
         right_control_values = right_control_global_values[
