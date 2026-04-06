@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 import tkinter as tk
 
 import numpy as np
@@ -1170,6 +1171,40 @@ def test_optimize_strategy_uses_multistart_for_t1_equal_0_30_when_available(
     app._optimize_strategy()
 
     assert calls == [("single", 0.28), ("multi", 0.3), ("single", 0.32)]
+
+
+def test_schedule_dms_jerk_diagnostic_figure_can_recompute_missing_start_node_index() -> None:
+    """The final DMS diagnostic should still work for checkpoint results rebuilt without the node index."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    forwarded: list[dict[str, object]] = []
+    app._schedule_external_callback = lambda callback: forwarded.append({"callback": callback})
+
+    class FakeOptimizer:
+        interval_count = 50
+        node_times = np.linspace(0.0, 1.0, 51)
+
+        @staticmethod
+        def _global_jerk_bounds(*, right_start_node_index: int):
+            zeros = np.zeros(50, dtype=float)
+            return (
+                zeros.copy(),
+                zeros.copy(),
+                zeros.copy() + right_start_node_index,
+                zeros.copy() + right_start_node_index,
+            )
+
+    result = SimpleNamespace(
+        variables=SimpleNamespace(right_arm_start=0.30),
+        left_plane_jerk=np.zeros(15),
+        right_plane_jerk=np.zeros(15),
+    )
+
+    app._schedule_dms_jerk_diagnostic_figure(optimizer=FakeOptimizer(), result=result)
+
+    assert len(forwarded) == 1
 
 
 def test_report_callback_exception_updates_result_message() -> None:

@@ -747,13 +747,16 @@ class BestTiltingPlaneApp:
             or not hasattr(optimizer, "node_times")
         ):
             return
+        right_start_node_index = getattr(result, "right_arm_start_node_index", None)
+        if right_start_node_index is None:
+            right_start_node_index = int(round(float(result.variables.right_arm_start) / DMS_SHOOTING_STEP))
         left_lower_bounds, left_upper_bounds, right_lower_bounds, right_upper_bounds = optimizer._global_jerk_bounds(
-            right_start_node_index=int(result.right_arm_start_node_index)
+            right_start_node_index=int(right_start_node_index)
         )
         left_jerk = np.zeros(optimizer.interval_count, dtype=float)
         right_jerk = np.zeros(optimizer.interval_count, dtype=float)
         left_jerk[: len(result.left_plane_jerk)] = np.asarray(result.left_plane_jerk, dtype=float)
-        right_start = int(result.right_arm_start_node_index)
+        right_start = int(right_start_node_index)
         right_stop = right_start + len(result.right_plane_jerk)
         right_jerk[right_start:right_stop] = np.asarray(result.right_plane_jerk, dtype=float)
         node_times = np.asarray(optimizer.node_times, dtype=float).copy()
@@ -2052,6 +2055,9 @@ class BestTiltingPlaneApp:
                         best_success = False
                     best_result = SimpleNamespace(
                         variables=_variables_from_gui(cached_progress["optimized_values"]),
+                        right_arm_start_node_index=int(
+                            round(float(cached_progress["optimized_values"]["right_arm_start"]) / DMS_SHOOTING_STEP)
+                        ),
                         prescribed_motion=best_motion,
                         left_plane_jerk=np.asarray(cached_progress["left_plane_jerk"], dtype=float),
                         right_plane_jerk=np.asarray(cached_progress["right_plane_jerk"], dtype=float),
