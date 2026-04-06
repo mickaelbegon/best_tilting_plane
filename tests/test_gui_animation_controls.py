@@ -478,6 +478,7 @@ def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> N
     )
 
     assert app._load_cached_optimized_values() == {
+        "contact_twist_turns_per_second": 0.0,
         "right_arm_start": 0.35,
         "left_plane_initial": 0.0,
         "left_plane_final": 0.0,
@@ -539,13 +540,14 @@ def test_optimize_strategy_uses_cache_without_running_ipopt(monkeypatch, tmp_pat
 
     assert app._auto_runner.cancelled
     assert applied == [
-        (
-            {
-                "right_arm_start": 0.42,
-                "left_plane_initial": 0.0,
-                "left_plane_final": 0.0,
-                "right_plane_initial": 0.0,
-                "right_plane_final": 0.0,
+            (
+                {
+                    "contact_twist_turns_per_second": 0.0,
+                    "right_arm_start": 0.42,
+                    "left_plane_initial": 0.0,
+                    "left_plane_final": 0.0,
+                    "right_plane_initial": 0.0,
+                    "right_plane_final": 0.0,
             },
             "optimum charge depuis le cache",
         )
@@ -736,6 +738,7 @@ def test_optimize_strategy_writes_cache_after_ipopt(monkeypatch, tmp_path: Path)
     stored = json.loads((tmp_path / "optimization_cache.json").read_text(encoding="utf-8"))
     record = stored["records"]["optimize_2d"]
     assert record["values"] == {
+        "contact_twist_turns_per_second": 0.0,
         "right_arm_start": 0.35,
         "left_plane_initial": 0.0,
         "left_plane_final": 0.0,
@@ -811,6 +814,15 @@ def test_load_cached_dms_solution_rebuilds_the_prescribed_motion(tmp_path: Path)
     assert solver_status == "Solve_Succeeded"
     assert scan_data is not None
     assert scan_data["start_times"] == [0.10, 0.12, 0.14]
+
+
+def test_optimization_cache_key_changes_with_contact_twist_slider() -> None:
+    """Different contact-twist slider values should map to distinct cache entries."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app._entries = {"contact_twist_turns_per_second": FakeVar(-0.4)}
+
+    assert app._optimization_cache_key_for_mode("Optimize 3D") == "optimize_3d__contact_twist_m0p4"
 
 
 def test_load_cached_dms_solution_ignores_stale_signature(tmp_path: Path) -> None:
@@ -971,6 +983,7 @@ def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
 
     assert app._auto_runner.cancelled
     assert applied[0][0] == {
+        "contact_twist_turns_per_second": 0.0,
         "right_arm_start": 0.28,
         "left_plane_initial": 0.0,
         "left_plane_final": 0.0,
@@ -1588,6 +1601,7 @@ def test_optimize_strategy_writes_cache_after_dms(monkeypatch, tmp_path: Path) -
     stored = json.loads((tmp_path / "optimization_cache.json").read_text(encoding="utf-8"))
     record = stored["records"]["optimize_dms"]
     assert record["values"] == {
+        "contact_twist_turns_per_second": 0.0,
         "right_arm_start": 0.28,
         "left_plane_initial": 0.0,
         "left_plane_final": 0.0,

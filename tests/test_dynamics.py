@@ -37,6 +37,21 @@ def test_initial_state_cancels_center_of_mass_velocity(tmp_path: Path) -> None:
     np.testing.assert_allclose(simulator.center_of_mass_velocity(q0, qdot0), 0.0, atol=1e-10)
 
 
+def test_initial_state_applies_the_contact_twist_rate(tmp_path: Path) -> None:
+    """The configured contact twist should populate the initial root-twist velocity."""
+
+    model_path = ReducedAerialBiomod().write(tmp_path / "reduced.bioMod")
+    simulator = PredictiveAerialTwistSimulator(
+        model_path,
+        _default_motion(),
+        configuration=SimulationConfiguration(contact_twist_rate=-2.0 * np.pi),
+    )
+
+    _q0, qdot0 = simulator.initial_state()
+
+    assert qdot0[5] == pytest.approx(-2.0 * np.pi)
+
+
 def test_simulation_returns_consistent_shapes(tmp_path: Path) -> None:
     """A short simulation should return consistent state histories and a finite twist count."""
 

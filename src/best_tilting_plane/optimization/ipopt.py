@@ -289,7 +289,14 @@ class TwistStrategyOptimizer:
         if cached is not None:
             return cached
 
-        variables = self.from_vector(np.asarray(point, dtype=float))
+        variables = TwistOptimizationVariables(
+            right_arm_start=float(point[0]),
+            left_plane_initial=float(point[1]),
+            left_plane_final=float(point[2]),
+            right_plane_initial=float(point[3]),
+            right_plane_final=float(point[4]),
+            contact_twist_rate=float(self.configuration.contact_twist_rate),
+        )
         simulator = PredictiveAerialTwistSimulator(
             self.model_path,
             build_piecewise_constant_jerk_arm_motion(
@@ -322,6 +329,11 @@ class TwistStrategyOptimizer:
             right_plane_final=0.0,
         )
 
+    def _fixed_contact_twist_rate(self) -> float:
+        """Return the contact-twist rate carried as a fixed parameter of the current solve."""
+
+        return float(self.configuration.contact_twist_rate)
+
     @staticmethod
     def right_arm_start_only_bounds() -> IpoptBounds:
         """Return the 1D bounds used by the reduced optimization mode."""
@@ -336,7 +348,14 @@ class TwistStrategyOptimizer:
     ) -> tuple[float, AerialSimulationResult]:
         """Evaluate the reduced 1D optimization mode with both arm planes fixed at zero."""
 
-        variables = self.zero_plane_variables(right_arm_start)
+        variables = TwistOptimizationVariables(
+            right_arm_start=float(right_arm_start),
+            left_plane_initial=0.0,
+            left_plane_final=0.0,
+            right_plane_initial=0.0,
+            right_plane_final=0.0,
+            contact_twist_rate=self._fixed_contact_twist_rate(),
+        )
         return self.evaluate(self.to_vector(variables))
 
     @staticmethod
@@ -457,7 +476,11 @@ class TwistStrategyOptimizer:
         q_full = ca.vertcat(q_root, q_joint)
         qdot_without_translation = ca.vertcat(
             ca.MX.zeros(3, 1),
-            ca.vertcat(self.configuration.somersault_rate, 0.0, 0.0),
+            ca.vertcat(
+                self.configuration.somersault_rate,
+                0.0,
+                self.configuration.contact_twist_rate,
+            ),
             qdot_joint,
         )
         # Root translations are expressed directly in the global `x, y, z` axes, so their
@@ -468,7 +491,12 @@ class TwistStrategyOptimizer:
             qdot_without_translation,
             True,
         ).to_mx()
-        qdot_root = ca.vertcat(translation_velocity, self.configuration.somersault_rate, 0.0, 0.0)
+        qdot_root = ca.vertcat(
+            translation_velocity,
+            self.configuration.somersault_rate,
+            0.0,
+            self.configuration.contact_twist_rate,
+        )
         return ca.vertcat(q_root, qdot_root)
 
     def _symbolic_dynamics(self, time: ca.MX, state: ca.MX, variables: ca.MX) -> ca.MX:
@@ -561,7 +589,14 @@ class TwistStrategyOptimizer:
         )
         status = solver.stats()["return_status"]
         solution_vector = np.asarray(solution["x"].full(), dtype=float).reshape(-1)
-        variables = self.from_vector(solution_vector)
+        variables = TwistOptimizationVariables(
+            right_arm_start=float(solution_vector[0]),
+            left_plane_initial=float(solution_vector[1]),
+            left_plane_final=float(solution_vector[2]),
+            right_plane_initial=float(solution_vector[3]),
+            right_plane_final=float(solution_vector[4]),
+            contact_twist_rate=self._fixed_contact_twist_rate(),
+        )
         _, simulation = self.evaluate(solution_vector)
         normalized_status = status.lower().replace("_", " ")
         return TwistOptimizationResult(
@@ -616,7 +651,14 @@ class TwistStrategyOptimizer:
             print_level=print_level,
             print_time=print_time,
         )
-        variables = self.from_vector(raw_result.solution)
+        variables = TwistOptimizationVariables(
+            right_arm_start=float(raw_result.solution[0]),
+            left_plane_initial=float(raw_result.solution[1]),
+            left_plane_final=float(raw_result.solution[2]),
+            right_plane_initial=float(raw_result.solution[3]),
+            right_plane_final=float(raw_result.solution[4]),
+            contact_twist_rate=self._fixed_contact_twist_rate(),
+        )
         _, simulation = self.evaluate(raw_result.solution)
         return TwistOptimizationResult(
             variables=variables,
@@ -658,7 +700,14 @@ class TwistStrategyOptimizer:
         candidate_results: list[TwistOptimizationResult] = []
 
         for start_time in start_times:
-            variables = self.zero_plane_variables(float(start_time))
+            variables = TwistOptimizationVariables(
+                right_arm_start=float(start_time),
+                left_plane_initial=0.0,
+                left_plane_final=0.0,
+                right_plane_initial=0.0,
+                right_plane_final=0.0,
+                contact_twist_rate=self._fixed_contact_twist_rate(),
+            )
             objective, simulation = self.evaluate(self.to_vector(variables))
             candidate_results.append(
                 TwistOptimizationResult(

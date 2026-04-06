@@ -19,6 +19,7 @@ class TwistOptimizationVariables:
     left_plane_final: float
     right_plane_initial: float
     right_plane_final: float
+    contact_twist_rate: float = 0.0
 
 
 @dataclass(frozen=True)

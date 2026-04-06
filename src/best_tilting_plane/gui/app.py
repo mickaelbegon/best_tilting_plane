@@ -46,6 +46,7 @@ from best_tilting_plane.optimization.dms import (
     show_dms_jerk_bounds_figure,
 )
 from best_tilting_plane.simulation import (
+    AerialSimulationResult,
     PiecewiseConstantJerkArmMotion,
     PiecewiseConstantJerkTrajectory,
     PredictiveAerialTwistSimulator,
@@ -79,6 +80,14 @@ class SliderDefinition:
 
 SLIDER_DEFINITIONS = (
     SliderDefinition("right_arm_start", "Start bras droit (s)", 0.0, 0.7, 0.10, resolution=0.02),
+    SliderDefinition(
+        "contact_twist_turns_per_second",
+        "Vrille contact (tour/s)",
+        -2.0,
+        0.0,
+        0.0,
+        resolution=0.2,
+    ),
 )
 GUI_FIXED_VALUES = {
     "left_plane_initial": 0.0,
@@ -86,7 +95,7 @@ GUI_FIXED_VALUES = {
     "right_plane_initial": 0.0,
     "right_plane_final": 0.0,
 }
-GUI_VALUE_NAMES = ("right_arm_start", *GUI_FIXED_VALUES.keys())
+GUI_VALUE_NAMES = tuple(definition.name for definition in SLIDER_DEFINITIONS) + tuple(GUI_FIXED_VALUES.keys())
 PLOT_X_OPTIONS = ("Temps", "Somersault", "Vrille")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
@@ -116,7 +125,7 @@ ALL_FRAME_SEGMENTS = tuple(
 )
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
-OPTIMIZATION_CACHE_VERSION = 4
+OPTIMIZATION_CACHE_VERSION = 5
 DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.0
@@ -182,6 +191,7 @@ def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
             float(values.get("right_plane_initial", GUI_FIXED_VALUES["right_plane_initial"]))
         ),
         right_plane_final=np.deg2rad(float(values.get("right_plane_final", GUI_FIXED_VALUES["right_plane_final"]))),
+        contact_twist_rate=2.0 * np.pi * float(values.get("contact_twist_turns_per_second", 0.0)),
     )
 
 
@@ -487,7 +497,28 @@ class BestTiltingPlaneApp:
     def _standard_optimization_configuration(self) -> SimulationConfiguration:
         """Return the fixed configuration shared by simulation and optimization in the GUI."""
 
-        return SimulationConfiguration(integrator="rk4", rk4_step=STANDARD_RK4_STEP)
+        return SimulationConfiguration(
+            integrator="rk4",
+            rk4_step=STANDARD_RK4_STEP,
+            contact_twist_rate=2.0 * np.pi * self._current_contact_twist_turns_per_second(),
+        )
+
+    def _current_contact_twist_turns_per_second(self) -> float:
+        """Return the discrete contact twist rate selected in the GUI."""
+
+        entry = getattr(self, "_entries", {}).get("contact_twist_turns_per_second")
+        if entry is not None:
+            try:
+                return float(entry.get())
+            except (TypeError, ValueError):
+                return 0.0
+        current_values = getattr(self, "_current_values", None)
+        if callable(current_values):
+            try:
+                return float(current_values().get("contact_twist_turns_per_second", 0.0))
+            except (AttributeError, TypeError, ValueError):
+                return 0.0
+        return 0.0
 
     def _optimization_cache_path(self) -> Path:
         """Return the JSON cache path used to store optimal strategies."""
@@ -499,11 +530,16 @@ class BestTiltingPlaneApp:
 
         return self._optimization_cache_key_for_mode(self.optimization_mode_var.get())
 
-    @staticmethod
-    def _optimization_cache_key_for_mode(mode: str) -> str:
+    def _optimization_cache_key_for_mode(self, mode: str) -> str:
         """Return the cache key associated with one optimization mode."""
 
-        return mode.lower().replace(" ", "_")
+        base_key = mode.lower().replace(" ", "_")
+        contact_twist_turns_per_second = round(self._current_contact_twist_turns_per_second(), 10)
+        if np.isclose(contact_twist_turns_per_second, 0.0):
+            return base_key
+        sign = "m" if contact_twist_turns_per_second < 0.0 else "p"
+        magnitude = f"{abs(contact_twist_turns_per_second):.1f}".replace(".", "p")
+        return f"{base_key}__contact_twist_{sign}{magnitude}"
 
     def _should_ignore_optimization_cache(self) -> bool:
         """Return whether the current optimization should bypass cached results."""
@@ -531,6 +567,7 @@ class BestTiltingPlaneApp:
             "final_time": float(configuration.final_time),
             "steps": int(configuration.steps),
             "somersault_rate": float(configuration.somersault_rate),
+            "contact_twist_rate": float(configuration.contact_twist_rate),
             "integrator": configuration.integrator,
             "rk4_step": float(configuration.rk4_step) if configuration.rk4_step is not None else None,
         }
@@ -585,6 +622,7 @@ class BestTiltingPlaneApp:
             normalized["mode"] = "optimize_3d"
         normalized.setdefault("dms_objective_mode", OBJECTIVE_MODE_TWIST)
         normalized.setdefault("dms_btp_deviation_weight", DMS_BTP_DEVIATION_WEIGHT)
+        normalized.setdefault("contact_twist_rate", 0.0)
         normalized["version"] = expected["version"]
         return normalized == expected
 
@@ -605,6 +643,29 @@ class BestTiltingPlaneApp:
                 return record
         return None
 
+    @staticmethod
+    def _normalized_cached_gui_values(values: object) -> dict[str, float] | None:
+        """Return cached GUI values upgraded to the current slider set."""
+
+        if not isinstance(values, dict):
+            return None
+        normalized = dict(values)
+        normalized.setdefault("contact_twist_turns_per_second", 0.0)
+        expected_names = set(GUI_VALUE_NAMES)
+        if set(normalized) != expected_names:
+            return None
+        try:
+            return {name: float(normalized[name]) for name in expected_names}
+        except (TypeError, ValueError):
+            return None
+
+    def _values_with_current_fixed_parameters(self, values: dict[str, float]) -> dict[str, float]:
+        """Augment one optimized-value payload with the current non-optimized GUI parameters."""
+
+        merged = dict(values)
+        merged.setdefault("contact_twist_turns_per_second", self._current_contact_twist_turns_per_second())
+        return merged
+
     def _load_cached_optimized_values(self) -> dict[str, float] | None:
         """Return cached optimized GUI values when the stored signature matches the current setup."""
 
@@ -612,16 +673,7 @@ class BestTiltingPlaneApp:
         record = self._matching_cache_record(cache["records"], mode=self.optimization_mode_var.get())
         if record is None:
             return None
-        values = record.get("values")
-        if not isinstance(values, dict):
-            return None
-        expected_names = set(GUI_VALUE_NAMES)
-        if set(values) != expected_names:
-            return None
-        try:
-            return {name: float(values[name]) for name in expected_names}
-        except (TypeError, ValueError):
-            return None
+        return self._normalized_cached_gui_values(record.get("values"))
 
     def _load_cached_optimized_scan_data(
         self,
@@ -640,8 +692,8 @@ class BestTiltingPlaneApp:
         record = self._matching_cache_record(cache["records"], mode=mode)
         if record is None:
             return None
-        values = record.get("values")
-        if not isinstance(values, dict):
+        values = self._normalized_cached_gui_values(record.get("values"))
+        if values is None:
             return None
         try:
             best_start_time = float(values["right_arm_start"])
@@ -732,6 +784,50 @@ class BestTiltingPlaneApp:
             right_plane=right_plane,
             right_arm_start=right_arm_start,
         )
+
+    def _cached_simulation_result_from_record(self, record: dict[str, object]) -> AerialSimulationResult | None:
+        """Return one cached simulation result rebuilt from stored `q` and `qdot` histories."""
+
+        q_history = record.get("q")
+        qdot_history = record.get("qdot")
+        if not isinstance(q_history, list) or not isinstance(qdot_history, list):
+            return None
+        try:
+            q_array = np.asarray(q_history, dtype=float)
+            qdot_array = np.asarray(qdot_history, dtype=float)
+        except (TypeError, ValueError):
+            return None
+        if (
+            q_array.ndim != 2
+            or qdot_array.ndim != 2
+            or q_array.shape != qdot_array.shape
+            or q_array.shape[0] == 0
+        ):
+            return None
+
+        configuration = self._standard_optimization_configuration()
+        return AerialSimulationResult(
+            time=np.linspace(0.0, float(configuration.final_time), q_array.shape[0]),
+            q=q_array,
+            qdot=qdot_array,
+            qddot=np.zeros_like(q_array),
+            integrator_method=str(configuration.integrator),
+            rk4_step=configuration.rk4_step,
+            integration_seconds=None,
+        )
+
+    @staticmethod
+    def _store_simulation_result_in_record(
+        record: dict[str, object],
+        simulation_result: AerialSimulationResult | None,
+    ) -> dict[str, object]:
+        """Augment one cache record with explicit `q` and `qdot` histories when available."""
+
+        if simulation_result is None:
+            return record
+        record["q"] = np.asarray(simulation_result.q, dtype=float).tolist()
+        record["qdot"] = np.asarray(simulation_result.qdot, dtype=float).tolist()
+        return record
 
     def _show_dms_sweep_figure(
         self,
@@ -997,16 +1093,13 @@ class BestTiltingPlaneApp:
             return None
         if bool(record.get("in_progress", False)):
             return None
-        values = record.get("values")
+        values = self._normalized_cached_gui_values(record.get("values"))
         left_plane_jerk = record.get("left_plane_jerk")
         right_plane_jerk = record.get("right_plane_jerk")
-        if not isinstance(values, dict) or not isinstance(left_plane_jerk, list) or not isinstance(right_plane_jerk, list):
-            return None
-        expected_names = set(GUI_VALUE_NAMES)
-        if set(values) != expected_names:
+        if values is None or not isinstance(left_plane_jerk, list) or not isinstance(right_plane_jerk, list):
             return None
         try:
-            optimized_values = {name: float(values[name]) for name in expected_names}
+            optimized_values = dict(values)
             left_jerk_values = [float(value) for value in left_plane_jerk]
             right_jerk_values = [float(value) for value in right_plane_jerk]
             final_twist_turns = float(record.get("final_twist_turns", float("nan")))
@@ -1042,6 +1135,9 @@ class BestTiltingPlaneApp:
             left_plane_jerk=left_jerk_values,
             right_plane_jerk=right_jerk_values,
         )
+        cached_simulation = self._cached_simulation_result_from_record(record)
+        if cached_simulation is not None:
+            setattr(motion, "_cached_simulation_result", cached_simulation)
         return optimized_values, motion, final_twist_turns, solver_status, scan_data
 
     def _load_cached_dms_progress(self) -> dict[str, object] | None:
@@ -1060,7 +1156,7 @@ class BestTiltingPlaneApp:
         scan_final_twist_turns = record.get("scan_final_twist_turns")
         scan_objective_values = record.get("scan_objective_values")
         scan_success_mask = record.get("scan_success_mask")
-        values = record.get("values")
+        values = self._normalized_cached_gui_values(record.get("values"))
         left_plane_jerk = record.get("left_plane_jerk")
         right_plane_jerk = record.get("right_plane_jerk")
         if (
@@ -1072,18 +1168,14 @@ class BestTiltingPlaneApp:
             or len(scan_start_times) != len(scan_objective_values)
             or len(scan_start_times) != len(scan_success_mask)
             or len(scan_start_times) == 0
-            or not isinstance(values, dict)
+            or values is None
             or not isinstance(left_plane_jerk, list)
             or not isinstance(right_plane_jerk, list)
         ):
             return None
 
-        expected_names = set(GUI_VALUE_NAMES)
-        if set(values) != expected_names:
-            return None
-
         try:
-            optimized_values = {name: float(values[name]) for name in expected_names}
+            optimized_values = dict(values)
             progress = {
                 "start_times": [float(value) for value in scan_start_times],
                 "final_twist_turns": [float(value) for value in scan_final_twist_turns],
@@ -1095,6 +1187,7 @@ class BestTiltingPlaneApp:
                 "final_twist_turns_best": float(record.get("final_twist_turns", float("nan"))),
                 "solver_status_best": str(record.get("solver_status", "cache")),
                 "last_completed_index": int(record.get("last_completed_index", len(scan_start_times) - 1)),
+                "cached_simulation": self._cached_simulation_result_from_record(record),
             }
         except (TypeError, ValueError):
             return None
@@ -1126,9 +1219,10 @@ class BestTiltingPlaneApp:
 
         cache_path = self._optimization_cache_path()
         cache = self._read_optimization_cache_file()
+        stored_values = self._values_with_current_fixed_parameters(optimized_values)
         record = {
             "signature": self._optimization_cache_signature(),
-            "values": {name: float(value) for name, value in optimized_values.items()},
+            "values": {name: float(value) for name, value in stored_values.items()},
             "final_twist_turns": float(final_twist_turns),
             "solver_status": str(solver_status),
         }
@@ -1151,6 +1245,7 @@ class BestTiltingPlaneApp:
         *,
         left_plane_jerk: np.ndarray,
         right_plane_jerk: np.ndarray,
+        simulation_result: AerialSimulationResult | None,
         scan_start_times: np.ndarray,
         scan_final_twist_turns: np.ndarray,
         scan_objective_values: np.ndarray,
@@ -1162,10 +1257,11 @@ class BestTiltingPlaneApp:
 
         cache_path = self._optimization_cache_path()
         cache = self._read_optimization_cache_file()
-        cache["records"][self._optimization_cache_key()] = {
+        stored_values = self._values_with_current_fixed_parameters(optimized_values)
+        cache["records"][self._optimization_cache_key()] = self._store_simulation_result_in_record({
             "signature": self._optimization_cache_signature(),
             "in_progress": False,
-            "values": {name: float(value) for name, value in optimized_values.items()},
+            "values": {name: float(value) for name, value in stored_values.items()},
             "left_plane_jerk": np.asarray(left_plane_jerk, dtype=float).tolist(),
             "right_plane_jerk": np.asarray(right_plane_jerk, dtype=float).tolist(),
             "scan_start_times": np.asarray(scan_start_times, dtype=float).tolist(),
@@ -1174,7 +1270,7 @@ class BestTiltingPlaneApp:
             "scan_success_mask": np.asarray(scan_success_mask, dtype=bool).tolist(),
             "final_twist_turns": float(final_twist_turns),
             "solver_status": str(solver_status),
-        }
+        }, simulation_result)
         cache["progress_records"].pop(self._optimization_cache_key(), None)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
@@ -1185,6 +1281,7 @@ class BestTiltingPlaneApp:
         *,
         left_plane_jerk: np.ndarray,
         right_plane_jerk: np.ndarray,
+        simulation_result: AerialSimulationResult | None = None,
         scan_start_times: np.ndarray,
         scan_final_twist_turns: np.ndarray,
         scan_objective_values: np.ndarray,
@@ -1200,10 +1297,11 @@ class BestTiltingPlaneApp:
 
         cache_path = self._optimization_cache_path()
         cache = self._read_optimization_cache_file()
-        cache["progress_records"][self._optimization_cache_key()] = {
+        stored_values = self._values_with_current_fixed_parameters(optimized_values)
+        cache["progress_records"][self._optimization_cache_key()] = self._store_simulation_result_in_record({
             "signature": self._optimization_cache_signature(),
             "in_progress": True,
-            "values": {name: float(value) for name, value in optimized_values.items()},
+            "values": {name: float(value) for name, value in stored_values.items()},
             "left_plane_jerk": np.asarray(left_plane_jerk, dtype=float).tolist(),
             "right_plane_jerk": np.asarray(right_plane_jerk, dtype=float).tolist(),
             "scan_start_times": np.asarray(scan_start_times, dtype=float).tolist(),
@@ -1222,7 +1320,7 @@ class BestTiltingPlaneApp:
             ),
             "final_twist_turns": float(final_twist_turns),
             "solver_status": str(solver_status),
-        }
+        }, simulation_result)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -2039,6 +2137,11 @@ class BestTiltingPlaneApp:
         self.root.update_idletasks()
         if prescribed_motion is None:
             self._run_simulation()
+        elif hasattr(prescribed_motion, "_cached_simulation_result"):
+            self._update_from_simulation(
+                getattr(prescribed_motion, "_cached_simulation_result"),
+                model_path=Path(self._model_path()),
+            )
         else:
             self._run_simulation_with_motion(prescribed_motion)
         if status_suffix is not None:
@@ -2145,6 +2248,9 @@ class BestTiltingPlaneApp:
                         left_plane_jerk=cached_progress["left_plane_jerk"],
                         right_plane_jerk=cached_progress["right_plane_jerk"],
                     )
+                    cached_best_simulation = cached_progress.get("cached_simulation")
+                    if cached_best_simulation is not None:
+                        setattr(best_motion, "_cached_simulation_result", cached_best_simulation)
                     if any(scan_success_mask):
                         best_objective = min(
                             objective
@@ -2161,6 +2267,7 @@ class BestTiltingPlaneApp:
                             round(float(cached_progress["optimized_values"]["right_arm_start"]) / DMS_SHOOTING_STEP)
                         ),
                         prescribed_motion=best_motion,
+                        simulation=cached_best_simulation,
                         left_plane_jerk=np.asarray(cached_progress["left_plane_jerk"], dtype=float),
                         right_plane_jerk=np.asarray(cached_progress["right_plane_jerk"], dtype=float),
                         final_twist_turns=float(cached_progress["final_twist_turns_best"]),
@@ -2230,6 +2337,7 @@ class BestTiltingPlaneApp:
                         optimized_values_checkpoint,
                         left_plane_jerk=np.asarray(best_result.left_plane_jerk, dtype=float),
                         right_plane_jerk=np.asarray(best_result.right_plane_jerk, dtype=float),
+                        simulation_result=getattr(best_result, "simulation", None),
                         scan_start_times=np.asarray(scan_start_times, dtype=float),
                         scan_final_twist_turns=np.asarray(scan_final_twist_turns, dtype=float),
                         scan_objective_values=np.asarray(scan_objective_values, dtype=float),
@@ -2276,6 +2384,7 @@ class BestTiltingPlaneApp:
                     optimized_values,
                     left_plane_jerk=result.left_plane_jerk,
                     right_plane_jerk=result.right_plane_jerk,
+                    simulation_result=getattr(result, "simulation", None),
                     scan_start_times=scan_data["start_times"],
                     scan_final_twist_turns=scan_data["final_twist_turns"],
                     scan_objective_values=scan_data["objective_values"],

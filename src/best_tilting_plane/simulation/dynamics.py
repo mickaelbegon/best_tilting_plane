@@ -29,6 +29,7 @@ class SimulationConfiguration:
     final_time: float = 1.0
     steps: int = 201
     somersault_rate: float = 2.0 * np.pi
+    contact_twist_rate: float = 0.0
     rtol: float = 1e-8
     atol: float = 1e-10
     integrator: str = "rk45"
@@ -165,6 +166,7 @@ class PredictiveAerialTwistSimulator:
         qdot = np.zeros(self.model.nbQ())
         q[ROOT_DOF:] = q_joint
         qdot[3] = self.configuration.somersault_rate
+        qdot[FULL_TWIST_INDEX] = self.configuration.contact_twist_rate
         qdot[ROOT_DOF:] = qdot_joint
         qdot[:3] = self._translation_velocity_cancelling_com_motion(q, qdot)
         return q, qdot

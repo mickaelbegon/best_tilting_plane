@@ -21,6 +21,12 @@ from best_tilting_plane.simulation import (
 )
 
 
+def test_default_btp_deviation_weight_is_scaled_up() -> None:
+    """The 3D-BTP mode should now penalize deviation with the stronger requested weight."""
+
+    assert dms_module.DEFAULT_DMS_BTP_DEVIATION_WEIGHT == pytest.approx(10.0)
+
+
 def test_direct_multiple_shooting_initial_guess_motion_respects_activation_windows(
     tmp_path: Path,
 ) -> None:

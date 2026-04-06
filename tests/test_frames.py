@@ -68,14 +68,17 @@ def test_rotation_sequences_are_exposed_for_root_and_arms() -> None:
 
 
 def test_gui_slider_bounds_match_the_validated_constraints() -> None:
-    """The GUI should expose the start-time slider and keep the validated plane bounds in the model."""
+    """The GUI should expose the start-time and contact-twist sliders with the validated discretizations."""
 
     slider_by_name = {definition.name: definition for definition in SLIDER_DEFINITIONS}
 
     assert slider_by_name["right_arm_start"].minimum == RIGHT_ARM_START_BOUNDS[0]
     assert slider_by_name["right_arm_start"].maximum == RIGHT_ARM_START_BOUNDS[1]
     assert slider_by_name["right_arm_start"].resolution == pytest.approx(0.02)
-    assert set(slider_by_name) == {"right_arm_start"}
+    assert slider_by_name["contact_twist_turns_per_second"].minimum == pytest.approx(-2.0)
+    assert slider_by_name["contact_twist_turns_per_second"].maximum == pytest.approx(0.0)
+    assert slider_by_name["contact_twist_turns_per_second"].resolution == pytest.approx(0.2)
+    assert set(slider_by_name) == {"right_arm_start", "contact_twist_turns_per_second"}
     assert LEFT_ARM_PLANE_BOUNDS_DEG == (-135.0, 20.0)
     assert RIGHT_ARM_PLANE_BOUNDS_DEG == (-20.0, 135.0)
 

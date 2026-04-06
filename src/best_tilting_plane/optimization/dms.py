@@ -39,7 +39,7 @@ PLANE_STATE_SIZE = 3
 ROOT_STATE_SIZE = 12
 ELEVATION_STAGE_BLOCK_SIZE = 18
 DEFAULT_DMS_JERK_REGULARIZATION = 1e-9
-DEFAULT_DMS_BTP_DEVIATION_WEIGHT = 1e-2
+DEFAULT_DMS_BTP_DEVIATION_WEIGHT = 10.0
 START_TIME_TOLERANCE = 1e-9
 JERK_BOUND_SCALE = 2.0
 
@@ -333,6 +333,7 @@ class DirectMultipleShootingOptimizer:
             np.pi,
         )
         qdot[3] = self.configuration.somersault_rate
+        qdot[5] = variables.contact_twist_rate
         qdot[:3] = -np.asarray(self.model.CoMdot(q, qdot, True).to_array(), dtype=float).reshape(3)
         return np.array(
             [
@@ -598,6 +599,7 @@ class DirectMultipleShootingOptimizer:
                 left_plane_final=variables.left_plane_final,
                 right_plane_initial=variables.right_plane_initial,
                 right_plane_final=variables.right_plane_final,
+                contact_twist_rate=variables.contact_twist_rate,
             ),
             total_time=self.configuration.final_time,
             step=self.shooting_step,
@@ -619,6 +621,7 @@ class DirectMultipleShootingOptimizer:
                 integrator="rk4",
                 rk4_step=self.shooting_step,
                 somersault_rate=self.configuration.somersault_rate,
+                contact_twist_rate=self.configuration.contact_twist_rate,
             ),
             model=self.model,
         ).simulate()
@@ -874,6 +877,7 @@ class DirectMultipleShootingOptimizer:
             left_plane_final=initial_guess.left_plane_final,
             right_plane_initial=initial_guess.right_plane_initial,
             right_plane_final=initial_guess.right_plane_final,
+            contact_twist_rate=initial_guess.contact_twist_rate,
         )
         right_start_node_index = int(round(right_arm_start / self.shooting_step))
         right_terminal_node_index = right_start_node_index + self.active_control_count
