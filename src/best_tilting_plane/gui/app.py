@@ -458,7 +458,13 @@ class BestTiltingPlaneApp:
     def _optimization_cache_key(self) -> str:
         """Return the cache key associated with the current optimization mode."""
 
-        return self.optimization_mode_var.get().lower().replace(" ", "_")
+        return self._optimization_cache_key_for_mode(self.optimization_mode_var.get())
+
+    @staticmethod
+    def _optimization_cache_key_for_mode(mode: str) -> str:
+        """Return the cache key associated with one optimization mode."""
+
+        return mode.lower().replace(" ", "_")
 
     def _should_ignore_optimization_cache(self) -> bool:
         """Return whether the current optimization should bypass cached results."""
@@ -471,17 +477,25 @@ class BestTiltingPlaneApp:
     def _optimization_cache_signature(self) -> dict[str, float | int | str]:
         """Describe the numerical setup that must match for a cached optimum to be reused."""
 
+        return self._optimization_cache_signature_for_mode(self.optimization_mode_var.get())
+
+    def _optimization_cache_signature_for_mode(
+        self,
+        mode: str,
+    ) -> dict[str, float | int | str]:
+        """Describe the numerical setup that must match for one cached mode to be reused."""
+
         configuration = self._standard_optimization_configuration()
         signature = {
             "version": OPTIMIZATION_CACHE_VERSION,
-            "mode": self._optimization_cache_key(),
+            "mode": self._optimization_cache_key_for_mode(mode),
             "final_time": float(configuration.final_time),
             "steps": int(configuration.steps),
             "somersault_rate": float(configuration.somersault_rate),
             "integrator": configuration.integrator,
             "rk4_step": float(configuration.rk4_step) if configuration.rk4_step is not None else None,
         }
-        if self.optimization_mode_var.get() == "Optimize DMS":
+        if mode == "Optimize DMS":
             signature["dms_shooting_step"] = DMS_SHOOTING_STEP
             signature["dms_active_duration"] = DMS_ACTIVE_DURATION
             signature["dms_scan_start"] = DMS_SCAN_START
@@ -534,15 +548,31 @@ class BestTiltingPlaneApp:
     ) -> dict[str, list[float] | list[bool]] | None:
         """Return optional scan data stored with a cached 1D optimization result."""
 
+        return self._load_cached_scan_bundle_for_mode("Optimize 2D")
+
+    def _load_cached_scan_bundle_for_mode(
+        self,
+        mode: str,
+    ) -> dict[str, list[float] | list[bool] | float | str] | None:
+        """Return cached scan data for one mode when the stored signature matches."""
+
         cache = self._read_optimization_cache_file()
-        record = cache["records"].get(self._optimization_cache_key())
+        record = cache["records"].get(self._optimization_cache_key_for_mode(mode))
         if not isinstance(record, dict):
             return None
-        if record.get("signature") != self._optimization_cache_signature():
+        if record.get("signature") != self._optimization_cache_signature_for_mode(mode):
+            return None
+        values = record.get("values")
+        if not isinstance(values, dict):
+            return None
+        try:
+            best_start_time = float(values["right_arm_start"])
+        except (KeyError, TypeError, ValueError):
             return None
         scan_start_times = record.get("scan_start_times")
         scan_final_twist_turns = record.get("scan_final_twist_turns")
         scan_objective_values = record.get("scan_objective_values")
+        scan_success_mask = record.get("scan_success_mask")
         if (
             not isinstance(scan_start_times, list)
             or not isinstance(scan_final_twist_turns, list)
@@ -553,11 +583,18 @@ class BestTiltingPlaneApp:
         ):
             return None
         try:
+            success_mask = (
+                [bool(value) for value in scan_success_mask]
+                if isinstance(scan_success_mask, list) and len(scan_success_mask) == len(scan_start_times)
+                else [True] * len(scan_start_times)
+            )
             return {
                 "start_times": [float(value) for value in scan_start_times],
                 "final_twist_turns": [float(value) for value in scan_final_twist_turns],
                 "objective_values": [float(value) for value in scan_objective_values],
-                "success_mask": [True] * len(scan_start_times),
+                "success_mask": success_mask,
+                "best_start_time": best_start_time,
+                "mode": mode,
             }
         except (TypeError, ValueError):
             return None
@@ -631,13 +668,16 @@ class BestTiltingPlaneApp:
 
         if len(start_times) == 0:
             return
-        show_dms_start_time_sweep_figure(
-            start_times=np.asarray(start_times, dtype=float),
-            final_twist_turns=np.asarray(final_twist_turns, dtype=float),
-            objective_values=np.asarray(objective_values, dtype=float),
-            success_mask=np.asarray(success_mask, dtype=bool),
-            best_start_time=float(best_start_time),
-        )
+        primary_scan = {
+            "mode": "Optimize DMS",
+            "start_times": np.asarray(start_times, dtype=float),
+            "final_twist_turns": np.asarray(final_twist_turns, dtype=float),
+            "objective_values": np.asarray(objective_values, dtype=float),
+            "success_mask": np.asarray(success_mask, dtype=bool),
+            "best_start_time": float(best_start_time),
+        }
+        comparison_scan = self._load_cached_scan_bundle_for_mode("Optimize 2D")
+        self._show_scan_comparison_figure(primary_scan=primary_scan, comparison_scan=comparison_scan)
 
     def _show_1d_sweep_figure(
         self,
@@ -651,12 +691,81 @@ class BestTiltingPlaneApp:
 
         if len(start_times) == 0:
             return
-        show_right_arm_start_sweep_figure(
-            start_times=np.asarray(start_times, dtype=float),
-            final_twist_turns=np.asarray(final_twist_turns, dtype=float),
-            objective_values=np.asarray(objective_values, dtype=float),
-            best_start_time=float(best_start_time),
-        )
+        primary_scan = {
+            "mode": "Optimize 2D",
+            "start_times": np.asarray(start_times, dtype=float),
+            "final_twist_turns": np.asarray(final_twist_turns, dtype=float),
+            "objective_values": np.asarray(objective_values, dtype=float),
+            "success_mask": np.ones(len(start_times), dtype=bool),
+            "best_start_time": float(best_start_time),
+        }
+        comparison_scan = self._load_cached_scan_bundle_for_mode("Optimize DMS")
+        self._show_scan_comparison_figure(primary_scan=primary_scan, comparison_scan=comparison_scan)
+
+    @staticmethod
+    def _show_scan_comparison_figure(
+        *,
+        primary_scan: dict[str, object],
+        comparison_scan: dict[str, object] | None = None,
+    ) -> None:
+        """Open one external figure comparing the 2D and DMS scans on the same axes."""
+
+        import matplotlib.pyplot as plt
+
+        figure, axis = plt.subplots(1, 1, figsize=(8.0, 4.8), tight_layout=True)
+        datasets = [primary_scan]
+        if comparison_scan is not None and comparison_scan.get("mode") != primary_scan.get("mode"):
+            datasets.append(comparison_scan)
+
+        style_by_mode = {
+            "Optimize 2D": {"color": "tab:blue", "marker": "o", "label": "Optimize 2D"},
+            "Optimize DMS": {"color": "tab:orange", "marker": "s", "label": "Optimize DMS"},
+        }
+
+        for dataset in datasets:
+            mode = str(dataset["mode"])
+            style = style_by_mode[mode]
+            times = np.asarray(dataset["start_times"], dtype=float)
+            twists = np.asarray(dataset["final_twist_turns"], dtype=float)
+            success_mask = np.asarray(dataset["success_mask"], dtype=bool)
+            best_start_time = float(dataset["best_start_time"])
+            best_index = int(np.argmin(np.abs(times - best_start_time)))
+
+            axis.plot(
+                times,
+                twists,
+                color=style["color"],
+                linewidth=1.8,
+                marker=style["marker"],
+                markersize=4.0,
+                label=style["label"],
+            )
+            if np.any(~success_mask):
+                axis.scatter(
+                    times[~success_mask],
+                    twists[~success_mask],
+                    color=style["color"],
+                    marker="x",
+                    s=36,
+                )
+            axis.scatter(
+                [times[best_index]],
+                [twists[best_index]],
+                color=style["color"],
+                edgecolors="black",
+                linewidths=0.8,
+                s=68,
+                zorder=3,
+            )
+
+        axis.set_ylabel("Vrille finale (tours)")
+        axis.set_xlabel("Debut bras droit t1 (s)")
+        axis.set_title("Comparaison des scans 2D et DMS")
+        axis.grid(True, alpha=0.3)
+        axis.legend(loc="best")
+        figure.canvas.draw_idle()
+        if "agg" not in plt.get_backend().lower():
+            plt.show(block=False)
 
     def _show_scan_figure(
         self,

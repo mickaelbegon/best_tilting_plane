@@ -880,6 +880,56 @@ def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
     ]
 
 
+def test_show_dms_sweep_figure_overlays_cached_2d_scan_when_available(tmp_path: Path) -> None:
+    """The DMS sweep should forward the cached 2D scan to the comparison figure."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.optimization_mode_var = FakeVar("Optimize DMS")
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_2d": {
+                        "signature": app._optimization_cache_signature_for_mode("Optimize 2D"),
+                        "values": {
+                            "right_arm_start": 0.20,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                        "scan_start_times": [0.10, 0.20],
+                        "scan_final_twist_turns": [-0.30, -0.50],
+                        "scan_objective_values": [-0.29, -0.49],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured: list[dict[str, object]] = []
+    app._show_scan_comparison_figure = lambda **kwargs: captured.append(dict(kwargs))
+
+    app._show_dms_sweep_figure(
+        start_times=[0.16, 0.18],
+        final_twist_turns=[-0.40, -0.55],
+        objective_values=[-0.39, -0.54],
+        success_mask=[True, True],
+        best_start_time=0.18,
+    )
+
+    assert len(captured) == 1
+    comparison_scan = captured[0]["comparison_scan"]
+    assert comparison_scan["mode"] == "Optimize 2D"
+    assert comparison_scan["best_start_time"] == 0.20
+
+
 def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     monkeypatch,
     tmp_path: Path,
