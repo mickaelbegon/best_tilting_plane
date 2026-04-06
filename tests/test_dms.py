@@ -60,7 +60,7 @@ def test_direct_multiple_shooting_initial_guess_motion_respects_activation_windo
 def test_direct_multiple_shooting_jerk_bound_matches_left_elevation_fitting(
     tmp_path: Path,
 ) -> None:
-    """The jerk bounds should come from the maximum absolute jerk of the left-arm elevation fitting."""
+    """The jerk bounds should be twice the fitted left-arm elevation jerk magnitude."""
 
     configuration = SimulationConfiguration(final_time=1.0, steps=201, integrator="rk4", rk4_step=0.005)
     optimizer = DirectMultipleShootingOptimizer.from_builder(
@@ -75,7 +75,7 @@ def test_direct_multiple_shooting_jerk_bound_matches_left_elevation_fitting(
         step=optimizer.shooting_step,
     )
 
-    assert optimizer.jerk_bound == np.max(np.abs(reference.jerks))
+    assert optimizer.jerk_bound == 2.0 * np.max(np.abs(reference.jerks))
 
 
 def test_direct_multiple_shooting_candidate_start_times_cover_the_full_admissible_window(

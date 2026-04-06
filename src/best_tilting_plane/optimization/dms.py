@@ -38,6 +38,7 @@ ROOT_STATE_SIZE = 12
 ELEVATION_STAGE_BLOCK_SIZE = 18
 DEFAULT_DMS_JERK_REGULARIZATION = 1e-9
 START_TIME_TOLERANCE = 1e-9
+JERK_BOUND_SCALE = 2.0
 
 
 @dataclass(frozen=True)
@@ -161,7 +162,7 @@ class DirectMultipleShootingOptimizer:
             total_time=LEFT_ARM_ACTIVE_DURATION,
             step=self.shooting_step,
         )
-        self.jerk_bound = float(np.max(np.abs(elevation_fit.jerks)))
+        self.jerk_bound = float(JERK_BOUND_SCALE * np.max(np.abs(elevation_fit.jerks)))
 
     @classmethod
     def from_builder(
