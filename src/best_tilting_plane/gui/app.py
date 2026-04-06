@@ -169,7 +169,9 @@ class BestTiltingPlaneApp:
         self._animation_playing = False
         self._time_slider_updating = False
         self._auto_simulation_suspended = False
+        self._is_closing = False
         self._auto_runner = DebouncedRunner(self.root, self._run_simulation, delay_ms=250)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         root.columnconfigure(1, weight=1)
         root.rowconfigure(0, weight=1)
@@ -1072,10 +1074,23 @@ class BestTiltingPlaneApp:
         """Cancel the currently scheduled animation callback, if any."""
 
         if self._animation_after_id is not None:
-            self.root.after_cancel(self._animation_after_id)
+            try:
+                self.root.after_cancel(self._animation_after_id)
+            except tk.TclError:
+                pass
             self._animation_after_id = None
         self._animation_playing = False
         self.play_pause_label.set("Play")
+
+    def _on_close(self) -> None:
+        """Close the GUI after cancelling any pending Tk callbacks."""
+
+        self._is_closing = True
+        self._stop_animation_loop()
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def _toggle_animation_playback(self) -> None:
         """Toggle the embedded animation between play and pause."""
@@ -1090,6 +1105,8 @@ class BestTiltingPlaneApp:
     def _animate_next_frame(self) -> None:
         """Advance the embedded animation by one frame."""
 
+        if self._is_closing:
+            return
         if self._visualization_data is None:
             return
 
@@ -1100,7 +1117,11 @@ class BestTiltingPlaneApp:
         if self._plot_requires_frame_sync():
             self._refresh_plot()
         self._animation_frame_index = (current_index + 1) % result.time.size
-        self._animation_after_id = self.root.after(ANIMATION_INTERVAL_MS, self._animate_next_frame)
+        try:
+            self._animation_after_id = self.root.after(ANIMATION_INTERVAL_MS, self._animate_next_frame)
+        except tk.TclError:
+            self._animation_after_id = None
+            self._animation_playing = False
 
     def _configure_time_slider(self) -> None:
         """Match the time slider range and display to the current simulation."""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import tkinter as tk
 
 import numpy as np
 
@@ -44,6 +45,12 @@ class FakeScheduler:
 
     def update_idletasks(self) -> None:
         """Mirror the Tk API used by the GUI during optimization."""
+
+    def protocol(self, *_args) -> None:
+        """Mirror the Tk API used to register the close callback."""
+
+    def destroy(self) -> None:
+        """Mirror the Tk API used when closing the window."""
 
 
 class FakeVar:
@@ -117,6 +124,7 @@ def _build_app_for_animation() -> tuple[BestTiltingPlaneApp, list[int], FakeSche
     app._animation_frame_index = 0
     app._animation_playing = False
     app._time_slider_updating = False
+    app._is_closing = False
     app._visualization_data = {
         "result": type("Result", (), {"time": np.array([0.0, 0.5, 1.0], dtype=float)})()
     }
@@ -156,6 +164,50 @@ def test_time_slider_change_pauses_and_jumps_to_nearest_frame() -> None:
     assert app._animation_frame_index == 1
     assert app.time_slider_var.get() == 0.5
     assert app.time_value_var.get() == "0.50 s"
+
+
+def test_stop_animation_loop_ignores_tcl_error_during_shutdown() -> None:
+    """Cancelling one pending callback should stay silent if Tk is already shutting down."""
+
+    app, _drawn_frames, _scheduler = _build_app_for_animation()
+
+    class FailingScheduler(FakeScheduler):
+        def after_cancel(self, handle) -> None:
+            raise tk.TclError(f"invalid command name {handle!r}")
+
+    app.root = FailingScheduler()
+    app.play_pause_label = FakeVar("Pause")
+    app._animation_after_id = "5158428800_animate_next_frame"
+    app._animation_playing = True
+
+    app._stop_animation_loop()
+
+    assert app._animation_after_id is None
+    assert not app._animation_playing
+    assert app.play_pause_label.get() == "Play"
+
+
+def test_on_close_stops_animation_before_destroying_root() -> None:
+    """Closing the GUI should cancel the animation callback before destroying Tk."""
+
+    app, _drawn_frames, _scheduler = _build_app_for_animation()
+    destroyed: list[str] = []
+
+    class ClosingScheduler(FakeScheduler):
+        def destroy(self) -> None:
+            destroyed.append("destroyed")
+
+    app.root = ClosingScheduler()
+    app.play_pause_label = FakeVar("Pause")
+    app._animation_after_id = 1
+    app._animation_playing = True
+
+    app._on_close()
+
+    assert app._is_closing
+    assert app._animation_after_id is None
+    assert not app._animation_playing
+    assert destroyed == ["destroyed"]
 
 
 def test_configure_time_slider_uses_simulation_time_bounds() -> None:
