@@ -113,8 +113,8 @@ TOP_VIEW_LEFT_CHAIN = ("shoulder_left", "elbow_left", "wrist_left", "hand_left")
 TOP_VIEW_RIGHT_CHAIN = ("shoulder_right", "elbow_right", "wrist_right", "hand_right")
 DEFAULT_CAMERA_ELEVATION_DEG = 20.0
 DEFAULT_CAMERA_AZIMUTH_DEG = -60.0
-BTP_CAMERA_ELEVATION_DEG = 20.0
-BTP_CAMERA_AZIMUTH_DEG = -55.0
+BTP_CAMERA_ELEVATION_DEG = 22.0
+BTP_CAMERA_AZIMUTH_DEG = -35.0
 ROOT_VIEW_CAMERA_ELEVATION_DEG = 0.0
 ROOT_VIEW_CAMERA_AZIMUTH_DEG = -90.0
 ALL_FRAME_SEGMENTS = tuple(
@@ -984,7 +984,7 @@ class BestTiltingPlaneApp:
         self._draw_animation_frame(self._animation_frame_index)
 
     def _prepare_btp_animation_scene(self) -> None:
-        """Prepare the arm animation expressed in the best-tilting-plane frame."""
+        """Prepare the full-model animation expressed in the best-tilting-plane frame."""
 
         projected = self._visualization_data["btp_trajectories"]
         self._animation_axis.clear()
@@ -1005,6 +1005,10 @@ class BestTiltingPlaneApp:
         self._animation_axis.set_ylim(center[1] - radius, center[1] + radius)
         self._animation_axis.set_zlim(center[2] - 0.8 * radius, center[2] + 0.8 * radius)
 
+        self._line_artists = tuple(
+            self._animation_axis.plot([], [], [], color="black", linewidth=2.0)[0]
+            for _ in SKELETON_CONNECTIONS
+        )
         self._btp_chain_artists = {
             "left": self._animation_axis.plot([], [], [], color="tab:red", linewidth=2.8, marker="o")[0],
             "right": self._animation_axis.plot([], [], [], color="tab:blue", linewidth=2.8, marker="o")[0],
@@ -1017,7 +1021,6 @@ class BestTiltingPlaneApp:
             "left": self._animation_axis.plot([], [], [], color="tab:red", marker="o", linestyle="None")[0],
             "right": self._animation_axis.plot([], [], [], color="tab:blue", marker="o", linestyle="None")[0],
         }
-        self._line_artists = ()
         self._frame_artists = {}
         self._angular_momentum_artist = None
         self._plane_artist = None
@@ -1211,11 +1214,16 @@ class BestTiltingPlaneApp:
         self._animation_canvas.draw_idle()
 
     def _draw_btp_animation_frame(self, frame_index: int) -> None:
-        """Draw one frame of the arm motion expressed in the best-tilting-plane frame."""
+        """Draw one frame of the full model expressed in the best-tilting-plane frame."""
 
         result = self._visualization_data["result"]
         projected = self._visualization_data["btp_trajectories"]
         deviations = self._visualization_data["deviations"]
+
+        for artist, (start_name, end_name) in zip(self._line_artists, SKELETON_CONNECTIONS):
+            segment = np.vstack((projected[start_name][frame_index], projected[end_name][frame_index]))
+            artist.set_data(segment[:, 0], segment[:, 1])
+            artist.set_3d_properties(segment[:, 2])
 
         left_chain = np.vstack([projected[marker_name][frame_index] for marker_name in TOP_VIEW_LEFT_CHAIN])
         right_chain = np.vstack(
@@ -1240,7 +1248,7 @@ class BestTiltingPlaneApp:
         self._btp_marker_artists["right"].set_3d_properties([right_chain[-1, 2]])
 
         self._animation_axis.set_title(
-            "Animation bras / BTP | "
+            "Animation modele / BTP | "
             f"t = {result.time[frame_index]:.2f} s | "
             f"dev. G = {np.rad2deg(deviations['left'][frame_index]):.1f} deg | "
             f"dev. D = {np.rad2deg(deviations['right'][frame_index]):.1f} deg"

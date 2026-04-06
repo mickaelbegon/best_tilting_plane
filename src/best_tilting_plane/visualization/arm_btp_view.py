@@ -1,10 +1,8 @@
-"""Helpers for visualizing arm trajectories in the best-tilting-plane frame."""
+"""Helpers for visualizing marker trajectories in the best-tilting-plane frame."""
 
 from __future__ import annotations
 
 import numpy as np
-
-from best_tilting_plane.visualization.arm_top_view import ARM_TOP_VIEW_MARKERS
 from best_tilting_plane.visualization.btp import best_tilting_plane_axes, best_tilting_plane_normal
 
 
@@ -14,7 +12,7 @@ def arm_btp_reference_trajectories(
     *,
     reference_marker: str = "pelvis_origin",
 ) -> dict[str, np.ndarray]:
-    """Return arm trajectories expressed in the moving best-tilting-plane frame.
+    """Return marker trajectories expressed in the moving best-tilting-plane frame.
 
     The returned coordinates are:
     - `x`: along the somersault axis
@@ -36,7 +34,7 @@ def arm_btp_reference_trajectories(
         basis[frame_index, 2, :] = best_tilting_plane_normal(float(somersault_angle))
 
     projected: dict[str, np.ndarray] = {}
-    for marker_name in ARM_TOP_VIEW_MARKERS:
-        relative = np.asarray(marker_trajectories[marker_name], dtype=float) - reference
+    for marker_name, marker_values in marker_trajectories.items():
+        relative = np.asarray(marker_values, dtype=float) - reference
         projected[marker_name] = np.einsum("fij,fj->fi", basis, relative)
     return projected
