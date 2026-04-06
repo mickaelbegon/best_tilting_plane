@@ -34,8 +34,8 @@ def test_default_optimization_bounds_match_requested_right_arm_start_constraint(
     bounds = TwistStrategyOptimizer.default_bounds()
 
     assert RIGHT_ARM_START_BOUNDS == (0.0, 0.7)
-    assert LEFT_ARM_PLANE_BOUNDS_DEG == (-135.0, 0.0)
-    assert RIGHT_ARM_PLANE_BOUNDS_DEG == (0.0, 135.0)
+    assert LEFT_ARM_PLANE_BOUNDS_DEG == (-135.0, 20.0)
+    assert RIGHT_ARM_PLANE_BOUNDS_DEG == (-20.0, 135.0)
     assert LEFT_ARM_ELEVATION_BOUNDS_DEG == (-180.0, 0.0)
     assert RIGHT_ARM_ELEVATION_BOUNDS_DEG == (0.0, 180.0)
     assert bounds.lower[0] == pytest.approx(0.0)
@@ -50,11 +50,11 @@ def test_default_optimization_bounds_match_requested_right_arm_start_constraint(
     )
     np.testing.assert_allclose(
         bounds.lower[1:],
-        np.deg2rad(np.array([-135.0, -135.0, 0.0, 0.0])),
+        np.deg2rad(np.array([-135.0, -135.0, -20.0, -20.0])),
     )
     np.testing.assert_allclose(
         bounds.upper[1:],
-        np.deg2rad(np.array([0.0, 0.0, 135.0, 135.0])),
+        np.deg2rad(np.array([20.0, 20.0, 135.0, 135.0])),
     )
 
 
@@ -76,8 +76,8 @@ def test_gui_slider_bounds_match_the_validated_constraints() -> None:
     assert slider_by_name["right_arm_start"].maximum == RIGHT_ARM_START_BOUNDS[1]
     assert slider_by_name["right_arm_start"].resolution == pytest.approx(0.02)
     assert set(slider_by_name) == {"right_arm_start"}
-    assert LEFT_ARM_PLANE_BOUNDS_DEG == (-135.0, 0.0)
-    assert RIGHT_ARM_PLANE_BOUNDS_DEG == (0.0, 135.0)
+    assert LEFT_ARM_PLANE_BOUNDS_DEG == (-135.0, 20.0)
+    assert RIGHT_ARM_PLANE_BOUNDS_DEG == (-20.0, 135.0)
 
 
 def test_segment_frame_trajectories_extract_trunk_and_arm_frames(tmp_path: Path) -> None:

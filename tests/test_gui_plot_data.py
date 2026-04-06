@@ -394,6 +394,6 @@ def test_refresh_plot_adds_arm_angle_bounds_when_plotting_arm_kinematics() -> No
     assert len(app._plot_axis.axhline_calls) == 8
     np.testing.assert_allclose(
         [call["y"] for call in app._plot_axis.axhline_calls],
-        [-135.0, 0.0, -180.0, 0.0, 0.0, 135.0, 0.0, 180.0],
+        [-135.0, 20.0, -180.0, 0.0, -20.0, 135.0, 0.0, 180.0],
     )
     assert app._plot_canvas.draw_idle_calls == 1
