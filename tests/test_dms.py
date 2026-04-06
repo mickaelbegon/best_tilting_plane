@@ -251,6 +251,7 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
         max_iter=3,
         print_level=5,
         print_time=True,
+        show_jerk_diagnostics=True,
     )
     stdout = capsys.readouterr().out
 

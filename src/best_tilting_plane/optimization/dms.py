@@ -689,7 +689,7 @@ class DirectMultipleShootingOptimizer:
         max_iter: int = 100,
         print_level: int = 0,
         print_time: bool = False,
-        show_jerk_diagnostics: bool = True,
+        show_jerk_diagnostics: bool = False,
     ) -> DirectMultipleShootingResult:
         """Solve one direct multiple-shooting problem with a fixed second-arm start time."""
 
