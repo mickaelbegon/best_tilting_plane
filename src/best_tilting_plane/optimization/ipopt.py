@@ -71,6 +71,7 @@ class TwistOptimizationResult:
     objective: float
     solver_status: str
     success: bool
+    simulation: AerialSimulationResult | None = None
 
 
 @dataclass(frozen=True)
@@ -667,6 +668,7 @@ class TwistStrategyOptimizer:
             objective=raw_result.objective,
             solver_status=raw_result.solver_status,
             success=raw_result.success,
+            simulation=simulation,
         )
 
     def optimize_right_arm_start_only(
@@ -717,6 +719,7 @@ class TwistStrategyOptimizer:
                     objective=float(objective),
                     solver_status="Discrete_Sweep",
                     success=True,
+                    simulation=simulation,
                 )
             )
 

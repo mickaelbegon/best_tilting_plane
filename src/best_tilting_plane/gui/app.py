@@ -40,7 +40,6 @@ from best_tilting_plane.optimization.dms import (
     DEFAULT_DMS_BTP_DEVIATION_WEIGHT,
     DEFAULT_DMS_JERK_REGULARIZATION,
     JERK_BOUND_SCALE,
-    MULTISTART_REFERENCE_T1,
     MULTISTART_START_COUNT,
     OBJECTIVE_MODE_TWIST,
     OBJECTIVE_MODE_TWIST_BTP,
@@ -127,7 +126,7 @@ ALL_FRAME_SEGMENTS = tuple(
 )
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
-OPTIMIZATION_CACHE_VERSION = 5
+OPTIMIZATION_CACHE_VERSION = 6
 DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.0
@@ -135,6 +134,8 @@ DMS_SCAN_END = 0.7
 DMS_MULTISTART_OFFSET_FROM_2D = 0.2
 DMS_JERK_REGULARIZATION = DEFAULT_DMS_JERK_REGULARIZATION
 DMS_BTP_DEVIATION_WEIGHT = DEFAULT_DMS_BTP_DEVIATION_WEIGHT
+SCAN_SELECTION_MAX_NORMALIZED_DISTANCE = 0.08
+THREE_D_BTP_DISCONTINUITY_THRESHOLD = 0.35
 ARM_KINEMATICS_LABELS = (
     "Plan bras gauche",
     "Elevation bras gauche",
@@ -245,6 +246,7 @@ class BestTiltingPlaneApp:
         self._time_slider_updating = False
         self._auto_simulation_suspended = False
         self._is_closing = False
+        self._selected_scan_solution: tuple[str, int] | None = None
         self._run_optimization_in_background = True
         self._optimization_thread: threading.Thread | None = None
         self._optimization_queue: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -460,10 +462,22 @@ class BestTiltingPlaneApp:
             row=1, column=2, sticky="e"
         )
 
-        self._plot_figure = Figure(figsize=(8.0, 3.5), tight_layout=True)
+        bottom_plots = ttk.Frame(display)
+        bottom_plots.grid(row=2, column=0, sticky="nsew")
+        bottom_plots.columnconfigure(0, weight=1)
+        bottom_plots.columnconfigure(1, weight=1)
+        bottom_plots.rowconfigure(0, weight=1)
+
+        self._scan_figure = Figure(figsize=(4.0, 3.5), tight_layout=True)
+        self._scan_axis = self._scan_figure.add_subplot(111)
+        self._scan_canvas = FigureCanvasTkAgg(self._scan_figure, master=bottom_plots)
+        self._scan_canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self._scan_canvas.mpl_connect("button_press_event", self._on_scan_plot_click)
+
+        self._plot_figure = Figure(figsize=(4.0, 3.5), tight_layout=True)
         self._plot_axis = self._plot_figure.add_subplot(111)
-        self._plot_canvas = FigureCanvasTkAgg(self._plot_figure, master=display)
-        self._plot_canvas.get_tk_widget().grid(row=2, column=0, sticky="nsew")
+        self._plot_canvas = FigureCanvasTkAgg(self._plot_figure, master=bottom_plots)
+        self._plot_canvas.get_tk_widget().grid(row=0, column=1, sticky="nsew", padx=(6, 0))
 
         self._line_artists: tuple[object, ...] = ()
         self._frame_artists: dict[str, tuple[object, object, object]] = {}
@@ -601,7 +615,7 @@ class BestTiltingPlaneApp:
             signature["dms_btp_deviation_weight"] = DMS_BTP_DEVIATION_WEIGHT
             signature["dms_objective_mode"] = _three_d_objective_mode(mode)
             signature["dms_start_bounds"] = [float(value) for value in RIGHT_ARM_START_BOUNDS]
-            signature["dms_multistart_reference_t1"] = float(MULTISTART_REFERENCE_T1)
+            signature["dms_multistart_offset_from_2d"] = float(DMS_MULTISTART_OFFSET_FROM_2D)
             signature["dms_multistart_start_count"] = int(MULTISTART_START_COUNT)
             signature["dms_jerk_bound_scale"] = float(JERK_BOUND_SCALE)
         return signature
@@ -725,6 +739,7 @@ class BestTiltingPlaneApp:
         scan_final_twist_turns = record.get("scan_final_twist_turns")
         scan_objective_values = record.get("scan_objective_values")
         scan_success_mask = record.get("scan_success_mask")
+        scan_candidate_solutions = record.get("scan_candidate_solutions")
         if (
             not isinstance(scan_start_times, list)
             or not isinstance(scan_final_twist_turns, list)
@@ -740,6 +755,13 @@ class BestTiltingPlaneApp:
                 if isinstance(scan_success_mask, list) and len(scan_success_mask) == len(scan_start_times)
                 else [True] * len(scan_start_times)
             )
+            candidate_solutions = None
+            if isinstance(scan_candidate_solutions, list) and len(scan_candidate_solutions) == len(scan_start_times):
+                normalized_candidates = [
+                    self._normalized_scan_candidate_record(candidate) for candidate in scan_candidate_solutions
+                ]
+                if all(candidate is not None for candidate in normalized_candidates):
+                    candidate_solutions = normalized_candidates
             return {
                 "start_times": [float(value) for value in scan_start_times],
                 "final_twist_turns": [float(value) for value in scan_final_twist_turns],
@@ -747,6 +769,7 @@ class BestTiltingPlaneApp:
                 "success_mask": success_mask,
                 "best_start_time": best_start_time,
                 "mode": mode,
+                "candidate_solutions": candidate_solutions,
             }
         except (TypeError, ValueError):
             return None
@@ -920,6 +943,71 @@ class BestTiltingPlaneApp:
         record["qdot"] = np.asarray(simulation_result.qdot, dtype=float).tolist()
         return record
 
+    def _scan_candidate_record(
+        self,
+        *,
+        optimized_values: dict[str, float],
+        simulation_result: AerialSimulationResult | None,
+        mode: str,
+        final_twist_turns: float,
+        objective: float,
+        solver_status: str,
+        success: bool,
+        left_plane_jerk: np.ndarray | None = None,
+        right_plane_jerk: np.ndarray | None = None,
+    ) -> dict[str, object]:
+        """Build one cacheable scan-candidate record."""
+
+        record: dict[str, object] = {
+            "mode": str(mode),
+            "values": {
+                name: float(value)
+                for name, value in self._values_with_current_fixed_parameters(optimized_values).items()
+            },
+            "final_twist_turns": float(final_twist_turns),
+            "objective": float(objective),
+            "solver_status": str(solver_status),
+            "success": bool(success),
+        }
+        if left_plane_jerk is not None:
+            record["left_plane_jerk"] = np.asarray(left_plane_jerk, dtype=float).tolist()
+        if right_plane_jerk is not None:
+            record["right_plane_jerk"] = np.asarray(right_plane_jerk, dtype=float).tolist()
+        return self._store_simulation_result_in_record(record, simulation_result)
+
+    def _normalized_scan_candidate_record(
+        self,
+        record: object,
+    ) -> dict[str, object] | None:
+        """Normalize one cached scan-candidate record for interactive replay."""
+
+        if not isinstance(record, dict):
+            return None
+        values = self._normalized_cached_gui_values(record.get("values"))
+        if values is None:
+            return None
+        try:
+            normalized: dict[str, object] = {
+                "mode": str(record.get("mode", "")),
+                "values": dict(values),
+                "final_twist_turns": float(record.get("final_twist_turns", float("nan"))),
+                "objective": float(record.get("objective", float("nan"))),
+                "solver_status": str(record.get("solver_status", "cache")),
+                "success": bool(record.get("success", True)),
+                "simulation": self._cached_simulation_result_from_record(record),
+            }
+        except (TypeError, ValueError):
+            return None
+        left_plane_jerk = record.get("left_plane_jerk")
+        right_plane_jerk = record.get("right_plane_jerk")
+        if isinstance(left_plane_jerk, list) and isinstance(right_plane_jerk, list):
+            try:
+                normalized["left_plane_jerk"] = np.asarray(left_plane_jerk, dtype=float)
+                normalized["right_plane_jerk"] = np.asarray(right_plane_jerk, dtype=float)
+            except (TypeError, ValueError):
+                return None
+        return normalized
+
     def _show_dms_sweep_figure(
         self,
         *,
@@ -1000,12 +1088,10 @@ class BestTiltingPlaneApp:
         )
 
     def _show_embedded_scan_plot(self) -> None:
-        """Switch the embedded figure to the `vrilles selon t1` view and refresh it."""
+        """Refresh the dedicated embedded `t1` scan figure."""
 
-        if not hasattr(self, "plot_y_var"):
-            return
-        self.plot_y_var.set("Vrilles selon t1")
-        self._refresh_plot()
+        if hasattr(self, "_scan_axis"):
+            self._refresh_scan_plot()
 
     def _schedule_dms_jerk_diagnostic_figure(
         self,
@@ -1247,6 +1333,7 @@ class BestTiltingPlaneApp:
         scan_final_twist_turns = record.get("scan_final_twist_turns")
         scan_objective_values = record.get("scan_objective_values")
         scan_success_mask = record.get("scan_success_mask")
+        scan_candidate_solutions = record.get("scan_candidate_solutions")
         values = self._normalized_cached_gui_values(record.get("values"))
         left_plane_jerk = record.get("left_plane_jerk")
         right_plane_jerk = record.get("right_plane_jerk")
@@ -1279,6 +1366,18 @@ class BestTiltingPlaneApp:
                 "solver_status_best": str(record.get("solver_status", "cache")),
                 "last_completed_index": int(record.get("last_completed_index", len(scan_start_times) - 1)),
                 "cached_simulation": self._cached_simulation_result_from_record(record),
+                "scan_candidate_solutions": (
+                    None
+                    if not isinstance(scan_candidate_solutions, list)
+                    else [
+                        candidate
+                        for candidate in (
+                            self._normalized_scan_candidate_record(candidate_record)
+                            for candidate_record in scan_candidate_solutions
+                        )
+                        if candidate is not None
+                    ]
+                ),
             }
         except (TypeError, ValueError):
             return None
@@ -1305,6 +1404,7 @@ class BestTiltingPlaneApp:
         scan_start_times: np.ndarray | None = None,
         scan_final_twist_turns: np.ndarray | None = None,
         scan_objective_values: np.ndarray | None = None,
+        scan_candidate_solutions: list[dict[str, object]] | None = None,
         mode: str | None = None,
     ) -> None:
         """Persist optimized GUI values for reuse in later GUI sessions."""
@@ -1327,6 +1427,8 @@ class BestTiltingPlaneApp:
             record["scan_start_times"] = np.asarray(scan_start_times, dtype=float).tolist()
             record["scan_final_twist_turns"] = np.asarray(scan_final_twist_turns, dtype=float).tolist()
             record["scan_objective_values"] = np.asarray(scan_objective_values, dtype=float).tolist()
+        if scan_candidate_solutions is not None:
+            record["scan_candidate_solutions"] = scan_candidate_solutions
         cache_key = self._optimization_cache_key_for_mode(target_mode)
         cache["records"][cache_key] = record
         cache["progress_records"].pop(cache_key, None)
@@ -1344,6 +1446,7 @@ class BestTiltingPlaneApp:
         scan_final_twist_turns: np.ndarray,
         scan_objective_values: np.ndarray,
         scan_success_mask: np.ndarray,
+        scan_candidate_solutions: list[dict[str, object]] | None = None,
         final_twist_turns: float,
         solver_status: str,
     ) -> None:
@@ -1365,6 +1468,8 @@ class BestTiltingPlaneApp:
             "final_twist_turns": float(final_twist_turns),
             "solver_status": str(solver_status),
         }, simulation_result)
+        if scan_candidate_solutions is not None:
+            cache["records"][self._optimization_cache_key()]["scan_candidate_solutions"] = scan_candidate_solutions
         cache["progress_records"].pop(self._optimization_cache_key(), None)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
@@ -1380,6 +1485,7 @@ class BestTiltingPlaneApp:
         scan_final_twist_turns: np.ndarray,
         scan_objective_values: np.ndarray,
         scan_success_mask: np.ndarray,
+        scan_candidate_solutions: list[dict[str, object]] | None = None,
         last_completed_index: int,
         last_warm_start_primal: np.ndarray | None,
         last_warm_start_lam_x: np.ndarray | None,
@@ -1415,6 +1521,8 @@ class BestTiltingPlaneApp:
             "final_twist_turns": float(final_twist_turns),
             "solver_status": str(solver_status),
         }, simulation_result)
+        if scan_candidate_solutions is not None:
+            cache["progress_records"][self._optimization_cache_key()]["scan_candidate_solutions"] = scan_candidate_solutions
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -1457,6 +1565,7 @@ class BestTiltingPlaneApp:
         self._animation_frame_index = 0
         self._configure_time_slider()
         self._prepare_animation_scene()
+        self._refresh_scan_plot()
         self._refresh_plot()
         self._start_animation_loop()
 
@@ -1725,6 +1834,7 @@ class BestTiltingPlaneApp:
         self._is_closing = True
         self._stop_animation_loop()
         self._cancel_canvas_idle_draw(getattr(self, "_animation_canvas", None))
+        self._cancel_canvas_idle_draw(getattr(self, "_scan_canvas", None))
         self._cancel_canvas_idle_draw(getattr(self, "_plot_canvas", None))
         optimization_poll_after_id = getattr(self, "_optimization_poll_after_id", None)
         if optimization_poll_after_id is not None:
@@ -1973,25 +2083,103 @@ class BestTiltingPlaneApp:
                 datasets.append(bundle)
         return datasets
 
+    def _apply_scan_candidate_solution(self, candidate: dict[str, object]) -> None:
+        """Replay one scan candidate selected from the dedicated `t1` figure."""
+
+        values = dict(candidate["values"])
+        mode = str(candidate.get("mode", self.optimization_mode_var.get()))
+        self.optimization_mode_var.set(mode)
+
+        prescribed_motion = None
+        simulation = candidate.get("simulation")
+        if isinstance(simulation, AerialSimulationResult):
+            prescribed_motion = SimpleNamespace(_cached_simulation_result=simulation)
+        elif "left_plane_jerk" in candidate and "right_plane_jerk" in candidate:
+            prescribed_motion = self._rebuild_cached_dms_motion(
+                values,
+                left_plane_jerk=np.asarray(candidate["left_plane_jerk"], dtype=float),
+                right_plane_jerk=np.asarray(candidate["right_plane_jerk"], dtype=float),
+            )
+            rebuilt_simulation = candidate.get("simulation")
+            if isinstance(rebuilt_simulation, AerialSimulationResult):
+                setattr(prescribed_motion, "_cached_simulation_result", rebuilt_simulation)
+
+        self._apply_optimized_values(
+            values,
+            prescribed_motion=prescribed_motion,
+            status_suffix=(
+                f"solution selectionnee: {float(candidate['final_twist_turns']):.2f} tours "
+                f"({candidate['solver_status']})"
+            ),
+        )
+
+    def _nearest_scan_candidate(
+        self,
+        x_value: float,
+        y_value: float,
+    ) -> tuple[str, int, dict[str, object]] | None:
+        """Return the nearest clickable scan candidate, if one is close enough."""
+
+        datasets = self._scan_plot_datasets()
+        best_match = None
+        best_distance = float("inf")
+        for dataset in datasets:
+            candidates = dataset.get("candidate_solutions")
+            if not isinstance(candidates, list):
+                continue
+            x_series = np.asarray(dataset["start_times"], dtype=float)
+            y_series = np.asarray(dataset["final_twist_turns"], dtype=float)
+            if x_series.size == 0 or y_series.size == 0:
+                continue
+            x_scale = max(float(np.ptp(x_series)), 1e-9)
+            y_scale = max(float(np.ptp(y_series)), 1e-9)
+            for index, candidate in enumerate(candidates):
+                if candidate is None:
+                    continue
+                normalized_distance = float(
+                    np.hypot((x_value - x_series[index]) / x_scale, (y_value - y_series[index]) / y_scale)
+                )
+                if normalized_distance < best_distance:
+                    best_distance = normalized_distance
+                    best_match = (str(dataset["mode"]), index, candidate)
+        if best_match is None or best_distance > SCAN_SELECTION_MAX_NORMALIZED_DISTANCE:
+            return None
+        return best_match
+
+    def _on_scan_plot_click(self, event) -> None:
+        """Replay the clicked scan solution from the dedicated bottom-left figure."""
+
+        if getattr(event, "inaxes", None) is not self._scan_axis:
+            return
+        if event.xdata is None or event.ydata is None:
+            return
+        nearest = self._nearest_scan_candidate(float(event.xdata), float(event.ydata))
+        if nearest is None:
+            return
+        mode, index, candidate = nearest
+        self._selected_scan_solution = (mode, index)
+        self._refresh_scan_plot()
+        self._apply_scan_candidate_solution(candidate)
+
     def _refresh_scan_plot(self) -> None:
         """Draw the embedded scan figure showing the final twist count as a function of `t1`."""
 
-        self._plot_axis.clear()
+        self._scan_axis.clear()
         datasets = self._scan_plot_datasets()
-        self._plot_axis.set_xlabel("Debut bras droit t1 (s)")
-        self._plot_axis.set_ylabel("Vrilles finales (tours)")
-        self._plot_axis.set_title("Vrilles finales en fonction de t1")
-        self._plot_axis.grid(True, alpha=0.3)
+        self._scan_axis.set_xlabel("Debut bras droit t1 (s)")
+        self._scan_axis.set_ylabel("Vrilles finales (tours)")
+        self._scan_axis.set_title("Vrilles finales en fonction de t1")
+        self._scan_axis.grid(True, alpha=0.3)
         if not datasets:
-            self._plot_axis.text(
+            self._scan_axis.text(
                 0.5,
                 0.5,
                 "Aucun scan disponible.\nLancez Optimize.",
                 ha="center",
                 va="center",
-                transform=self._plot_axis.transAxes,
+                transform=self._scan_axis.transAxes,
             )
-            self._plot_canvas.draw_idle()
+            self._scan_canvas.draw_idle()
             return
 
         for dataset in datasets:
@@ -2002,7 +2190,7 @@ class BestTiltingPlaneApp:
             success_mask = np.asarray(dataset["success_mask"], dtype=bool)
             best_start_time = float(dataset["best_start_time"])
             best_index = int(np.argmin(np.abs(start_times - best_start_time)))
-            self._plot_axis.plot(
+            self._scan_axis.plot(
                 start_times,
                 final_twist_turns,
                 color=style["color"],
@@ -2012,14 +2200,14 @@ class BestTiltingPlaneApp:
                 label=style["label"],
             )
             if np.any(~success_mask):
-                self._plot_axis.scatter(
+                self._scan_axis.scatter(
                     start_times[~success_mask],
                     final_twist_turns[~success_mask],
                     color=style["color"],
                     marker="x",
                     s=36,
                 )
-            self._plot_axis.scatter(
+            self._scan_axis.scatter(
                 [start_times[best_index]],
                 [final_twist_turns[best_index]],
                 color=style["color"],
@@ -2028,8 +2216,31 @@ class BestTiltingPlaneApp:
                 s=64,
                 zorder=3,
             )
-        self._plot_axis.legend(loc="best")
-        self._plot_canvas.draw_idle()
+            if self._selected_scan_solution == (mode, best_index):
+                self._scan_axis.scatter(
+                    [start_times[best_index]],
+                    [final_twist_turns[best_index]],
+                    facecolors="none",
+                    edgecolors="black",
+                    linewidths=2.0,
+                    s=180,
+                    zorder=4,
+                )
+            candidates = dataset.get("candidate_solutions")
+            if isinstance(candidates, list) and self._selected_scan_solution is not None:
+                selected_mode, selected_index = self._selected_scan_solution
+                if selected_mode == mode and 0 <= selected_index < len(candidates):
+                    self._scan_axis.scatter(
+                        [start_times[selected_index]],
+                        [final_twist_turns[selected_index]],
+                        facecolors="none",
+                        edgecolors="black",
+                        linewidths=2.0,
+                        s=180,
+                        zorder=4,
+                    )
+        self._scan_axis.legend(loc="best")
+        self._scan_canvas.draw_idle()
 
     def _add_arm_kinematic_bounds_to_plot(self, colors: tuple[str, ...]) -> None:
         """Overlay the validated arm-angle bounds on the current kinematics plot."""
@@ -2451,6 +2662,8 @@ class BestTiltingPlaneApp:
             scan_final_twist_turns: list[float] = []
             scan_objective_values: list[float] = []
             scan_success_mask: list[bool] = []
+            scan_candidate_solutions: list[dict[str, object]] = []
+            scan_candidate_results: list[object | None] = []
             previous_result = None
             best_result = None
             best_warm_start_result = None
@@ -2466,6 +2679,33 @@ class BestTiltingPlaneApp:
                 scan_final_twist_turns = list(cached_progress["final_twist_turns"])
                 scan_objective_values = list(cached_progress["objective_values"])
                 scan_success_mask = list(cached_progress["success_mask"])
+                scan_candidate_results = [None] * len(scan_start_times)
+                scan_candidate_solutions = (
+                    []
+                    if cached_progress.get("scan_candidate_solutions") is None
+                    else [
+                        self._scan_candidate_record(
+                            optimized_values=dict(candidate["values"]),
+                            simulation_result=candidate.get("simulation"),
+                            mode=mode,
+                            final_twist_turns=float(candidate["final_twist_turns"]),
+                            objective=float(candidate["objective"]),
+                            solver_status=str(candidate["solver_status"]),
+                            success=bool(candidate["success"]),
+                            left_plane_jerk=(
+                                None
+                                if "left_plane_jerk" not in candidate
+                                else np.asarray(candidate["left_plane_jerk"], dtype=float)
+                            ),
+                            right_plane_jerk=(
+                                None
+                                if "right_plane_jerk" not in candidate
+                                else np.asarray(candidate["right_plane_jerk"], dtype=float)
+                            ),
+                        )
+                        for candidate in cached_progress["scan_candidate_solutions"]
+                    ]
+                )
                 start_index = len(scan_start_times)
                 best_motion = self._rebuild_cached_dms_motion(
                     cached_progress["optimized_values"],
@@ -2551,6 +2791,20 @@ class BestTiltingPlaneApp:
                 scan_final_twist_turns.append(current_result.final_twist_turns)
                 scan_objective_values.append(current_result.objective)
                 scan_success_mask.append(bool(current_result.success))
+                scan_candidate_solutions.append(
+                    self._scan_candidate_record(
+                        optimized_values=_gui_values_from_variables(current_result.variables),
+                        simulation_result=getattr(current_result, "simulation", None),
+                        mode=mode,
+                        final_twist_turns=current_result.final_twist_turns,
+                        objective=current_result.objective,
+                        solver_status=current_result.solver_status,
+                        success=bool(current_result.success),
+                        left_plane_jerk=np.asarray(current_result.left_plane_jerk, dtype=float),
+                        right_plane_jerk=np.asarray(current_result.right_plane_jerk, dtype=float),
+                    )
+                )
+                scan_candidate_results.append(current_result)
                 previous_result = current_result
 
                 if _dms_result_is_better(current_result, best_result):
@@ -2571,6 +2825,7 @@ class BestTiltingPlaneApp:
                     scan_final_twist_turns=np.asarray(scan_final_twist_turns, dtype=float),
                     scan_objective_values=np.asarray(scan_objective_values, dtype=float),
                     scan_success_mask=np.asarray(scan_success_mask, dtype=bool),
+                    scan_candidate_solutions=list(scan_candidate_solutions),
                     last_completed_index=index,
                     last_warm_start_primal=(
                         None
@@ -2591,11 +2846,75 @@ class BestTiltingPlaneApp:
                     solver_status=str(best_result.solver_status),
                 )
 
+            if mode == "Optimize 3D BTP" and len(scan_start_times) >= 3:
+                for index in range(1, len(scan_start_times) - 1):
+                    current_twist = float(scan_final_twist_turns[index])
+                    neighbor_mean = 0.5 * (
+                        float(scan_final_twist_turns[index - 1]) + float(scan_final_twist_turns[index + 1])
+                    )
+                    if abs(current_twist - neighbor_mean) < THREE_D_BTP_DISCONTINUITY_THRESHOLD:
+                        continue
+                    left_candidate = scan_candidate_solutions[index - 1]
+                    right_candidate = scan_candidate_solutions[index + 1]
+                    better_neighbor = (
+                        scan_candidate_results[index - 1]
+                        if scan_candidate_results[index - 1] is not None
+                        and (
+                            scan_candidate_results[index + 1] is None
+                            or _dms_result_is_better(scan_candidate_results[index - 1], scan_candidate_results[index + 1])
+                        )
+                        else scan_candidate_results[index + 1]
+                    )
+                    if better_neighbor is None:
+                        continue
+                    try:
+                        rerun = optimizer.solve_fixed_start(
+                            initial_guess,
+                            right_arm_start=float(scan_start_times[index]),
+                            previous_result=better_neighbor,
+                            max_iter=50,
+                            print_level=5,
+                            print_time=True,
+                            show_jerk_diagnostics=False,
+                        )
+                    except Exception:
+                        continue
+                    if float(rerun.objective) >= float(scan_objective_values[index]):
+                        continue
+                    scan_final_twist_turns[index] = float(rerun.final_twist_turns)
+                    scan_objective_values[index] = float(rerun.objective)
+                    scan_success_mask[index] = bool(rerun.success)
+                    scan_candidate_results[index] = rerun
+                    scan_candidate_solutions[index] = self._scan_candidate_record(
+                        optimized_values=_gui_values_from_variables(rerun.variables),
+                        simulation_result=getattr(rerun, "simulation", None),
+                        mode=mode,
+                        final_twist_turns=rerun.final_twist_turns,
+                        objective=rerun.objective,
+                        solver_status=rerun.solver_status,
+                        success=bool(rerun.success),
+                        left_plane_jerk=np.asarray(rerun.left_plane_jerk, dtype=float),
+                        right_plane_jerk=np.asarray(rerun.right_plane_jerk, dtype=float),
+                    )
+                    if _dms_result_is_better(rerun, best_result):
+                        best_result = rerun
+                    if (
+                        getattr(rerun, "warm_start_primal", None) is not None
+                        and _dms_result_is_better(rerun, best_warm_start_result)
+                    ):
+                        best_warm_start_result = rerun
+
             if best_result is None:
                 raise RuntimeError("No DMS candidate was evaluated.")
             result = best_result
             if getattr(result, "simulation", None) is not None:
                 setattr(result.prescribed_motion, "_cached_simulation_result", result.simulation)
+                plane_q = np.asarray(result.simulation.q[:, [6, 8]], dtype=float)
+                print(
+                    "3D arm-plane amplitudes: "
+                    f"left={np.rad2deg(np.max(np.abs(plane_q[:, 0]))):.2f} deg, "
+                    f"right={np.rad2deg(np.max(np.abs(plane_q[:, 1]))):.2f} deg"
+                )
             optimized_values = _gui_values_from_variables(result.variables)
             scan_data = self._scan_data_from_lists(
                 start_times=scan_start_times,
@@ -2612,6 +2931,7 @@ class BestTiltingPlaneApp:
                 scan_final_twist_turns=scan_data["final_twist_turns"],
                 scan_objective_values=scan_data["objective_values"],
                 scan_success_mask=scan_data["success_mask"],
+                scan_candidate_solutions=list(scan_candidate_solutions),
                 final_twist_turns=result.final_twist_turns,
                 solver_status=result.solver_status,
             )
@@ -2630,6 +2950,18 @@ class BestTiltingPlaneApp:
             }
 
         sweep, result, optimized_values = self._evaluate_two_d_sweep(initial_guess=initial_guess)
+        scan_candidate_solutions = [
+            self._scan_candidate_record(
+                optimized_values=_gui_values_from_variables(candidate_result.variables),
+                simulation_result=getattr(candidate_result, "simulation", None),
+                mode="Optimize 2D",
+                final_twist_turns=candidate_result.final_twist_turns,
+                objective=candidate_result.objective,
+                solver_status=candidate_result.solver_status,
+                success=bool(candidate_result.success),
+            )
+            for candidate_result in getattr(sweep, "candidate_results", ())
+        ]
         self._store_cached_optimized_values(
             optimized_values,
             final_twist_turns=result.final_twist_turns,
@@ -2637,6 +2969,7 @@ class BestTiltingPlaneApp:
             scan_start_times=sweep.start_times,
             scan_final_twist_turns=sweep.final_twist_turns,
             scan_objective_values=sweep.objective_values,
+            scan_candidate_solutions=(scan_candidate_solutions or None),
         )
         return {
             "optimized_values": optimized_values,

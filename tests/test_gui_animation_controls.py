@@ -464,8 +464,54 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
             "optimum balayage 1D: -0.75 tours (Solve_Succeeded)",
         )
     ]
-    assert app.plot_y_var.get() == "Vrilles selon t1"
-    assert refresh_calls == ["refresh"]
+    assert app.plot_y_var.get() == "Twist"
+    assert refresh_calls == []
+
+
+def test_on_scan_plot_click_replays_the_nearest_candidate() -> None:
+    """Clicking the dedicated scan figure should replay the nearest cached candidate solution."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app._scan_axis = object()
+    app._selected_scan_solution = None
+    refreshed: list[str] = []
+    replayed: list[dict[str, object]] = []
+    app._refresh_scan_plot = lambda: refreshed.append("refresh")
+    app._apply_scan_candidate_solution = lambda candidate: replayed.append(candidate)
+    candidate = {
+        "mode": "Optimize 3D",
+        "values": {
+            "right_arm_start": 0.24,
+            "left_plane_initial": 0.0,
+            "left_plane_final": 0.0,
+            "right_plane_initial": 0.0,
+            "right_plane_final": 0.0,
+            "contact_twist_turns_per_second": -0.6,
+        },
+        "final_twist_turns": -1.2,
+        "objective": -1.19,
+        "solver_status": "Solve_Succeeded",
+        "success": True,
+        "simulation": None,
+    }
+    app._scan_plot_datasets = lambda: [
+        {
+            "mode": "Optimize 3D",
+            "start_times": [0.24, 0.26],
+            "final_twist_turns": [-1.2, -1.0],
+            "objective_values": [-1.19, -0.99],
+            "success_mask": [True, True],
+            "best_start_time": 0.24,
+            "candidate_solutions": [candidate, None],
+        }
+    ]
+
+    event = SimpleNamespace(inaxes=app._scan_axis, xdata=0.241, ydata=-1.19)
+    app._on_scan_plot_click(event)
+
+    assert app._selected_scan_solution == ("Optimize 3D", 0)
+    assert refreshed == ["refresh"]
+    assert replayed == [candidate]
 
 
 def test_optimization_mode_options_expose_2d_and_two_3d_modes() -> None:
