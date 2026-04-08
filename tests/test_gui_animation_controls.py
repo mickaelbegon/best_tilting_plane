@@ -18,6 +18,7 @@ from best_tilting_plane.gui.app import (
     ROOT_VIEW_CAMERA_AZIMUTH_DEG,
     ROOT_VIEW_CAMERA_ELEVATION_DEG,
     ROOT_INITIAL_OPTIONS,
+    SKELETON_CONNECTIONS,
     BestTiltingPlaneApp,
 )
 from best_tilting_plane.simulation import AerialSimulationResult, SimulationConfiguration
@@ -118,6 +119,75 @@ class FakeAxis:
         """Store the requested camera orientation."""
 
         self.camera = (elev, azim)
+
+
+class Fake3DLine:
+    """Minimal 3D line artist stub storing the latest coordinates."""
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+        self.x = []
+        self.y = []
+        self.z = []
+
+    def set_data(self, x, y) -> None:
+        """Mirror matplotlib line updates."""
+
+        self.x = list(x)
+        self.y = list(y)
+
+    def set_3d_properties(self, z) -> None:
+        """Mirror matplotlib line updates."""
+
+        self.z = list(z)
+
+
+class Fake3DAxis(FakeAxis):
+    """Small 3D axis stub that records created lines and the title."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.plot_calls: list[Fake3DLine] = []
+        self.title: str | None = None
+
+    def clear(self) -> None:
+        """Mirror matplotlib."""
+
+    def set_xlabel(self, _value) -> None:
+        """Mirror matplotlib."""
+
+    def set_ylabel(self, _value) -> None:
+        """Mirror matplotlib."""
+
+    def set_zlabel(self, _value) -> None:
+        """Mirror matplotlib."""
+
+    def set_box_aspect(self, _value) -> None:
+        """Mirror matplotlib."""
+
+    def set_xlim(self, *_args) -> None:
+        """Mirror matplotlib."""
+
+    def set_ylim(self, *_args) -> None:
+        """Mirror matplotlib."""
+
+    def set_zlim(self, *_args) -> None:
+        """Mirror matplotlib."""
+
+    def plot(self, _x, _y, _z, **kwargs):
+        """Record one 3D line creation."""
+
+        line = Fake3DLine(**kwargs)
+        self.plot_calls.append(line)
+        return [line]
+
+    def add_collection3d(self, _collection) -> None:
+        """Mirror matplotlib."""
+
+    def set_title(self, value: str) -> None:
+        """Store the latest title."""
+
+        self.title = value
 
 
 class FakePlotAxis:
@@ -638,6 +708,77 @@ def test_refresh_plot_overlays_two_selected_scan_conditions_with_solid_and_dashe
     assert len(app._plot_axis.plot_calls) == 2
     assert app._plot_axis.plot_calls[0]["linestyle"] == "-"
     assert app._plot_axis.plot_calls[1]["linestyle"] == "--"
+
+
+def test_prepare_standard_animation_scene_adds_light_gray_dashed_overlay_for_second_condition() -> None:
+    """A second selected condition should create dashed light-gray artists in the 3D scene."""
+
+    marker_names = {name for connection in SKELETON_CONNECTIONS for name in connection}
+    trajectories = {name: np.zeros((2, 3)) for name in marker_names}
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app._visualization_data = {"trajectories": trajectories}
+    app._secondary_visualization_data = {"trajectories": trajectories}
+    app._animation_axis = Fake3DAxis()
+    app._apply_camera_view = lambda: None
+    app._draw_animation_frame = lambda _frame_index: None
+    app.show_btp = FakeVar(False)
+    app._animation_frame_index = 0
+
+    app._prepare_standard_animation_scene()
+
+    primary_calls = app._animation_axis.plot_calls[: len(SKELETON_CONNECTIONS)]
+    secondary_calls = app._animation_axis.plot_calls[
+        len(SKELETON_CONNECTIONS) : 2 * len(SKELETON_CONNECTIONS)
+    ]
+    assert all(line.kwargs["color"] == "black" for line in primary_calls)
+    assert all(line.kwargs["color"] == "0.8" for line in secondary_calls)
+    assert all(line.kwargs["linestyle"] == "--" for line in secondary_calls)
+
+
+def test_draw_animation_frame_updates_secondary_overlay_from_selected_condition() -> None:
+    """The 3D animation should advance the comparison overlay with the current frame."""
+
+    marker_names = {name for connection in SKELETON_CONNECTIONS for name in connection}
+    primary_trajectories = {
+        name: np.array([[0.0, 0.0, 0.0], [0.1, 0.0, 0.0]], dtype=float)
+        for name in marker_names
+    }
+    secondary_trajectories = {
+        name: np.array([[1.0, 0.0, 0.0], [2.0, 0.5, 0.0]], dtype=float)
+        for name in marker_names
+    }
+    first_connection = SKELETON_CONNECTIONS[0]
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.animation_mode_var = FakeVar(ANIMATION_MODE_OPTIONS[0])
+    app._secondary_line_artists = tuple(Fake3DLine() for _ in SKELETON_CONNECTIONS)
+    app._line_artists = tuple(Fake3DLine() for _ in SKELETON_CONNECTIONS)
+    app._frame_artists = {}
+    app._angular_momentum_artist = Fake3DLine()
+    app._plane_artist = None
+    app._animation_canvas = SimpleNamespace(draw_idle=lambda: None)
+    app._animation_axis = Fake3DAxis()
+    app.show_btp = FakeVar(False)
+    app._visualization_data = {
+        "result": SimpleNamespace(time=np.array([0.0, 0.2])),
+        "display_q": np.zeros((2, 10)),
+        "trajectories": primary_trajectories,
+        "frames": {},
+        "observables": {
+            "center_of_mass": np.zeros((2, 3)),
+            "angular_momentum": np.zeros((2, 3)),
+        },
+    }
+    app._secondary_visualization_data = {"trajectories": secondary_trajectories}
+
+    app._draw_animation_frame(1)
+
+    expected_segment = np.vstack(
+        (secondary_trajectories[first_connection[0]][1], secondary_trajectories[first_connection[1]][1])
+    )
+    assert app._secondary_line_artists[0].x == expected_segment[:, 0].tolist()
+    assert app._secondary_line_artists[0].y == expected_segment[:, 1].tolist()
 
 
 def test_optimization_mode_options_expose_2d_and_two_3d_modes() -> None:

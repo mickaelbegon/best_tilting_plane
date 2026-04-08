@@ -481,10 +481,12 @@ class BestTiltingPlaneApp:
         self._plot_canvas.get_tk_widget().grid(row=2, column=0, sticky="nsew")
 
         self._line_artists: tuple[object, ...] = ()
+        self._secondary_line_artists: tuple[object, ...] = ()
         self._frame_artists: dict[str, tuple[object, object, object]] = {}
         self._btp_chain_artists: dict[str, object] = {}
         self._btp_path_artists: dict[str, object] = {}
         self._btp_marker_artists: dict[str, object] = {}
+        self._secondary_visualization_data: dict[str, object] | None = None
         self._angular_momentum_artist = None
         self._plane_artist: Poly3DCollection | None = None
 
@@ -1623,8 +1625,14 @@ class BestTiltingPlaneApp:
         if self._last_simulation is None or self._last_model_path is None:
             return
 
-        display_q = self._display_q_history(self._last_simulation)
-        display_qdot = self._display_qdot_history(self._last_simulation)
+        self._visualization_data = self._visualization_payload_for_result(self._last_simulation)
+        self._secondary_visualization_data = self._secondary_animation_visualization_data()
+
+    def _visualization_payload_for_result(self, result) -> dict[str, object]:
+        """Build the cached visualization payload associated with one simulation result."""
+
+        display_q = self._display_q_history(result)
+        display_qdot = self._display_qdot_history(result)
         trajectories = marker_trajectories(self._last_model_path, display_q)
         frame_trajectories = segment_frame_trajectories(
             self._last_model_path,
@@ -1634,8 +1642,8 @@ class BestTiltingPlaneApp:
         observables = system_observables(self._last_model_path, display_q, display_qdot)
         deviations = arm_deviation_from_frames(frame_trajectories, display_q[:, 3])
         btp_trajectories = arm_btp_reference_trajectories(trajectories, display_q[:, 3])
-        self._visualization_data = {
-            "result": self._last_simulation,
+        return {
+            "result": result,
             "display_q": display_q,
             "display_qdot": display_qdot,
             "trajectories": trajectories,
@@ -1644,6 +1652,29 @@ class BestTiltingPlaneApp:
             "observables": observables,
             "deviations": deviations,
         }
+
+    def _secondary_animation_visualization_data(self) -> dict[str, object] | None:
+        """Return the comparison solution that should be overlaid in the animation."""
+
+        selected_candidates = self._selected_scan_candidate_records()
+        if len(selected_candidates) < 2 or self._last_model_path is None:
+            return None
+
+        current_result = None if self._visualization_data is None else self._visualization_data.get("result")
+        secondary_candidate = next(
+            (
+                candidate
+                for candidate in selected_candidates
+                if candidate.get("simulation") is not None and candidate.get("simulation") is not current_result
+            ),
+            None,
+        )
+        if secondary_candidate is None:
+            secondary_candidate = selected_candidates[-1]
+        secondary_result = secondary_candidate.get("simulation")
+        if secondary_result is None:
+            return None
+        return self._visualization_payload_for_result(secondary_result)
 
     def _on_animation_reference_change(self) -> None:
         """Refresh the displays when toggling the animation reference frame."""
@@ -1672,6 +1703,11 @@ class BestTiltingPlaneApp:
         """Prepare the default global 3D animation scene."""
 
         trajectories = self._visualization_data["trajectories"]
+        secondary_trajectories = (
+            None
+            if self._secondary_visualization_data is None
+            else self._secondary_visualization_data["trajectories"]
+        )
         self._animation_axis.clear()
         self._animation_axis.set_xlabel("Mediolat.")
         self._animation_axis.set_ylabel("Ant.-post.")
@@ -1679,7 +1715,14 @@ class BestTiltingPlaneApp:
         self._animation_axis.set_box_aspect((1.0, 1.0, 1.0))
         self._apply_camera_view()
 
-        all_points = np.concatenate(list(trajectories.values()), axis=0)
+        all_points = np.concatenate(
+            [
+                marker_history
+                for trajectory_set in ([trajectories] if secondary_trajectories is None else [trajectories, secondary_trajectories])
+                for marker_history in trajectory_set.values()
+            ],
+            axis=0,
+        )
         span = np.max(all_points, axis=0) - np.min(all_points, axis=0)
         center = np.mean(all_points, axis=0)
         radius = 0.6 * np.max(span)
@@ -1691,6 +1734,17 @@ class BestTiltingPlaneApp:
             self._animation_axis.plot([], [], [], color="black", linewidth=2.0)[0]
             for _ in SKELETON_CONNECTIONS
         )
+        self._secondary_line_artists = tuple(
+            self._animation_axis.plot(
+                [],
+                [],
+                [],
+                color="0.8",
+                linewidth=1.8,
+                linestyle="--",
+            )[0]
+            for _ in SKELETON_CONNECTIONS
+        ) if secondary_trajectories is not None else ()
         self._frame_artists = {
             segment_name: tuple(
                 self._animation_axis.plot([], [], [], color=color, linewidth=2.0)[0]
@@ -1714,6 +1768,11 @@ class BestTiltingPlaneApp:
         """Prepare the full-model animation expressed in the best-tilting-plane frame."""
 
         projected = self._visualization_data["btp_trajectories"]
+        secondary_projected = (
+            None
+            if self._secondary_visualization_data is None
+            else self._secondary_visualization_data["btp_trajectories"]
+        )
         self._animation_axis.clear()
         self._animation_axis.set_xlabel("Axe somersault (m)")
         self._animation_axis.set_ylabel("Axe twist BTP (m)")
@@ -1724,7 +1783,14 @@ class BestTiltingPlaneApp:
             azim=BTP_CAMERA_AZIMUTH_DEG,
         )
 
-        all_points = np.concatenate(list(projected.values()), axis=0)
+        all_points = np.concatenate(
+            [
+                marker_history
+                for trajectory_set in ([projected] if secondary_projected is None else [projected, secondary_projected])
+                for marker_history in trajectory_set.values()
+            ],
+            axis=0,
+        )
         span = np.max(all_points, axis=0) - np.min(all_points, axis=0)
         center = np.mean(all_points, axis=0)
         radius = max(0.25, 0.6 * float(np.max(span)))
@@ -1736,6 +1802,17 @@ class BestTiltingPlaneApp:
             self._animation_axis.plot([], [], [], color="black", linewidth=2.0)[0]
             for _ in SKELETON_CONNECTIONS
         )
+        self._secondary_line_artists = tuple(
+            self._animation_axis.plot(
+                [],
+                [],
+                [],
+                color="0.8",
+                linewidth=1.8,
+                linestyle="--",
+            )[0]
+            for _ in SKELETON_CONNECTIONS
+        ) if secondary_projected is not None else ()
         self._btp_chain_artists = {
             "left": self._animation_axis.plot([], [], [], color="tab:red", linewidth=2.8, marker="o")[0],
             "right": self._animation_axis.plot([], [], [], color="tab:blue", linewidth=2.8, marker="o")[0],
@@ -1953,6 +2030,11 @@ class BestTiltingPlaneApp:
         result = self._visualization_data["result"]
         display_q = self._visualization_data["display_q"]
         trajectories = self._visualization_data["trajectories"]
+        secondary_trajectories = (
+            None
+            if self._secondary_visualization_data is None
+            else self._secondary_visualization_data["trajectories"]
+        )
         frame_trajectories = self._visualization_data["frames"]
         observables = self._visualization_data["observables"]
 
@@ -1962,6 +2044,19 @@ class BestTiltingPlaneApp:
             )
             artist.set_data(segment[:, 0], segment[:, 1])
             artist.set_3d_properties(segment[:, 2])
+
+        if secondary_trajectories is not None:
+            secondary_frame_count = next(iter(secondary_trajectories.values())).shape[0]
+            secondary_frame_index = int(np.clip(frame_index, 0, secondary_frame_count - 1))
+            for artist, (start_name, end_name) in zip(self._secondary_line_artists, SKELETON_CONNECTIONS):
+                segment = np.vstack(
+                    (
+                        secondary_trajectories[start_name][secondary_frame_index],
+                        secondary_trajectories[end_name][secondary_frame_index],
+                    )
+                )
+                artist.set_data(segment[:, 0], segment[:, 1])
+                artist.set_3d_properties(segment[:, 2])
 
         for segment_name, artists in self._frame_artists.items():
             origin = frame_trajectories[segment_name]["origin"][frame_index]
@@ -1999,12 +2094,30 @@ class BestTiltingPlaneApp:
 
         result = self._visualization_data["result"]
         projected = self._visualization_data["btp_trajectories"]
+        secondary_projected = (
+            None
+            if self._secondary_visualization_data is None
+            else self._secondary_visualization_data["btp_trajectories"]
+        )
         deviations = self._visualization_data["deviations"]
 
         for artist, (start_name, end_name) in zip(self._line_artists, SKELETON_CONNECTIONS):
             segment = np.vstack((projected[start_name][frame_index], projected[end_name][frame_index]))
             artist.set_data(segment[:, 0], segment[:, 1])
             artist.set_3d_properties(segment[:, 2])
+
+        if secondary_projected is not None:
+            secondary_frame_count = next(iter(secondary_projected.values())).shape[0]
+            secondary_frame_index = int(np.clip(frame_index, 0, secondary_frame_count - 1))
+            for artist, (start_name, end_name) in zip(self._secondary_line_artists, SKELETON_CONNECTIONS):
+                segment = np.vstack(
+                    (
+                        secondary_projected[start_name][secondary_frame_index],
+                        secondary_projected[end_name][secondary_frame_index],
+                    )
+                )
+                artist.set_data(segment[:, 0], segment[:, 1])
+                artist.set_3d_properties(segment[:, 2])
 
         left_chain = np.vstack([projected[marker_name][frame_index] for marker_name in TOP_VIEW_LEFT_CHAIN])
         right_chain = np.vstack(
