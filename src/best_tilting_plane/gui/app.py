@@ -264,7 +264,7 @@ class BestTiltingPlaneApp:
         display.columnconfigure(0, weight=1)
         display.rowconfigure(0, weight=3)
         display.rowconfigure(1, weight=0)
-        display.rowconfigure(2, weight=2)
+        display.rowconfigure(2, weight=3)
 
         for row, definition in enumerate(SLIDER_DEFINITIONS):
             ttk.Label(controls, text=definition.label).grid(
@@ -306,16 +306,29 @@ class BestTiltingPlaneApp:
             self._entries[definition.name] = entry_var
             self._scales[definition.name] = scale
 
+        scan_row = len(SLIDER_DEFINITIONS)
+        self._scan_figure = Figure(figsize=(4.8, 2.6), tight_layout=True)
+        self._scan_axis = self._scan_figure.add_subplot(111)
+        self._scan_canvas = FigureCanvasTkAgg(self._scan_figure, master=controls)
+        self._scan_canvas.get_tk_widget().grid(
+            row=scan_row,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            pady=(10, 12),
+        )
+        self._scan_canvas.mpl_connect("button_press_event", self._on_scan_plot_click)
+
         self.show_btp = tk.BooleanVar(value=True)
         ttk.Checkbutton(
             controls,
             text="Afficher le best tilting plane",
             variable=self.show_btp,
             command=self._refresh_animation_scene,
-        ).grid(row=len(SLIDER_DEFINITIONS), column=0, columnspan=3, sticky="w", pady=(8, 4))
+        ).grid(row=scan_row + 1, column=0, columnspan=3, sticky="w", pady=(4, 4))
 
         ttk.Label(controls, text="Repere animation").grid(
-            row=len(SLIDER_DEFINITIONS) + 1, column=0, sticky="w", pady=(8, 4)
+            row=scan_row + 2, column=0, sticky="w", pady=(8, 4)
         )
         self.root_initial_mode = tk.StringVar(value=ROOT_INITIAL_OPTIONS[1])
         self.animation_mode_var = tk.StringVar(value=ANIMATION_MODE_OPTIONS[0])
@@ -328,7 +341,7 @@ class BestTiltingPlaneApp:
             width=24,
         )
         animation_reference_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 1, column=1, columnspan=2, sticky="ew", pady=(8, 4)
+            row=scan_row + 2, column=1, columnspan=2, sticky="ew", pady=(8, 4)
         )
         animation_reference_box.bind(
             "<<ComboboxSelected>>",
@@ -337,7 +350,7 @@ class BestTiltingPlaneApp:
         self._apply_animation_reference(self.animation_reference_var.get())
 
         ttk.Label(controls, text="Mode figure").grid(
-            row=len(SLIDER_DEFINITIONS) + 2, column=0, sticky="w", pady=4
+            row=scan_row + 3, column=0, sticky="w", pady=4
         )
         self.plot_mode_var = tk.StringVar(value=PLOT_MODE_OPTIONS[0])
         plot_mode_box = ttk.Combobox(
@@ -348,12 +361,12 @@ class BestTiltingPlaneApp:
             width=24,
         )
         plot_mode_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 2, column=1, columnspan=2, sticky="ew", pady=4
+            row=scan_row + 3, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Label(controls, text="Figure x").grid(
-            row=len(SLIDER_DEFINITIONS) + 3, column=0, sticky="w", pady=4
+            row=scan_row + 4, column=0, sticky="w", pady=4
         )
         self.plot_x_var = tk.StringVar(value=PLOT_X_OPTIONS[0])
         plot_x_box = ttk.Combobox(
@@ -364,12 +377,12 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_x_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 3, column=1, columnspan=2, sticky="ew", pady=4
+            row=scan_row + 4, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_x_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Label(controls, text="Figure y").grid(
-            row=len(SLIDER_DEFINITIONS) + 4, column=0, sticky="w", pady=4
+            row=scan_row + 5, column=0, sticky="w", pady=4
         )
         self.plot_y_var = tk.StringVar(value="Twist")
         plot_y_box = ttk.Combobox(
@@ -380,24 +393,24 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_y_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 4, column=1, columnspan=2, sticky="ew", pady=4
+            row=scan_row + 5, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_y_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Button(controls, text="Simulate", command=self._run_simulation).grid(
-            row=len(SLIDER_DEFINITIONS) + 5, column=0, sticky="w", pady=(10, 0)
+            row=scan_row + 6, column=0, sticky="w", pady=(10, 0)
         )
         ttk.Button(
             controls,
             text="Comparer jerk bras 1",
             command=self._show_first_arm_jerk_comparison,
-        ).grid(row=len(SLIDER_DEFINITIONS) + 5, column=1, columnspan=2, sticky="ew", pady=(10, 0))
+        ).grid(row=scan_row + 6, column=1, columnspan=2, sticky="ew", pady=(10, 0))
         self.ignore_optimization_cache_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             controls,
             text="Ignorer le cache optimum",
             variable=self.ignore_optimization_cache_var,
-        ).grid(row=len(SLIDER_DEFINITIONS) + 6, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        ).grid(row=scan_row + 7, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self.optimization_mode_var = tk.StringVar(value=OPTIMIZATION_MODE_OPTIONS[0])
         optimization_mode_box = ttk.Combobox(
             controls,
@@ -407,15 +420,15 @@ class BestTiltingPlaneApp:
             width=18,
         )
         optimization_mode_box.grid(
-            row=len(SLIDER_DEFINITIONS) + 7, column=0, columnspan=2, sticky="ew", pady=(10, 0), padx=(0, 8)
+            row=scan_row + 8, column=0, columnspan=2, sticky="ew", pady=(10, 0), padx=(0, 8)
         )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=len(SLIDER_DEFINITIONS) + 7, column=2, sticky="w", pady=(10, 0)
+            row=scan_row + 8, column=2, sticky="w", pady=(10, 0)
         )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 8, column=0, columnspan=3, sticky="w", pady=(10, 0)
+            row=scan_row + 9, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.root.report_callback_exception = self._report_callback_exception
         self.sequence_var = tk.StringVar(
@@ -428,7 +441,7 @@ class BestTiltingPlaneApp:
             )
         )
         ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
-            row=len(SLIDER_DEFINITIONS) + 9, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=scan_row + 10, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
         self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
@@ -462,22 +475,10 @@ class BestTiltingPlaneApp:
             row=1, column=2, sticky="e"
         )
 
-        bottom_plots = ttk.Frame(display)
-        bottom_plots.grid(row=2, column=0, sticky="nsew")
-        bottom_plots.columnconfigure(0, weight=1)
-        bottom_plots.columnconfigure(1, weight=1)
-        bottom_plots.rowconfigure(0, weight=1)
-
-        self._scan_figure = Figure(figsize=(4.0, 3.5), tight_layout=True)
-        self._scan_axis = self._scan_figure.add_subplot(111)
-        self._scan_canvas = FigureCanvasTkAgg(self._scan_figure, master=bottom_plots)
-        self._scan_canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        self._scan_canvas.mpl_connect("button_press_event", self._on_scan_plot_click)
-
-        self._plot_figure = Figure(figsize=(4.0, 3.5), tight_layout=True)
+        self._plot_figure = Figure(figsize=(8.0, 3.8), tight_layout=True)
         self._plot_axis = self._plot_figure.add_subplot(111)
-        self._plot_canvas = FigureCanvasTkAgg(self._plot_figure, master=bottom_plots)
-        self._plot_canvas.get_tk_widget().grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self._plot_canvas = FigureCanvasTkAgg(self._plot_figure, master=display)
+        self._plot_canvas.get_tk_widget().grid(row=2, column=0, sticky="nsew")
 
         self._line_artists: tuple[object, ...] = ()
         self._frame_artists: dict[str, tuple[object, object, object]] = {}

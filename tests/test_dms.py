@@ -81,7 +81,7 @@ def test_direct_multiple_shooting_jerk_bound_matches_left_elevation_fitting(
         step=optimizer.shooting_step,
     )
 
-    assert optimizer.jerk_bound == 4.0 * np.max(np.abs(reference.jerks))
+    assert optimizer.jerk_bound == 2.0 * np.max(np.abs(reference.jerks))
 
 
 def test_direct_multiple_shooting_candidate_start_times_cover_the_full_admissible_window(
