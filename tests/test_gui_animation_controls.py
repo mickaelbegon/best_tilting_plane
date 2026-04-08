@@ -20,7 +20,7 @@ from best_tilting_plane.gui.app import (
     ROOT_INITIAL_OPTIONS,
     BestTiltingPlaneApp,
 )
-from best_tilting_plane.simulation import SimulationConfiguration
+from best_tilting_plane.simulation import AerialSimulationResult, SimulationConfiguration
 
 
 class FakeScheduler:
@@ -118,6 +118,40 @@ class FakeAxis:
         """Store the requested camera orientation."""
 
         self.camera = (elev, azim)
+
+
+class FakePlotAxis:
+    """Minimal 2D axis stub recording plotted lines and labels."""
+
+    def __init__(self) -> None:
+        self.plot_calls: list[dict[str, object]] = []
+
+    def clear(self) -> None:
+        """Mirror matplotlib."""
+
+    def plot(self, x, y, **kwargs):
+        """Record a plotted line."""
+
+        self.plot_calls.append({"x": list(x), "y": list(y), **kwargs})
+        return [None]
+
+    def set_xlabel(self, _value) -> None:
+        """Mirror matplotlib."""
+
+    def set_ylabel(self, _value) -> None:
+        """Mirror matplotlib."""
+
+    def set_title(self, _value) -> None:
+        """Mirror matplotlib."""
+
+    def grid(self, *_args, **_kwargs) -> None:
+        """Mirror matplotlib."""
+
+    def legend(self, *_args, **_kwargs) -> None:
+        """Mirror matplotlib."""
+
+    def axhline(self, *_args, **_kwargs) -> None:
+        """Mirror matplotlib."""
 
 
 def _build_app_for_animation() -> tuple[BestTiltingPlaneApp, list[int], FakeScheduler]:
@@ -473,10 +507,12 @@ def test_on_scan_plot_click_replays_the_nearest_candidate() -> None:
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app._scan_axis = object()
-    app._selected_scan_solution = None
-    refreshed: list[str] = []
+    app._selected_scan_solutions = []
+    refreshed_scan: list[str] = []
+    refreshed_plot: list[str] = []
     replayed: list[dict[str, object]] = []
-    app._refresh_scan_plot = lambda: refreshed.append("refresh")
+    app._refresh_scan_plot = lambda: refreshed_scan.append("scan")
+    app._refresh_plot = lambda: refreshed_plot.append("plot")
     app._apply_scan_candidate_solution = lambda candidate: replayed.append(candidate)
     candidate = {
         "mode": "Optimize 3D",
@@ -509,9 +545,99 @@ def test_on_scan_plot_click_replays_the_nearest_candidate() -> None:
     event = SimpleNamespace(inaxes=app._scan_axis, xdata=0.241, ydata=-1.19)
     app._on_scan_plot_click(event)
 
-    assert app._selected_scan_solution == ("Optimize 3D", 0)
-    assert refreshed == ["refresh"]
+    assert app._selected_scan_solutions == [("Optimize 3D", 0)]
+    assert refreshed_scan == ["scan"]
+    assert refreshed_plot == ["plot"]
     assert replayed == [candidate]
+
+
+def test_refresh_plot_overlays_two_selected_scan_conditions_with_solid_and_dashed_lines() -> None:
+    """Two selected scan conditions should be shown as solid and dashed curves on the right plot."""
+
+    simulation_a = AerialSimulationResult(
+        time=np.array([0.0, 0.2, 0.4]),
+        q=np.zeros((3, 10)),
+        qdot=np.zeros((3, 10)),
+        qddot=np.zeros((3, 10)),
+        integrator_method="rk4",
+        rk4_step=0.005,
+        integration_seconds=None,
+    )
+    simulation_b = AerialSimulationResult(
+        time=np.array([0.0, 0.2, 0.4]),
+        q=np.zeros((3, 10)),
+        qdot=np.zeros((3, 10)),
+        qddot=np.zeros((3, 10)),
+        integrator_method="rk4",
+        rk4_step=0.005,
+        integration_seconds=None,
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app._visualization_data = {"result": simulation_a}
+    app.plot_mode_var = FakeVar("Courbe")
+    app.plot_y_var = FakeVar("Twist")
+    app.plot_x_var = FakeVar("Temps")
+    app._plot_axis = FakePlotAxis()
+    app._plot_canvas = SimpleNamespace(draw_idle=lambda: None)
+    app._selected_scan_solutions = [("Optimize 3D", 0), ("Optimize 3D BTP", 0)]
+    app._scan_plot_datasets = lambda: [
+        {
+            "mode": "Optimize 3D",
+            "candidate_solutions": [
+                {
+                    "mode": "Optimize 3D",
+                    "values": {"right_arm_start": 0.24},
+                    "simulation": simulation_a,
+                }
+            ],
+        },
+        {
+            "mode": "Optimize 3D BTP",
+            "candidate_solutions": [
+                {
+                    "mode": "Optimize 3D BTP",
+                    "values": {"right_arm_start": 0.30},
+                    "simulation": simulation_b,
+                }
+            ],
+        },
+    ]
+    app._plot_data = lambda: (
+        np.array([0.0, 0.2, 0.4]),
+        np.array([0.0, 0.0, 0.0]),
+        "Temps (s)",
+        "Twist (deg)",
+        "Twist en fonction de temps",
+        None,
+    )
+
+    def fake_plot_data_for_result(result):
+        if result is simulation_a:
+            return (
+                np.array([0.0, 0.2, 0.4]),
+                np.array([1.0, 2.0, 3.0]),
+                "Temps (s)",
+                "Twist (deg)",
+                "Twist en fonction de temps",
+                None,
+            )
+        return (
+            np.array([0.0, 0.2, 0.4]),
+            np.array([1.5, 2.5, 3.5]),
+            "Temps (s)",
+            "Twist (deg)",
+            "Twist en fonction de temps",
+            None,
+        )
+
+    app._plot_data_for_result = fake_plot_data_for_result
+
+    app._refresh_plot()
+
+    assert len(app._plot_axis.plot_calls) == 2
+    assert app._plot_axis.plot_calls[0]["linestyle"] == "-"
+    assert app._plot_axis.plot_calls[1]["linestyle"] == "--"
 
 
 def test_optimization_mode_options_expose_2d_and_two_3d_modes() -> None:

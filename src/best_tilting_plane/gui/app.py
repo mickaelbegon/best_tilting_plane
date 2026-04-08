@@ -246,7 +246,7 @@ class BestTiltingPlaneApp:
         self._time_slider_updating = False
         self._auto_simulation_suspended = False
         self._is_closing = False
-        self._selected_scan_solution: tuple[str, int] | None = None
+        self._selected_scan_solutions: list[tuple[str, int]] = []
         self._run_optimization_in_background = True
         self._optimization_thread: threading.Thread | None = None
         self._optimization_queue: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -2060,6 +2060,82 @@ class BestTiltingPlaneApp:
             return np.asarray(self._visualization_data["display_qdot"][:, 6:10], dtype=float)
         return np.asarray(self._visualization_data["result"].qdot[:, 6:10], dtype=float)
 
+    def _selected_scan_candidate_records(self) -> list[dict[str, object]]:
+        """Return the currently selected scan candidates, in selection order."""
+
+        if not hasattr(self, "_selected_scan_solutions"):
+            return []
+        datasets_by_mode = {
+            str(dataset["mode"]): dataset for dataset in self._scan_plot_datasets()
+        }
+        selected_candidates: list[dict[str, object]] = []
+        for mode, index in self._selected_scan_solutions:
+            dataset = datasets_by_mode.get(mode)
+            if dataset is None:
+                continue
+            candidates = dataset.get("candidate_solutions")
+            if not isinstance(candidates, list) or not (0 <= index < len(candidates)):
+                continue
+            candidate = candidates[index]
+            if isinstance(candidate, dict):
+                selected_candidates.append(candidate)
+        return selected_candidates
+
+    def _plot_data_for_result(
+        self,
+        result: AerialSimulationResult,
+    ) -> tuple[np.ndarray, np.ndarray, str, str, str, tuple[str, ...] | None]:
+        """Return plot-ready data for one specific simulation result."""
+
+        display_q = self._display_q_history(result)
+        display_qdot = self._display_qdot_history(result)
+
+        if self.plot_x_var.get() == "Somersault":
+            x_data = np.rad2deg(display_q[:, 3])
+            x_label = "Somersault (deg)"
+        elif self.plot_x_var.get() == "Vrille":
+            x_data = np.rad2deg(display_q[:, 5])
+            x_label = "Vrille (deg)"
+        else:
+            x_data = np.asarray(result.time, dtype=float)
+            x_label = "Temps (s)"
+
+        y_choice = self.plot_y_var.get()
+        if y_choice == "Somersault":
+            y_data = np.rad2deg(display_q[:, 3])
+            y_label = "Somersault (deg)"
+        elif y_choice == "Tilt":
+            y_data = np.rad2deg(display_q[:, 4])
+            y_label = "Tilt (deg)"
+        elif y_choice == "Twist":
+            y_data = np.rad2deg(display_q[:, 5])
+            y_label = "Twist (deg)"
+        elif y_choice == "Cinematique bras":
+            y_data = np.rad2deg(display_q[:, 6:10])
+            y_label = "Angles bras (deg)"
+            curve_labels = ARM_KINEMATICS_LABELS
+        elif y_choice == "Vitesses bras":
+            y_data = np.rad2deg(display_qdot[:, 6:10])
+            y_label = "Vitesses bras (deg/s)"
+            curve_labels = ARM_KINEMATICS_LABELS
+        elif y_choice in {"Deviation bras gauche", "Deviation bras droit"}:
+            model_path = self._last_model_path or Path(self._model_path())
+            frame_trajectories = segment_frame_trajectories(model_path, display_q, ALL_FRAME_SEGMENTS)
+            deviations = arm_deviation_from_frames(frame_trajectories, display_q[:, 3])
+            side = "left" if y_choice == "Deviation bras gauche" else "right"
+            y_data = np.rad2deg(deviations[side])
+            y_label = f"Deviation bras {'gauche' if side == 'left' else 'droit'} / BTP (deg)"
+            curve_labels = None
+        else:
+            y_data = np.asarray(result.time, dtype=float)
+            y_label = "Temps (s)"
+            curve_labels = None
+        if y_choice not in {"Cinematique bras", "Vitesses bras"}:
+            curve_labels = None
+
+        title = f"{y_choice} en fonction de {self.plot_x_var.get().lower()}"
+        return x_data, y_data, x_label, y_label, title, curve_labels
+
     def _scan_plot_datasets(self) -> list[dict[str, object]]:
         """Return the scan datasets available for the embedded bottom-left figure."""
 
@@ -2157,8 +2233,16 @@ class BestTiltingPlaneApp:
         if nearest is None:
             return
         mode, index, candidate = nearest
-        self._selected_scan_solution = (mode, index)
+        selection = (mode, index)
+        if not hasattr(self, "_selected_scan_solutions"):
+            self._selected_scan_solutions = []
+        if selection in self._selected_scan_solutions:
+            self._selected_scan_solutions.remove(selection)
+        else:
+            self._selected_scan_solutions.append(selection)
+            self._selected_scan_solutions = self._selected_scan_solutions[-2:]
         self._refresh_scan_plot()
+        self._refresh_plot()
         self._apply_scan_candidate_solution(candidate)
 
     def _refresh_scan_plot(self) -> None:
@@ -2216,20 +2300,14 @@ class BestTiltingPlaneApp:
                 s=64,
                 zorder=3,
             )
-            if self._selected_scan_solution == (mode, best_index):
-                self._scan_axis.scatter(
-                    [start_times[best_index]],
-                    [final_twist_turns[best_index]],
-                    facecolors="none",
-                    edgecolors="black",
-                    linewidths=2.0,
-                    s=180,
-                    zorder=4,
-                )
             candidates = dataset.get("candidate_solutions")
-            if isinstance(candidates, list) and self._selected_scan_solution is not None:
-                selected_mode, selected_index = self._selected_scan_solution
-                if selected_mode == mode and 0 <= selected_index < len(candidates):
+            if isinstance(candidates, list):
+                for selection_rank, (selected_mode, selected_index) in enumerate(
+                    getattr(self, "_selected_scan_solutions", []),
+                    start=1,
+                ):
+                    if selected_mode != mode or not (0 <= selected_index < len(candidates)):
+                        continue
                     self._scan_axis.scatter(
                         [start_times[selected_index]],
                         [final_twist_turns[selected_index]],
@@ -2238,6 +2316,16 @@ class BestTiltingPlaneApp:
                         linewidths=2.0,
                         s=180,
                         zorder=4,
+                    )
+                    self._scan_axis.text(
+                        start_times[selected_index],
+                        final_twist_turns[selected_index],
+                        str(selection_rank),
+                        ha="center",
+                        va="center",
+                        fontsize=9,
+                        weight="bold",
+                        zorder=5,
                     )
         self._scan_axis.legend(loc="best")
         self._scan_canvas.draw_idle()
@@ -2433,8 +2521,49 @@ class BestTiltingPlaneApp:
             return
 
         x_data, y_data, x_label, y_label, title, curve_labels = self._plot_data()
+        selected_candidates = self._selected_scan_candidate_records()
         self._plot_axis.clear()
-        if np.asarray(y_data).ndim == 2:
+        if selected_candidates:
+            styles = ("-", "--")
+            widths = (2.2, 2.0)
+            alphas = (1.0, 0.9)
+            colors = ("tab:red", "tab:orange", "tab:blue", "tab:green")
+            for selection_index, candidate in enumerate(selected_candidates):
+                simulation = candidate.get("simulation")
+                if not isinstance(simulation, AerialSimulationResult):
+                    continue
+                candidate_x, candidate_y, x_label, y_label, title, curve_labels = self._plot_data_for_result(simulation)
+                linestyle = styles[min(selection_index, len(styles) - 1)]
+                linewidth = widths[min(selection_index, len(widths) - 1)]
+                alpha = alphas[min(selection_index, len(alphas) - 1)]
+                label_suffix = (
+                    f"t1={float(candidate['values']['right_arm_start']):.2f} s"
+                )
+                if np.asarray(candidate_y).ndim == 2:
+                    for curve_index, curve_label in enumerate(curve_labels or ()):
+                        self._plot_axis.plot(
+                            candidate_x,
+                            candidate_y[:, curve_index],
+                            color=colors[curve_index % len(colors)],
+                            linewidth=linewidth,
+                            linestyle=linestyle,
+                            alpha=alpha,
+                            label=f"{curve_label} | {label_suffix}" if curve_index == 0 else None,
+                        )
+                    if self.plot_y_var.get() == "Cinematique bras":
+                        self._add_arm_kinematic_bounds_to_plot(colors)
+                else:
+                    self._plot_axis.plot(
+                        candidate_x,
+                        candidate_y,
+                        color="tab:blue" if selection_index == 0 else "tab:orange",
+                        linewidth=linewidth,
+                        linestyle=linestyle,
+                        alpha=alpha,
+                        label=label_suffix,
+                    )
+            self._plot_axis.legend(loc="best")
+        elif np.asarray(y_data).ndim == 2:
             colors = ("tab:red", "tab:orange", "tab:blue", "tab:green")
             for curve_index, curve_label in enumerate(curve_labels or ()):
                 self._plot_axis.plot(
