@@ -1272,11 +1272,11 @@ def test_optimize_strategy_uses_btp_objective_for_optimize_3d_btp(
     assert captured["btp_deviation_weight"] > 0.0
 
 
-def test_optimize_strategy_uses_multistart_for_t1_equal_0_30_when_available(
+def test_optimize_strategy_uses_multistart_for_t1_equal_to_best_2d_minus_0_2(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    """The DMS GUI path should use the dedicated multistart helper for `t1=0.30`."""
+    """The 3D GUI path should use the dedicated multistart helper at the snapped `t1_2D - 0.2` node."""
 
     calls: list[tuple[str, float]] = []
 
@@ -1375,10 +1375,213 @@ def test_optimize_strategy_uses_multistart_for_t1_equal_0_30_when_available(
     app._schedule_dms_jerk_diagnostic_figure = lambda **kwargs: None
     app._schedule_scan_figure = lambda **kwargs: None
     app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: None
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_2d": {
+                        "signature": app._optimization_cache_signature_for_mode("Optimize 2D"),
+                        "values": {
+                            "right_arm_start": 0.50,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                            "contact_twist_turns_per_second": 0.0,
+                        },
+                        "final_twist_turns": -0.70,
+                        "solver_status": "Discrete_Sweep",
+                        "scan_start_times": [0.10, 0.30, 0.50],
+                        "scan_final_twist_turns": [-0.55, -0.65, -0.70],
+                        "scan_objective_values": [-0.54, -0.64, -0.69],
+                    }
+                },
+                "progress_records": {},
+            }
+        ),
+        encoding="utf-8",
+    )
 
     app._optimize_strategy()
 
     assert calls == [("single", 0.28), ("multi", 0.3), ("single", 0.32)]
+
+
+def test_compute_optimization_outcome_3d_attaches_exact_simulation_to_prescribed_motion(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A fresh 3D optimization should reuse the exact optimized simulation when replaying in the GUI."""
+
+    simulation = SimpleNamespace(
+        q=np.array([[0.0] * 10, [0.1] * 10], dtype=float),
+        qdot=np.array([[0.0] * 10, [0.2] * 10], dtype=float),
+        final_twist_turns=-0.8,
+    )
+
+    class FakeDmsOptimizer:
+        def candidate_start_times(self):
+            return np.array([0.10], dtype=float)
+
+        def solve_fixed_start(self, initial_guess, *, right_arm_start, previous_result=None, **_kwargs):
+            del initial_guess, previous_result
+            motion = SimpleNamespace(tag="fresh-motion")
+            return SimpleNamespace(
+                variables=SimpleNamespace(
+                    right_arm_start=right_arm_start,
+                    left_plane_initial=0.0,
+                    left_plane_final=0.0,
+                    right_plane_initial=0.0,
+                    right_plane_final=0.0,
+                ),
+                prescribed_motion=motion,
+                simulation=simulation,
+                left_plane_jerk=np.zeros(15),
+                right_plane_jerk=np.zeros(15),
+                final_twist_turns=-0.8,
+                objective=-0.79,
+                solver_status="Solve_Succeeded",
+                success=True,
+                warm_start_primal=np.full(20, right_arm_start),
+                warm_start_lam_x=np.full(20, 1.0),
+                warm_start_lam_g=np.full(10, 2.0),
+            )
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.DirectMultipleShootingOptimizer.from_builder",
+        lambda *_args, **_kwargs: FakeDmsOptimizer(),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize 3D")
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+        "contact_twist_turns_per_second": -0.6,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+        contact_twist_rate=-0.6 * 2.0 * np.pi,
+    )
+
+    outcome = app._compute_optimization_outcome(
+        current_values=app._current_values(),
+        mode="Optimize 3D",
+        use_cache=False,
+    )
+
+    assert getattr(outcome["prescribed_motion"], "_cached_simulation_result") is simulation
+
+
+def test_optimize_strategy_keeps_best_previous_warm_start_when_one_node_is_worse(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A bad intermediate node should not replace the better warm start used for later `t1` values."""
+
+    calls: list[tuple[float, float | None]] = []
+
+    class FakeDmsOptimizer:
+        def candidate_start_times(self):
+            return np.array([0.60, 0.62, 0.64], dtype=float)
+
+        def solve_fixed_start(self, initial_guess, *, right_arm_start, previous_result=None, **_kwargs):
+            assert initial_guess.right_arm_start == 0.1
+            calls.append((right_arm_start, None if previous_result is None else float(previous_result.warm_start_primal[0])))
+            objective = -0.80 if np.isclose(right_arm_start, 0.60) else -0.20 if np.isclose(right_arm_start, 0.62) else -0.79
+            final_twist = -0.81 if np.isclose(right_arm_start, 0.60) else -0.21 if np.isclose(right_arm_start, 0.62) else -0.80
+            return type(
+                "DmsResult",
+                (),
+                {
+                    "variables": type(
+                        "Variables",
+                        (),
+                        {
+                            "right_arm_start": right_arm_start,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                        },
+                    )(),
+                    "prescribed_motion": f"dms-motion-{right_arm_start:.2f}",
+                    "left_plane_jerk": np.zeros(15),
+                    "right_plane_jerk": np.zeros(15),
+                    "final_twist_turns": final_twist,
+                    "objective": objective,
+                    "solver_status": "Solve_Succeeded",
+                    "success": True,
+                    "right_arm_start_node_index": int(round(right_arm_start / 0.02)),
+                    "warm_start_primal": np.full(20, right_arm_start),
+                    "warm_start_lam_x": np.full(20, 1.0),
+                    "warm_start_lam_g": np.full(10, 2.0),
+                },
+            )()
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.DirectMultipleShootingOptimizer.from_builder",
+        lambda *_args, **_kwargs: FakeDmsOptimizer(),
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app.optimization_mode_var = FakeVar("Optimize 3D")
+    app._auto_runner = FakeRunner()
+    app._current_values = lambda: {
+        "right_arm_start": 0.1,
+        "left_plane_initial": 0.0,
+        "left_plane_final": 0.0,
+        "right_plane_initial": 0.0,
+        "right_plane_final": 0.0,
+        "contact_twist_turns_per_second": -0.6,
+    }
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+        contact_twist_rate=-0.6 * 2.0 * np.pi,
+    )
+    app._schedule_scan_figure = lambda **kwargs: None
+    app._schedule_dms_jerk_diagnostic_figure = lambda **kwargs: None
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: None
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "optimize_2d__contact_twist_m0p6": {
+                        "signature": app._optimization_cache_signature_for_mode("Optimize 2D"),
+                        "values": {
+                            "right_arm_start": 0.80,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                            "contact_twist_turns_per_second": -0.6,
+                        },
+                        "final_twist_turns": -0.90,
+                        "solver_status": "Discrete_Sweep",
+                    }
+                },
+                "progress_records": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    app._optimize_strategy()
+
+    assert calls == [(0.60, None), (0.62, 0.60), (0.64, 0.60)]
 
 
 def test_schedule_dms_jerk_diagnostic_figure_can_recompute_missing_start_node_index() -> None:

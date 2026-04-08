@@ -132,6 +132,7 @@ DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.0
 DMS_SCAN_END = 0.7
+DMS_MULTISTART_OFFSET_FROM_2D = 0.2
 DMS_JERK_REGULARIZATION = DEFAULT_DMS_JERK_REGULARIZATION
 DMS_BTP_DEVIATION_WEIGHT = DEFAULT_DMS_BTP_DEVIATION_WEIGHT
 ARM_KINEMATICS_LABELS = (
@@ -172,6 +173,20 @@ def _optimization_mode_label(mode: str) -> str:
     """Return one short user-facing optimization label."""
 
     return "DMS" if mode == "Optimize DMS" else mode
+
+
+def _dms_result_is_better(candidate, reference) -> bool:
+    """Return whether one DMS result should be preferred over another."""
+
+    if reference is None:
+        return True
+    candidate_success = bool(getattr(candidate, "success", False))
+    reference_success = bool(getattr(reference, "success", False))
+    if candidate_success != reference_success:
+        return candidate_success
+    return float(getattr(candidate, "objective", float("inf"))) < float(
+        getattr(reference, "objective", float("inf"))
+    )
 
 
 def _legacy_cache_keys_for_mode(mode: str) -> tuple[str, ...]:
@@ -672,11 +687,12 @@ class BestTiltingPlaneApp:
         merged.setdefault("contact_twist_turns_per_second", self._current_contact_twist_turns_per_second())
         return merged
 
-    def _load_cached_optimized_values(self) -> dict[str, float] | None:
+    def _load_cached_optimized_values(self, *, mode: str | None = None) -> dict[str, float] | None:
         """Return cached optimized GUI values when the stored signature matches the current setup."""
 
         cache = self._read_optimization_cache_file()
-        record = self._matching_cache_record(cache["records"], mode=self.optimization_mode_var.get())
+        target_mode = self.optimization_mode_var.get() if mode is None else mode
+        record = self._matching_cache_record(cache["records"], mode=target_mode)
         if record is None:
             return None
         return self._normalized_cached_gui_values(record.get("values"))
@@ -753,6 +769,75 @@ class BestTiltingPlaneApp:
         if success_mask is not None:
             normalized["success_mask"] = np.asarray(success_mask, dtype=bool)
         return normalized
+
+    def _evaluate_two_d_sweep(
+        self,
+        *,
+        initial_guess: TwistOptimizationVariables,
+    ) -> tuple[object, object, dict[str, float]]:
+        """Run the current 2D discrete sweep and return its best result in GUI-friendly form."""
+
+        del initial_guess
+        optimizer = TwistStrategyOptimizer.from_builder(
+            self._model_path(),
+            configuration=self._standard_optimization_configuration(),
+        )
+        if hasattr(optimizer, "sweep_right_arm_start_only"):
+            sweep = optimizer.sweep_right_arm_start_only(
+                step=DMS_SHOOTING_STEP,
+            )
+            result = sweep.best_result
+        else:
+            fallback_start = float(self._current_values()["right_arm_start"])
+            result = optimizer.optimize_right_arm_start_only(
+                fallback_start,
+                max_iter=25,
+                print_level=5,
+                print_time=True,
+            )
+            objective_value = float(getattr(result, "objective", result.final_twist_turns))
+            sweep = SimpleNamespace(
+                start_times=np.array([result.variables.right_arm_start], dtype=float),
+                final_twist_turns=np.array([result.final_twist_turns], dtype=float),
+                objective_values=np.array([objective_value], dtype=float),
+                best_result=result,
+            )
+        return sweep, result, _gui_values_from_variables(result.variables)
+
+    def _dms_multistart_reference_start_time(
+        self,
+        *,
+        initial_guess: TwistOptimizationVariables,
+        candidate_start_times: np.ndarray,
+        use_cache: bool,
+        report,
+    ) -> float | None:
+        """Return the DMS node that should receive the dedicated multistart refinement."""
+
+        if candidate_start_times.size == 0:
+            return None
+
+        cached_two_d_values = self._load_cached_optimized_values(mode="Optimize 2D") if use_cache else None
+        if cached_two_d_values is not None:
+            best_two_d_start = float(cached_two_d_values["right_arm_start"])
+        else:
+            report("Preparation multistart 3D: balayage 2D de reference...")
+            two_d_sweep, two_d_result, two_d_values = self._evaluate_two_d_sweep(initial_guess=initial_guess)
+            best_two_d_start = float(two_d_result.variables.right_arm_start)
+            if use_cache:
+                self._store_cached_optimized_values(
+                    two_d_values,
+                    final_twist_turns=two_d_result.final_twist_turns,
+                    solver_status=two_d_result.solver_status,
+                    scan_start_times=np.asarray(two_d_sweep.start_times, dtype=float),
+                    scan_final_twist_turns=np.asarray(two_d_sweep.final_twist_turns, dtype=float),
+                    scan_objective_values=np.asarray(two_d_sweep.objective_values, dtype=float),
+                    mode="Optimize 2D",
+                )
+
+        requested_start = best_two_d_start - DMS_MULTISTART_OFFSET_FROM_2D
+        snapped_index = int(np.argmin(np.abs(candidate_start_times - requested_start)))
+        return float(candidate_start_times[snapped_index])
 
     def _rebuild_cached_dms_motion(
         self,
@@ -1220,14 +1305,16 @@ class BestTiltingPlaneApp:
         scan_start_times: np.ndarray | None = None,
         scan_final_twist_turns: np.ndarray | None = None,
         scan_objective_values: np.ndarray | None = None,
+        mode: str | None = None,
     ) -> None:
         """Persist optimized GUI values for reuse in later GUI sessions."""
 
         cache_path = self._optimization_cache_path()
         cache = self._read_optimization_cache_file()
+        target_mode = self.optimization_mode_var.get() if mode is None else mode
         stored_values = self._values_with_current_fixed_parameters(optimized_values)
         record = {
-            "signature": self._optimization_cache_signature(),
+            "signature": self._optimization_cache_signature_for_mode(target_mode),
             "values": {name: float(value) for name, value in stored_values.items()},
             "final_twist_turns": float(final_twist_turns),
             "solver_status": str(solver_status),
@@ -1240,8 +1327,9 @@ class BestTiltingPlaneApp:
             record["scan_start_times"] = np.asarray(scan_start_times, dtype=float).tolist()
             record["scan_final_twist_turns"] = np.asarray(scan_final_twist_turns, dtype=float).tolist()
             record["scan_objective_values"] = np.asarray(scan_objective_values, dtype=float).tolist()
-        cache["records"][self._optimization_cache_key()] = record
-        cache["progress_records"].pop(self._optimization_cache_key(), None)
+        cache_key = self._optimization_cache_key_for_mode(target_mode)
+        cache["records"][cache_key] = record
+        cache["progress_records"].pop(cache_key, None)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cache, indent=2, sort_keys=True), encoding="utf-8")
 
@@ -2277,10 +2365,12 @@ class BestTiltingPlaneApp:
         if isinstance(jerk_diagnostic, dict):
             self._schedule_dms_jerk_diagnostic_figure(**jerk_diagnostic)
 
+        apply_kwargs = {"status_suffix": outcome.get("status_suffix")}
+        if outcome.get("prescribed_motion") is not None:
+            apply_kwargs["prescribed_motion"] = outcome.get("prescribed_motion")
         self._apply_optimized_values(
             outcome["optimized_values"],
-            prescribed_motion=outcome.get("prescribed_motion"),
-            status_suffix=outcome.get("status_suffix"),
+            **apply_kwargs,
         )
 
     def _compute_optimization_outcome(
@@ -2363,6 +2453,13 @@ class BestTiltingPlaneApp:
             scan_success_mask: list[bool] = []
             previous_result = None
             best_result = None
+            best_warm_start_result = None
+            multistart_reference_time = self._dms_multistart_reference_start_time(
+                initial_guess=initial_guess,
+                candidate_start_times=candidate_start_times,
+                use_cache=use_cache,
+                report=report,
+            )
 
             if cached_progress is not None:
                 scan_start_times = list(cached_progress["start_times"])
@@ -2416,6 +2513,7 @@ class BestTiltingPlaneApp:
                             else np.asarray(cached_progress["last_warm_start_lam_g"], dtype=float)
                         ),
                     )
+                    best_warm_start_result = previous_result
 
             for index in range(start_index, len(candidate_start_times)):
                 current_start_time = float(candidate_start_times[index])
@@ -2423,13 +2521,17 @@ class BestTiltingPlaneApp:
                     f"{mode_label} en cours... t1={current_start_time:.2f} s "
                     f"({index + 1}/{len(candidate_start_times)})"
                 )
-                if np.isclose(current_start_time, MULTISTART_REFERENCE_T1) and hasattr(
-                    optimizer, "solve_fixed_start_multistart"
+                warm_start_seed = best_warm_start_result if best_warm_start_result is not None else previous_result
+                if (
+                    multistart_reference_time is not None
+                    and np.isclose(current_start_time, multistart_reference_time)
+                    and hasattr(optimizer, "solve_fixed_start_multistart")
                 ):
                     current_result = optimizer.solve_fixed_start_multistart(
                         initial_guess,
                         right_arm_start=current_start_time,
                         start_count=MULTISTART_START_COUNT,
+                        previous_result=warm_start_seed,
                         max_iter=50,
                         print_level=5,
                         print_time=True,
@@ -2439,7 +2541,7 @@ class BestTiltingPlaneApp:
                     current_result = optimizer.solve_fixed_start(
                         initial_guess,
                         right_arm_start=current_start_time,
-                        previous_result=previous_result,
+                        previous_result=warm_start_seed,
                         max_iter=50,
                         print_level=5,
                         print_time=True,
@@ -2451,12 +2553,13 @@ class BestTiltingPlaneApp:
                 scan_success_mask.append(bool(current_result.success))
                 previous_result = current_result
 
-                if best_result is None:
+                if _dms_result_is_better(current_result, best_result):
                     best_result = current_result
-                elif current_result.success and not best_result.success:
-                    best_result = current_result
-                elif current_result.success == best_result.success and current_result.objective < best_result.objective:
-                    best_result = current_result
+                if (
+                    getattr(current_result, "warm_start_primal", None) is not None
+                    and _dms_result_is_better(current_result, best_warm_start_result)
+                ):
+                    best_warm_start_result = current_result
 
                 optimized_values_checkpoint = _gui_values_from_variables(best_result.variables)
                 self._store_cached_dms_progress(
@@ -2471,18 +2574,18 @@ class BestTiltingPlaneApp:
                     last_completed_index=index,
                     last_warm_start_primal=(
                         None
-                        if getattr(current_result, "warm_start_primal", None) is None
-                        else np.asarray(current_result.warm_start_primal, dtype=float)
+                        if getattr(best_warm_start_result, "warm_start_primal", None) is None
+                        else np.asarray(best_warm_start_result.warm_start_primal, dtype=float)
                     ),
                     last_warm_start_lam_x=(
                         None
-                        if getattr(current_result, "warm_start_lam_x", None) is None
-                        else np.asarray(current_result.warm_start_lam_x, dtype=float)
+                        if getattr(best_warm_start_result, "warm_start_lam_x", None) is None
+                        else np.asarray(best_warm_start_result.warm_start_lam_x, dtype=float)
                     ),
                     last_warm_start_lam_g=(
                         None
-                        if getattr(current_result, "warm_start_lam_g", None) is None
-                        else np.asarray(current_result.warm_start_lam_g, dtype=float)
+                        if getattr(best_warm_start_result, "warm_start_lam_g", None) is None
+                        else np.asarray(best_warm_start_result.warm_start_lam_g, dtype=float)
                     ),
                     final_twist_turns=float(best_result.final_twist_turns),
                     solver_status=str(best_result.solver_status),
@@ -2491,6 +2594,8 @@ class BestTiltingPlaneApp:
             if best_result is None:
                 raise RuntimeError("No DMS candidate was evaluated.")
             result = best_result
+            if getattr(result, "simulation", None) is not None:
+                setattr(result.prescribed_motion, "_cached_simulation_result", result.simulation)
             optimized_values = _gui_values_from_variables(result.variables)
             scan_data = self._scan_data_from_lists(
                 start_times=scan_start_times,
@@ -2524,31 +2629,7 @@ class BestTiltingPlaneApp:
                 "jerk_diagnostic": {"optimizer": optimizer, "result": result},
             }
 
-        optimizer = TwistStrategyOptimizer.from_builder(
-            self._model_path(),
-            configuration=self._standard_optimization_configuration(),
-        )
-        if hasattr(optimizer, "sweep_right_arm_start_only"):
-            sweep = optimizer.sweep_right_arm_start_only(
-                step=DMS_SHOOTING_STEP,
-            )
-            result = sweep.best_result
-        else:
-            result = optimizer.optimize_right_arm_start_only(
-                initial_guess.right_arm_start,
-                max_iter=25,
-                print_level=5,
-                print_time=True,
-            )
-            objective_value = float(getattr(result, "objective", result.final_twist_turns))
-            sweep = SimpleNamespace(
-                start_times=np.array([result.variables.right_arm_start], dtype=float),
-                final_twist_turns=np.array([result.final_twist_turns], dtype=float),
-                objective_values=np.array([objective_value], dtype=float),
-                best_result=result,
-            )
-
-        optimized_values = _gui_values_from_variables(result.variables)
+        sweep, result, optimized_values = self._evaluate_two_d_sweep(initial_guess=initial_guess)
         self._store_cached_optimized_values(
             optimized_values,
             final_twist_turns=result.final_twist_turns,
@@ -2591,279 +2672,13 @@ class BestTiltingPlaneApp:
                     use_cache=use_cache,
                 )
                 return
-
-            initial_guess = _variables_from_gui(current_values)
-            mode_label = _optimization_mode_label(mode)
-
-            if _is_three_d_optimization_mode(mode) and use_cache:
-                cached_dms_solution = self._load_cached_dms_solution()
-                if cached_dms_solution is not None:
-                    cached_values, cached_motion, cached_final_twist_turns, cached_solver_status, cached_scan_data = (
-                        cached_dms_solution
-                    )
-                    if cached_scan_data is not None:
-                        self._schedule_scan_figure(
-                            start_times=cached_scan_data["start_times"],
-                            final_twist_turns=cached_scan_data["final_twist_turns"],
-                            objective_values=cached_scan_data["objective_values"],
-                            success_mask=cached_scan_data["success_mask"],
-                            best_start_time=cached_values["right_arm_start"],
-                        )
-                    self._apply_optimized_values(
-                        cached_values,
-                        prescribed_motion=cached_motion,
-                        status_suffix=(
-                            f"optimum {mode_label} charge depuis le cache: "
-                            f"{cached_final_twist_turns:.2f} tours ({cached_solver_status})"
-                        ),
-                    )
-                    return
-            elif not _is_three_d_optimization_mode(mode) and use_cache:
-                cached_values = self._load_cached_optimized_values()
-                if cached_values is not None:
-                    cached_scan_data = self._load_cached_optimized_scan_data()
-                    if cached_scan_data is not None:
-                        self._schedule_scan_figure(
-                            start_times=cached_scan_data["start_times"],
-                            final_twist_turns=cached_scan_data["final_twist_turns"],
-                            objective_values=cached_scan_data["objective_values"],
-                            best_start_time=cached_values["right_arm_start"],
-                        )
-                        self._show_embedded_scan_plot()
-                    self._apply_optimized_values(
-                        cached_values,
-                        status_suffix="optimum charge depuis le cache",
-                    )
-                    return
-
-            if _is_three_d_optimization_mode(mode):
-                optimizer = DirectMultipleShootingOptimizer.from_builder(
-                    self._model_path(),
-                    configuration=self._standard_optimization_configuration(),
-                    shooting_step=DMS_SHOOTING_STEP,
-                    jerk_regularization=DMS_JERK_REGULARIZATION,
-                    objective_mode=_three_d_objective_mode(mode),
-                    btp_deviation_weight=DMS_BTP_DEVIATION_WEIGHT,
-                )
-                candidate_start_times = np.asarray(optimizer.candidate_start_times(), dtype=float)
-                cached_progress = None if not use_cache else self._load_cached_dms_progress()
-                start_index = 0
-                scan_start_times: list[float] = []
-                scan_final_twist_turns: list[float] = []
-                scan_objective_values: list[float] = []
-                scan_success_mask: list[bool] = []
-                previous_result = None
-                best_result = None
-
-                if cached_progress is not None:
-                    scan_start_times = list(cached_progress["start_times"])
-                    scan_final_twist_turns = list(cached_progress["final_twist_turns"])
-                    scan_objective_values = list(cached_progress["objective_values"])
-                    scan_success_mask = list(cached_progress["success_mask"])
-                    start_index = len(scan_start_times)
-                    best_motion = self._rebuild_cached_dms_motion(
-                        cached_progress["optimized_values"],
-                        left_plane_jerk=cached_progress["left_plane_jerk"],
-                        right_plane_jerk=cached_progress["right_plane_jerk"],
-                    )
-                    cached_best_simulation = cached_progress.get("cached_simulation")
-                    if cached_best_simulation is not None:
-                        setattr(best_motion, "_cached_simulation_result", cached_best_simulation)
-                    if any(scan_success_mask):
-                        best_objective = min(
-                            objective
-                            for objective, success in zip(scan_objective_values, scan_success_mask, strict=False)
-                            if success
-                        )
-                        best_success = True
-                    else:
-                        best_objective = min(scan_objective_values)
-                        best_success = False
-                    best_result = SimpleNamespace(
-                        variables=_variables_from_gui(cached_progress["optimized_values"]),
-                        right_arm_start_node_index=int(
-                            round(float(cached_progress["optimized_values"]["right_arm_start"]) / DMS_SHOOTING_STEP)
-                        ),
-                        prescribed_motion=best_motion,
-                        simulation=cached_best_simulation,
-                        left_plane_jerk=np.asarray(cached_progress["left_plane_jerk"], dtype=float),
-                        right_plane_jerk=np.asarray(cached_progress["right_plane_jerk"], dtype=float),
-                        final_twist_turns=float(cached_progress["final_twist_turns_best"]),
-                        solver_status=str(cached_progress["solver_status_best"]),
-                        objective=float(best_objective),
-                        success=best_success,
-                    )
-                    if cached_progress["last_warm_start_primal"] is not None:
-                        previous_result = SimpleNamespace(
-                            warm_start_primal=np.asarray(cached_progress["last_warm_start_primal"], dtype=float),
-                            warm_start_lam_x=(
-                                None
-                                if cached_progress["last_warm_start_lam_x"] is None
-                                else np.asarray(cached_progress["last_warm_start_lam_x"], dtype=float)
-                            ),
-                            warm_start_lam_g=(
-                                None
-                                if cached_progress["last_warm_start_lam_g"] is None
-                                else np.asarray(cached_progress["last_warm_start_lam_g"], dtype=float)
-                            ),
-                        )
-
-                for index in range(start_index, len(candidate_start_times)):
-                    current_start_time = float(candidate_start_times[index])
-                    self.result_var.set(
-                        f"{mode_label} en cours... t1={current_start_time:.2f} s "
-                        f"({index + 1}/{len(candidate_start_times)})"
-                    )
-                    self.root.update_idletasks()
-                    if np.isclose(current_start_time, MULTISTART_REFERENCE_T1) and hasattr(
-                        optimizer, "solve_fixed_start_multistart"
-                    ):
-                        current_result = optimizer.solve_fixed_start_multistart(
-                            initial_guess,
-                            right_arm_start=current_start_time,
-                            start_count=MULTISTART_START_COUNT,
-                            max_iter=50,
-                            print_level=5,
-                            print_time=True,
-                            show_jerk_diagnostics=False,
-                        )
-                    else:
-                        current_result = optimizer.solve_fixed_start(
-                            initial_guess,
-                            right_arm_start=current_start_time,
-                            previous_result=previous_result,
-                            max_iter=50,
-                            print_level=5,
-                            print_time=True,
-                            show_jerk_diagnostics=False,
-                        )
-                    scan_start_times.append(current_start_time)
-                    scan_final_twist_turns.append(current_result.final_twist_turns)
-                    scan_objective_values.append(current_result.objective)
-                    scan_success_mask.append(bool(current_result.success))
-                    previous_result = current_result
-
-                    if best_result is None:
-                        best_result = current_result
-                    elif current_result.success and not best_result.success:
-                        best_result = current_result
-                    elif current_result.success == best_result.success and current_result.objective < best_result.objective:
-                        best_result = current_result
-
-                    optimized_values_checkpoint = _gui_values_from_variables(best_result.variables)
-                    self._store_cached_dms_progress(
-                        optimized_values_checkpoint,
-                        left_plane_jerk=np.asarray(best_result.left_plane_jerk, dtype=float),
-                        right_plane_jerk=np.asarray(best_result.right_plane_jerk, dtype=float),
-                        simulation_result=getattr(best_result, "simulation", None),
-                        scan_start_times=np.asarray(scan_start_times, dtype=float),
-                        scan_final_twist_turns=np.asarray(scan_final_twist_turns, dtype=float),
-                        scan_objective_values=np.asarray(scan_objective_values, dtype=float),
-                        scan_success_mask=np.asarray(scan_success_mask, dtype=bool),
-                        last_completed_index=index,
-                        last_warm_start_primal=(
-                            None
-                            if getattr(current_result, "warm_start_primal", None) is None
-                            else np.asarray(current_result.warm_start_primal, dtype=float)
-                        ),
-                        last_warm_start_lam_x=(
-                            None
-                            if getattr(current_result, "warm_start_lam_x", None) is None
-                            else np.asarray(current_result.warm_start_lam_x, dtype=float)
-                        ),
-                        last_warm_start_lam_g=(
-                            None
-                            if getattr(current_result, "warm_start_lam_g", None) is None
-                            else np.asarray(current_result.warm_start_lam_g, dtype=float)
-                        ),
-                        final_twist_turns=float(best_result.final_twist_turns),
-                        solver_status=str(best_result.solver_status),
-                    )
-
-                if best_result is None:
-                    raise RuntimeError("No DMS candidate was evaluated.")
-                result = best_result
-                optimized_values = _gui_values_from_variables(result.variables)
-                scan_data = self._scan_data_from_lists(
-                    start_times=scan_start_times,
-                    final_twist_turns=scan_final_twist_turns,
-                    objective_values=scan_objective_values,
-                    success_mask=scan_success_mask,
-                )
-                self._schedule_scan_figure(
-                    start_times=scan_data["start_times"],
-                    final_twist_turns=scan_data["final_twist_turns"],
-                    objective_values=scan_data["objective_values"],
-                    success_mask=scan_data["success_mask"],
-                    best_start_time=result.variables.right_arm_start,
-                )
-                self._schedule_dms_jerk_diagnostic_figure(optimizer=optimizer, result=result)
-                self._store_cached_dms_solution(
-                    optimized_values,
-                    left_plane_jerk=result.left_plane_jerk,
-                    right_plane_jerk=result.right_plane_jerk,
-                    simulation_result=getattr(result, "simulation", None),
-                    scan_start_times=scan_data["start_times"],
-                    scan_final_twist_turns=scan_data["final_twist_turns"],
-                    scan_objective_values=scan_data["objective_values"],
-                    scan_success_mask=scan_data["success_mask"],
-                    final_twist_turns=result.final_twist_turns,
-                    solver_status=result.solver_status,
-                )
-                self._apply_optimized_values(
-                    optimized_values,
-                    prescribed_motion=result.prescribed_motion,
-                    status_suffix=f"optimum {mode_label}: {result.final_twist_turns:.2f} tours ({result.solver_status})",
-                )
-                return
-
-            optimizer = TwistStrategyOptimizer.from_builder(
-                self._model_path(),
-                configuration=self._standard_optimization_configuration(),
+            outcome = self._compute_optimization_outcome(
+                current_values=current_values,
+                mode=mode,
+                use_cache=use_cache,
+                progress_callback=self._optimization_progress,
             )
-            if hasattr(optimizer, "sweep_right_arm_start_only"):
-                sweep = optimizer.sweep_right_arm_start_only(
-                    step=DMS_SHOOTING_STEP,
-                )
-                result = sweep.best_result
-            else:
-                result = optimizer.optimize_right_arm_start_only(
-                    initial_guess.right_arm_start,
-                    max_iter=25,
-                    print_level=5,
-                    print_time=True,
-                )
-                objective_value = float(getattr(result, "objective", result.final_twist_turns))
-                sweep = SimpleNamespace(
-                    start_times=np.array([result.variables.right_arm_start], dtype=float),
-                    final_twist_turns=np.array([result.final_twist_turns], dtype=float),
-                    objective_values=np.array([objective_value], dtype=float),
-                    best_result=result,
-                )
-
-            optimized_values = _gui_values_from_variables(result.variables)
-            self._schedule_scan_figure(
-                start_times=sweep.start_times,
-                final_twist_turns=sweep.final_twist_turns,
-                objective_values=sweep.objective_values,
-                best_start_time=result.variables.right_arm_start,
-            )
-            self._show_embedded_scan_plot()
-            self._store_cached_optimized_values(
-                optimized_values,
-                final_twist_turns=result.final_twist_turns,
-                solver_status=result.solver_status,
-                scan_start_times=sweep.start_times,
-                scan_final_twist_turns=sweep.final_twist_turns,
-                scan_objective_values=sweep.objective_values,
-            )
-            self._apply_optimized_values(
-                optimized_values,
-                status_suffix=(
-                    f"optimum balayage 1D: {result.final_twist_turns:.2f} tours "
-                    f"({result.solver_status})"
-                ),
-            )
+            self._handle_optimization_outcome(outcome)
         except Exception as error:
             traceback.print_exc()
             self.result_var.set(f"Erreur optimisation: {error}")

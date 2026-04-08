@@ -32,7 +32,7 @@ RIGHT_ARM_ACTIVE_DURATION = 0.3
 RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
 RIGHT_ARM_SWEEP_BOUNDS = (0.0, 0.7)
 MULTISTART_REFERENCE_T1 = 0.30
-MULTISTART_START_COUNT = 10
+MULTISTART_START_COUNT = 5
 OBJECTIVE_MODE_TWIST = "twist"
 OBJECTIVE_MODE_TWIST_BTP = "twist_btp"
 PLANE_STATE_SIZE = 3
@@ -42,6 +42,16 @@ DEFAULT_DMS_JERK_REGULARIZATION = 1e-9
 DEFAULT_DMS_BTP_DEVIATION_WEIGHT = 10.0
 START_TIME_TOLERANCE = 1e-9
 JERK_BOUND_SCALE = 2.0
+
+
+def _result_is_better(candidate, reference) -> bool:
+    """Return whether one DMS result should be preferred over another."""
+
+    if reference is None:
+        return True
+    if bool(candidate.success) != bool(reference.success):
+        return bool(candidate.success)
+    return float(candidate.objective) < float(reference.objective)
 
 
 @dataclass(frozen=True)
@@ -1153,6 +1163,7 @@ class DirectMultipleShootingOptimizer:
         *,
         right_arm_start: float,
         start_count: int = MULTISTART_START_COUNT,
+        previous_result: DirectMultipleShootingResult | None = None,
         max_iter: int = 100,
         print_level: int = 0,
         print_time: bool = False,
@@ -1164,6 +1175,7 @@ class DirectMultipleShootingOptimizer:
             return self.solve_fixed_start(
                 initial_guess,
                 right_arm_start=right_arm_start,
+                previous_result=previous_result,
                 max_iter=max_iter,
                 print_level=print_level,
                 print_time=print_time,
@@ -1175,6 +1187,7 @@ class DirectMultipleShootingOptimizer:
         best_result = self.solve_fixed_start(
             initial_guess,
             right_arm_start=right_arm_start,
+            previous_result=previous_result,
             max_iter=max_iter,
             print_level=print_level,
             print_time=print_time,
@@ -1245,6 +1258,7 @@ class DirectMultipleShootingOptimizer:
 
         candidate_results_list: list[DirectMultipleShootingResult] = []
         previous_result: DirectMultipleShootingResult | None = None
+        best_warm_start_result: DirectMultipleShootingResult | None = None
         candidate_start_times = np.asarray(self.candidate_start_times(), dtype=float)
         if candidate_start_times.size == 0:
             raise ValueError("No admissible second-arm start time is available for the DMS sweep.")
@@ -1252,13 +1266,15 @@ class DirectMultipleShootingOptimizer:
             current_result = self.solve_fixed_start(
                 initial_guess,
                 right_arm_start=float(start_time),
-                previous_result=previous_result,
+                previous_result=(best_warm_start_result if best_warm_start_result is not None else previous_result),
                 max_iter=max_iter,
                 print_level=print_level,
                 print_time=print_time,
             )
             candidate_results_list.append(current_result)
             previous_result = current_result
+            if current_result.warm_start_primal is not None and _result_is_better(current_result, best_warm_start_result):
+                best_warm_start_result = current_result
         candidate_results = tuple(candidate_results_list)
         successful_results = tuple(result for result in candidate_results if result.success)
         selection_pool = successful_results if successful_results else candidate_results

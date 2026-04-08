@@ -539,8 +539,8 @@ def test_direct_multiple_shooting_multistart_keeps_the_best_solution_for_one_fix
     assert warm_start_shapes[2] is not None
 
 
-def test_direct_multiple_shooting_sweep_warm_starts_each_node_with_previous_solution(tmp_path: Path) -> None:
-    """The discrete sweep should pass the previous node solution as warm start to the next solve."""
+def test_direct_multiple_shooting_sweep_keeps_the_best_previous_warm_start(tmp_path: Path) -> None:
+    """The discrete sweep should keep using the best previous solution as warm start."""
 
     optimizer = DirectMultipleShootingOptimizer.from_builder(
         tmp_path / "reduced.bioMod",
@@ -629,7 +629,7 @@ def test_direct_multiple_shooting_sweep_warm_starts_each_node_with_previous_solu
         )
     )
 
-    assert previous_inputs == [None, 0.10, 0.12]
+    assert previous_inputs == [None, 0.10, 0.10]
 
 
 def test_direct_multiple_shooting_fixed_start_passes_previous_primal_and_duals_to_ipopt(
