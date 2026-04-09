@@ -143,7 +143,7 @@ def test_twist_strategy_objective_returns_a_finite_value(tmp_path: Path) -> None
 
 
 def test_twist_strategy_objective_now_matches_the_final_twist_angle(tmp_path: Path) -> None:
-    """The minimization objective should directly equal the final twist angle."""
+    """The minimization objective should equal the final twist angle plus a small twist-rate term."""
 
     optimizer = TwistStrategyOptimizer.from_builder(
         tmp_path / "reduced.bioMod",
@@ -153,7 +153,11 @@ def test_twist_strategy_objective_now_matches_the_final_twist_angle(tmp_path: Pa
 
     objective, result = optimizer.evaluate(np.zeros(5))
 
-    assert objective == pytest.approx(result.final_twist_angle)
+    expected = result.final_twist_angle + optimizer.twist_rate_lagrange_weight * np.trapz(
+        np.asarray(result.qdot[:, 5], dtype=float),
+        np.asarray(result.time, dtype=float),
+    )
+    assert objective == pytest.approx(expected)
 
 
 def test_right_arm_start_only_optimizer_keeps_both_arm_planes_at_zero(

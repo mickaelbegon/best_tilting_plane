@@ -39,6 +39,7 @@ from best_tilting_plane.optimization import (
 from best_tilting_plane.optimization.dms import (
     DEFAULT_DMS_BTP_DEVIATION_WEIGHT,
     DEFAULT_DMS_JERK_REGULARIZATION,
+    DEFAULT_DMS_TWIST_RATE_LAGRANGE_WEIGHT,
     JERK_BOUND_SCALE,
     MULTISTART_START_COUNT,
     OBJECTIVE_MODE_TWIST,
@@ -46,6 +47,7 @@ from best_tilting_plane.optimization.dms import (
     RIGHT_ARM_START_BOUNDS,
     show_dms_jerk_bounds_figure,
 )
+from best_tilting_plane.optimization.ipopt import DEFAULT_TWIST_RATE_LAGRANGE_WEIGHT
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
     PiecewiseConstantJerkArmMotion,
@@ -134,6 +136,8 @@ DMS_SCAN_END = 0.7
 DMS_MULTISTART_OFFSET_FROM_2D = 0.2
 DMS_JERK_REGULARIZATION = DEFAULT_DMS_JERK_REGULARIZATION
 DMS_BTP_DEVIATION_WEIGHT = DEFAULT_DMS_BTP_DEVIATION_WEIGHT
+DMS_TWIST_RATE_LAGRANGE_WEIGHT = DEFAULT_DMS_TWIST_RATE_LAGRANGE_WEIGHT
+TWIST_RATE_LAGRANGE_WEIGHT = DEFAULT_TWIST_RATE_LAGRANGE_WEIGHT
 SCAN_SELECTION_MAX_NORMALIZED_DISTANCE = 0.08
 THREE_D_BTP_DISCONTINUITY_THRESHOLD = 0.35
 ARM_KINEMATICS_LABELS = (
@@ -616,11 +620,14 @@ class BestTiltingPlaneApp:
             signature["dms_scan_end"] = DMS_SCAN_END
             signature["dms_jerk_regularization"] = DMS_JERK_REGULARIZATION
             signature["dms_btp_deviation_weight"] = DMS_BTP_DEVIATION_WEIGHT
+            signature["dms_twist_rate_lagrange_weight"] = DMS_TWIST_RATE_LAGRANGE_WEIGHT
             signature["dms_objective_mode"] = _three_d_objective_mode(mode)
             signature["dms_start_bounds"] = [float(value) for value in RIGHT_ARM_START_BOUNDS]
             signature["dms_multistart_offset_from_2d"] = float(DMS_MULTISTART_OFFSET_FROM_2D)
             signature["dms_multistart_start_count"] = int(MULTISTART_START_COUNT)
             signature["dms_jerk_bound_scale"] = float(JERK_BOUND_SCALE)
+        else:
+            signature["twist_rate_lagrange_weight"] = TWIST_RATE_LAGRANGE_WEIGHT
         return signature
 
     def _read_optimization_cache_file(self) -> dict[str, object]:
@@ -660,6 +667,7 @@ class BestTiltingPlaneApp:
             normalized["mode"] = "optimize_3d"
         normalized.setdefault("dms_objective_mode", OBJECTIVE_MODE_TWIST)
         normalized.setdefault("dms_btp_deviation_weight", DMS_BTP_DEVIATION_WEIGHT)
+        normalized.setdefault("dms_twist_rate_lagrange_weight", DMS_TWIST_RATE_LAGRANGE_WEIGHT)
         normalized.setdefault("contact_twist_rate", 0.0)
         normalized["version"] = expected["version"]
         return normalized == expected
@@ -2897,6 +2905,7 @@ class BestTiltingPlaneApp:
                 jerk_regularization=DMS_JERK_REGULARIZATION,
                 objective_mode=_three_d_objective_mode(mode),
                 btp_deviation_weight=DMS_BTP_DEVIATION_WEIGHT,
+                twist_rate_lagrange_weight=DMS_TWIST_RATE_LAGRANGE_WEIGHT,
             )
             candidate_start_times = np.asarray(optimizer.candidate_start_times(), dtype=float)
             cached_progress = None if not use_cache else self._load_cached_dms_progress()

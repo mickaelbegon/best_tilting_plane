@@ -130,6 +130,7 @@ def test_direct_multiple_shooting_uses_a_very_small_default_jerk_regularization(
     )
 
     assert optimizer.jerk_regularization == 1e-9
+    assert optimizer.twist_rate_lagrange_weight == pytest.approx(1e-3)
 
 
 def test_direct_multiple_shooting_global_jerk_bounds_follow_the_active_windows(
@@ -299,6 +300,7 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     assert np.asarray(captured["lbg"], dtype=float).shape == (optimizer._constraint_count,)
     assert "DMS objective terms:" in stdout
     assert "twist=" in stdout
+    assert "twist_rate_lagrange=" in stdout
     assert "jerk_reg=" in stdout
     assert "ipopt_f=" in stdout
     assert len(jerk_figure_calls) == 1

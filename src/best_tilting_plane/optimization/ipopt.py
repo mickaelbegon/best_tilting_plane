@@ -29,6 +29,7 @@ RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
 LEFT_ARM_PLANE_BOUNDS = tuple(np.deg2rad(LEFT_ARM_PLANE_BOUNDS_DEG))
 RIGHT_ARM_PLANE_BOUNDS = tuple(np.deg2rad(RIGHT_ARM_PLANE_BOUNDS_DEG))
 SYMBOLIC_RK4_TOLERANCE = 1e-12
+DEFAULT_TWIST_RATE_LAGRANGE_WEIGHT = 1e-3
 
 
 @dataclass(frozen=True)
@@ -197,6 +198,7 @@ class TwistStrategyOptimizer:
         model_path: str | Path,
         *,
         configuration: SimulationConfiguration | None = None,
+        twist_rate_lagrange_weight: float = DEFAULT_TWIST_RATE_LAGRANGE_WEIGHT,
         model: biorbd.Model | None = None,
     ) -> None:
         """Store the reusable model and simulation settings."""
@@ -206,6 +208,7 @@ class TwistStrategyOptimizer:
             integrator="rk4",
             rk4_step=0.005,
         )
+        self.twist_rate_lagrange_weight = float(twist_rate_lagrange_weight)
         self.model = model if model is not None else biorbd.Model(self.model_path)
         self.symbolic_model = biorbd_ca.Model(self.model_path)
         self._cache: dict[tuple[float, ...], tuple[float, AerialSimulationResult]] = {}
@@ -309,7 +312,11 @@ class TwistStrategyOptimizer:
             model=self.model,
         )
         result = simulator.simulate()
-        objective = result.final_twist_angle
+        twist_rate_lagrange = float(
+            self.twist_rate_lagrange_weight
+            * np.trapz(np.asarray(result.qdot[:, 5], dtype=float), np.asarray(result.time, dtype=float))
+        )
+        objective = float(result.final_twist_angle + twist_rate_lagrange)
         self._cache[point] = (objective, result)
         return objective, result
 
@@ -541,19 +548,22 @@ class TwistStrategyOptimizer:
             raise ValueError("Unsupported symbolic decision-variable size.")
 
         state = self._symbolic_initial_state(full_variables)
+        twist_rate_integral = ca.MX(0.0)
         time = 0.0
         for _ in range(step_count):
             k1 = self._symbolic_dynamics(time, state, full_variables)
             k2 = self._symbolic_dynamics(time + 0.5 * step, state + 0.5 * step * k1, full_variables)
             k3 = self._symbolic_dynamics(time + 0.5 * step, state + 0.5 * step * k2, full_variables)
             k4 = self._symbolic_dynamics(time + step, state + step * k3, full_variables)
-            state = state + (step / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            next_state = state + (step / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+            twist_rate_integral += 0.5 * step * (state[11] + next_state[11])
+            state = next_state
             time += step
 
         objective_function = ca.Function(
             f"final_twist_symbolic_{size}d",
             [decision_variables],
-            [state[5]],
+            [state[5] + self.twist_rate_lagrange_weight * twist_rate_integral],
         )
         self._symbolic_objectives[size] = objective_function
         return objective_function

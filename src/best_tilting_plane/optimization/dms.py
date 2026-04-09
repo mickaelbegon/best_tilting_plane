@@ -40,6 +40,7 @@ ROOT_STATE_SIZE = 12
 ELEVATION_STAGE_BLOCK_SIZE = 18
 DEFAULT_DMS_JERK_REGULARIZATION = 1e-9
 DEFAULT_DMS_BTP_DEVIATION_WEIGHT = 10.0
+DEFAULT_DMS_TWIST_RATE_LAGRANGE_WEIGHT = 1e-3
 START_TIME_TOLERANCE = 1e-9
 JERK_BOUND_SCALE = 2.0
 
@@ -140,6 +141,7 @@ class DirectMultipleShootingOptimizer:
         jerk_regularization: float = DEFAULT_DMS_JERK_REGULARIZATION,
         objective_mode: str = OBJECTIVE_MODE_TWIST,
         btp_deviation_weight: float = DEFAULT_DMS_BTP_DEVIATION_WEIGHT,
+        twist_rate_lagrange_weight: float = DEFAULT_DMS_TWIST_RATE_LAGRANGE_WEIGHT,
         model: biorbd.Model | None = None,
     ) -> None:
         """Store the models and the direct multiple-shooting settings."""
@@ -150,10 +152,11 @@ class DirectMultipleShootingOptimizer:
         self.jerk_regularization = float(jerk_regularization)
         self.objective_mode = str(objective_mode)
         self.btp_deviation_weight = float(btp_deviation_weight)
+        self.twist_rate_lagrange_weight = float(twist_rate_lagrange_weight)
         self.model = model if model is not None else biorbd.Model(self.model_path)
         self.symbolic_model = biorbd_ca.Model(self.model_path)
         self._solver = None
-        self._solver_options_key: tuple[int, int, bool, str, float] | None = None
+        self._solver_options_key: tuple[int, int, bool, str, float, float] | None = None
         self._constraint_count = 0
         self._interval_parallelization = "serial"
         self._nlpsol_expand = True
@@ -169,6 +172,8 @@ class DirectMultipleShootingOptimizer:
             raise ValueError(f"Unsupported DMS objective mode '{self.objective_mode}'.")
         if self.btp_deviation_weight < 0.0:
             raise ValueError("The BTP deviation weight must be non-negative.")
+        if self.twist_rate_lagrange_weight < 0.0:
+            raise ValueError("The twist-rate Lagrange weight must be non-negative.")
 
         step_count = int(round(self.configuration.final_time / self.shooting_step))
         if abs(step_count * self.shooting_step - self.configuration.final_time) > 1e-12:
@@ -198,6 +203,7 @@ class DirectMultipleShootingOptimizer:
         jerk_regularization: float = DEFAULT_DMS_JERK_REGULARIZATION,
         objective_mode: str = OBJECTIVE_MODE_TWIST,
         btp_deviation_weight: float = DEFAULT_DMS_BTP_DEVIATION_WEIGHT,
+        twist_rate_lagrange_weight: float = DEFAULT_DMS_TWIST_RATE_LAGRANGE_WEIGHT,
     ) -> "DirectMultipleShootingOptimizer":
         """Generate the model file and build a DMS optimizer on top of it."""
 
@@ -210,6 +216,7 @@ class DirectMultipleShootingOptimizer:
             jerk_regularization=jerk_regularization,
             objective_mode=objective_mode,
             btp_deviation_weight=btp_deviation_weight,
+            twist_rate_lagrange_weight=twist_rate_lagrange_weight,
         )
 
     def _build_segment_index_by_name(self) -> dict[str, int]:
@@ -710,6 +717,7 @@ class DirectMultipleShootingOptimizer:
             bool(print_time),
             self.objective_mode,
             float(self.btp_deviation_weight),
+            float(self.twist_rate_lagrange_weight),
         )
         if self._solver is not None and self._solver_options_key == options_key:
             return self._solver
@@ -728,7 +736,13 @@ class DirectMultipleShootingOptimizer:
         left_control_symbols = ca.MX.sym("U_left", self.interval_count, 1)
         right_control_symbols = ca.MX.sym("U_right", self.interval_count, 1)
 
+        twist_rate_lagrange = ca.MX(0.0)
+        for interval_index in range(self.interval_count):
+            twist_rate_lagrange += 0.5 * (
+                root_state_symbols[interval_index][11] + root_state_symbols[interval_index + 1][11]
+            )
         objective = root_state_symbols[-1][5] / (2.0 * np.pi)
+        objective += self.twist_rate_lagrange_weight * self.shooting_step * twist_rate_lagrange
         objective += self.jerk_regularization * self.shooting_step * (
             ca.sumsqr(left_control_symbols) + ca.sumsqr(right_control_symbols)
         )
@@ -843,6 +857,19 @@ class DirectMultipleShootingOptimizer:
             )
             deviation_costs[interval_index] = left_deviation * left_deviation + right_deviation * right_deviation
         return float(self.btp_deviation_weight * self.shooting_step * np.sum(deviation_costs))
+
+    def _twist_rate_lagrange_from_state_nodes(
+        self,
+        *,
+        root_state_nodes: np.ndarray,
+    ) -> float:
+        """Return the small running twist-rate contribution added to the objective."""
+
+        twist_rate_series = np.asarray(root_state_nodes[11, :], dtype=float)
+        return float(
+            self.twist_rate_lagrange_weight
+            * np.trapz(twist_rate_series, np.asarray(self.node_times, dtype=float))
+        )
 
     @staticmethod
     def _project_initial_guess_to_bounds(
@@ -1014,6 +1041,9 @@ class DirectMultipleShootingOptimizer:
         right_control_global_values = raw_solution[offset : offset + self.interval_count]
         root_state_nodes = root_state_values.reshape(self.interval_count + 1, ROOT_STATE_SIZE).T
         twist_objective_value = float(root_state_nodes[5, -1] / (2.0 * np.pi))
+        twist_rate_lagrange_value = self._twist_rate_lagrange_from_state_nodes(
+            root_state_nodes=root_state_nodes
+        )
         jerk_regularization_value = float(
             self.jerk_regularization
             * self.shooting_step
@@ -1075,11 +1105,15 @@ class DirectMultipleShootingOptimizer:
             right_arm_start=right_arm_start,
         )
         total_objective_value = (
-            twist_objective_value + jerk_regularization_value + btp_deviation_lagrange_value
+            twist_objective_value
+            + twist_rate_lagrange_value
+            + jerk_regularization_value
+            + btp_deviation_lagrange_value
         )
         print(
             "DMS objective terms: "
             f"twist={twist_objective_value:.6f}, "
+            f"twist_rate_lagrange={twist_rate_lagrange_value:.6e}, "
             f"jerk_reg={jerk_regularization_value:.6e}, "
             f"btp_lagrange={btp_deviation_lagrange_value:.6e}, "
             f"total={total_objective_value:.6f}, "
