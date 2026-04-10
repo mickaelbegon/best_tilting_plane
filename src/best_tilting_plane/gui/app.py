@@ -2708,7 +2708,7 @@ class BestTiltingPlaneApp:
                             linewidth=linewidth,
                             linestyle=linestyle,
                             alpha=alpha,
-                            label=f"{curve_label} | {label_suffix}" if curve_index == 0 else None,
+                            label=f"{curve_label} | {label_suffix}",
                         )
                     if self.plot_y_var.get() == "Cinematique bras":
                         self._add_arm_kinematic_bounds_to_plot(colors)
@@ -2956,7 +2956,7 @@ class BestTiltingPlaneApp:
         if not payloads:
             self.result_var.set("Aucune solution disponible pour explorer la cinematique.")
             return
-        self._schedule_external_callback(lambda: self._show_kinematic_explorer_figure(payloads))
+        self._show_kinematic_explorer_figure(payloads)
 
     def _optimization_progress(self, message: str) -> None:
         """Update the optimization status line from the Tk thread."""

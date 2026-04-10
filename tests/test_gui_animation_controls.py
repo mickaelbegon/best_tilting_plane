@@ -484,13 +484,11 @@ def test_apply_optimized_values_can_rerun_with_a_custom_prescribed_motion() -> N
     ]
 
 
-def test_show_kinematic_explorer_schedules_external_figure_for_current_solution() -> None:
-    """The explorer button should schedule one external figure using the current displayed solution."""
+def test_show_kinematic_explorer_opens_external_figure_for_current_solution() -> None:
+    """The explorer button should open one external figure using the current displayed solution."""
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
-    scheduled: list[object] = []
     captured_payloads: list[list[dict[str, object]]] = []
-    app._schedule_external_callback = lambda callback: scheduled.append(callback)
     app._show_kinematic_explorer_figure = lambda payloads: captured_payloads.append(payloads)
     app._selected_scan_candidate_records = lambda: []
     app._values_with_current_fixed_parameters = lambda values: dict(values)
@@ -543,8 +541,6 @@ def test_show_kinematic_explorer_schedules_external_figure_for_current_solution(
 
     app._show_kinematic_explorer()
 
-    assert len(scheduled) == 1
-    scheduled[0]()
     assert len(captured_payloads) == 1
     assert captured_payloads[0][0]["label"] == "Courant | t1=0.10 s"
     assert len(captured_payloads[0][0]["dofs"]) == 4
@@ -763,6 +759,82 @@ def test_refresh_plot_overlays_two_selected_scan_conditions_with_solid_and_dashe
     assert len(app._plot_axis.plot_calls) == 2
     assert app._plot_axis.plot_calls[0]["linestyle"] == "-"
     assert app._plot_axis.plot_calls[1]["linestyle"] == "--"
+
+
+def test_refresh_plot_labels_all_arm_velocity_curves_for_selected_solution() -> None:
+    """Selected arm-velocity comparisons should keep one legend entry per DoF."""
+
+    simulation = AerialSimulationResult(
+        time=np.array([0.0, 0.2, 0.4]),
+        q=np.zeros((3, 10)),
+        qdot=np.zeros((3, 10)),
+        qddot=np.zeros((3, 10)),
+        integrator_method="rk4",
+        rk4_step=0.005,
+        integration_seconds=None,
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app._visualization_data = {"result": simulation}
+    app.plot_mode_var = FakeVar("Courbe")
+    app.plot_y_var = FakeVar("Vitesses bras")
+    app.plot_x_var = FakeVar("Temps")
+    app._plot_axis = FakePlotAxis()
+    app._plot_canvas = SimpleNamespace(draw_idle=lambda: None)
+    app._selected_scan_solutions = [("Optimize 3D", 0)]
+    app._scan_plot_datasets = lambda: [
+        {
+            "mode": "Optimize 3D",
+            "candidate_solutions": [
+                {
+                    "mode": "Optimize 3D",
+                    "values": {"right_arm_start": 0.24},
+                    "simulation": simulation,
+                }
+            ],
+        }
+    ]
+    app._plot_data = lambda: (
+        np.array([0.0, 0.2, 0.4]),
+        np.zeros((3, 4)),
+        "Temps (s)",
+        "Vitesses bras (deg/s)",
+        "Vitesses bras en fonction de temps",
+        (
+            "Plan bras gauche",
+            "Elevation bras gauche",
+            "Plan bras droit",
+            "Elevation bras droit",
+        ),
+    )
+    app._plot_data_for_result = lambda _result: (
+        np.array([0.0, 0.2, 0.4]),
+        np.array(
+            [
+                [1.0, 2.0, 3.0, 4.0],
+                [1.5, 2.5, 3.5, 4.5],
+                [2.0, 3.0, 4.0, 5.0],
+            ]
+        ),
+        "Temps (s)",
+        "Vitesses bras (deg/s)",
+        "Vitesses bras en fonction de temps",
+        (
+            "Plan bras gauche",
+            "Elevation bras gauche",
+            "Plan bras droit",
+            "Elevation bras droit",
+        ),
+    )
+
+    app._refresh_plot()
+
+    assert [call["label"] for call in app._plot_axis.plot_calls] == [
+        "Plan bras gauche | t1=0.24 s",
+        "Elevation bras gauche | t1=0.24 s",
+        "Plan bras droit | t1=0.24 s",
+        "Elevation bras droit | t1=0.24 s",
+    ]
 
 
 def test_prepare_standard_animation_scene_adds_light_gray_dashed_overlay_for_second_condition() -> None:
