@@ -51,12 +51,12 @@ from best_tilting_plane.optimization.dms import (
 from best_tilting_plane.optimization.ipopt import DEFAULT_TWIST_RATE_LAGRANGE_WEIGHT
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
+    build_piecewise_constant_jerk_arm_motion,
     PiecewiseConstantJerkArmMotion,
     PiecewiseConstantJerkTrajectory,
     PredictiveAerialTwistSimulator,
     SimulationConfiguration,
     TwistOptimizationVariables,
-    show_first_arm_piecewise_constant_comparison,
 )
 from best_tilting_plane.visualization import (
     SKELETON_CONNECTIONS,
@@ -65,6 +65,7 @@ from best_tilting_plane.visualization import (
     arm_top_view_trajectories,
     best_tilting_plane_corners,
     marker_trajectories,
+    present_external_figure,
     segment_frame_trajectories,
     system_observables,
 )
@@ -116,6 +117,7 @@ PLOT_Y_OPTIONS = (
 ROOT_INITIAL_OPTIONS = ("Avec q racine(0)=0", "Sans q racine(0)=0")
 TOP_VIEW_LEFT_CHAIN = ("shoulder_left", "elbow_left", "wrist_left", "hand_left")
 TOP_VIEW_RIGHT_CHAIN = ("shoulder_right", "elbow_right", "wrist_right", "hand_right")
+KINEMATIC_EXPLORER_COLUMN_LABELS = ("Jerk", "Acceleration", "Velocity", "Position")
 DEFAULT_CAMERA_ELEVATION_DEG = 20.0
 DEFAULT_CAMERA_AZIMUTH_DEG = -60.0
 BTP_CAMERA_ELEVATION_DEG = 22.0
@@ -406,8 +408,8 @@ class BestTiltingPlaneApp:
         )
         ttk.Button(
             controls,
-            text="Comparer jerk bras 1",
-            command=self._show_first_arm_jerk_comparison,
+            text="Explorer cinematique",
+            command=self._show_kinematic_explorer,
         ).grid(row=scan_row + 6, column=1, columnspan=2, sticky="ew", pady=(10, 0))
         self.ignore_optimization_cache_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
@@ -1068,11 +1070,7 @@ class BestTiltingPlaneApp:
                 traceback.print_exc()
                 self.result_var.set(f"Erreur figure externe: {error}")
 
-        after_idle = getattr(self.root, "after_idle", None)
-        if callable(after_idle):
-            after_idle(safe_callback)
-        else:
-            self.root.after(0, safe_callback)
+        self.root.after(1, safe_callback)
 
     def _schedule_scan_figure(
         self,
@@ -1238,9 +1236,7 @@ class BestTiltingPlaneApp:
         axis.set_title("Comparaison des scans d'optimisation")
         axis.grid(True, alpha=0.3)
         axis.legend(loc="best")
-        figure.canvas.draw_idle()
-        if "agg" not in plt.get_backend().lower():
-            plt.show(block=False)
+        BestTiltingPlaneApp._present_external_figure(figure)
 
     def _show_scan_figure(
         self,
@@ -2779,15 +2775,188 @@ class BestTiltingPlaneApp:
         if status_suffix is not None:
             self.result_var.set(f"{self.result_var.get()} | {status_suffix}")
 
-    def _show_first_arm_jerk_comparison(self) -> None:
-        """Open an external comparison window for the first-arm plane motion."""
+    @staticmethod
+    def _present_external_figure(figure) -> None:
+        """Force one external matplotlib figure to appear promptly without blocking Tk."""
+        present_external_figure(figure)
 
-        show_first_arm_piecewise_constant_comparison(
-            _variables_from_gui(self._current_values()),
+    def _kinematic_explorer_candidates(self) -> list[dict[str, object]]:
+        """Return the selected scan candidates, or the currently displayed solution if none is selected."""
+
+        selected_candidates = self._selected_scan_candidate_records()
+        if selected_candidates:
+            return selected_candidates[:2]
+        if self._last_simulation is None:
+            return []
+        return [
+            {
+                "mode": "Courant",
+                "values": self._values_with_current_fixed_parameters(self._current_values()),
+                "simulation": self._last_simulation,
+            }
+        ]
+
+    def _motion_for_kinematic_candidate(self, candidate: dict[str, object]) -> PiecewiseConstantJerkArmMotion:
+        """Return the jerk-driven arm motion associated with one explorer candidate."""
+
+        values = self._values_with_current_fixed_parameters(dict(candidate["values"]))
+        if "left_plane_jerk" in candidate and "right_plane_jerk" in candidate:
+            return self._rebuild_cached_dms_motion(
+                values,
+                left_plane_jerk=np.asarray(candidate["left_plane_jerk"], dtype=float),
+                right_plane_jerk=np.asarray(candidate["right_plane_jerk"], dtype=float),
+            )
+        return build_piecewise_constant_jerk_arm_motion(
+            _variables_from_gui(values),
             total_time=self._standard_optimization_configuration().final_time,
-            jerk_step=0.02,
-            sample_step=0.005,
+            step=0.02,
         )
+
+    def _kinematic_explorer_payloads(self) -> list[dict[str, object]]:
+        """Build plot-ready kinematic payloads for the selected solutions."""
+
+        payloads: list[dict[str, object]] = []
+        for selection_index, candidate in enumerate(self._kinematic_explorer_candidates(), start=1):
+            motion = self._motion_for_kinematic_candidate(candidate)
+            simulation = candidate.get("simulation")
+            if isinstance(simulation, AerialSimulationResult):
+                sample_times = np.asarray(simulation.time, dtype=float)
+            elif self._last_simulation is not None:
+                sample_times = np.asarray(self._last_simulation.time, dtype=float)
+            else:
+                final_time = float(self._standard_optimization_configuration().final_time)
+                sample_times = np.arange(0.0, final_time + 0.0025, 0.005, dtype=float)
+
+            trajectories = (
+                ("Plan bras gauche", motion.left_plane, 0.0),
+                ("Elevation bras gauche", motion.left_elevation, 0.0),
+                ("Plan bras droit", motion.right_plane, float(motion.right_arm_start)),
+                ("Elevation bras droit", motion.right_elevation, float(motion.right_arm_start)),
+            )
+            dof_payloads: list[dict[str, object]] = []
+            for name, trajectory, offset in trajectories:
+                global_starts = float(offset) + np.arange(trajectory.jerks.size, dtype=float) * float(trajectory.step)
+                global_step = float(trajectory.step)
+                q = np.asarray(trajectory.position(sample_times - float(offset)), dtype=float)
+                qdot = np.asarray(trajectory.velocity(sample_times - float(offset)), dtype=float)
+                qddot = np.asarray(trajectory.acceleration(sample_times - float(offset)), dtype=float)
+                bound = float(np.max(np.abs(np.asarray(trajectory.jerks, dtype=float)))) if trajectory.jerks.size else 0.0
+                dof_payloads.append(
+                    {
+                        "name": name,
+                        "jerk_times": global_starts,
+                        "jerk_values": np.asarray(trajectory.jerks, dtype=float),
+                        "jerk_step": global_step,
+                        "jerk_bound": bound,
+                        "time": sample_times,
+                        "q": q,
+                        "qdot": qdot,
+                        "qddot": qddot,
+                    }
+                )
+            mode_label = str(candidate.get("mode", f"Selection {selection_index}"))
+            start_time = float(candidate["values"]["right_arm_start"])
+            payloads.append(
+                {
+                    "label": f"{mode_label} | t1={start_time:.2f} s",
+                    "dofs": dof_payloads,
+                }
+            )
+        return payloads
+
+    def _show_kinematic_explorer_figure(self, payloads: list[dict[str, object]]) -> None:
+        """Open one external multi-panel figure comparing jerk-driven arm kinematics."""
+
+        import matplotlib.pyplot as plt
+
+        if not payloads:
+            raise ValueError("Aucune solution disponible pour l'exploration cinematique.")
+
+        figure, axes = plt.subplots(
+            4,
+            4,
+            sharex="col",
+            figsize=(16.0, 11.0),
+            tight_layout=True,
+        )
+        solution_colors = ("tab:blue", "tab:orange")
+        solution_styles = ("-", "--")
+
+        for column_index, column_label in enumerate(KINEMATIC_EXPLORER_COLUMN_LABELS):
+            axes[0, column_index].set_title(column_label)
+
+        for row_index, dof_name in enumerate(ARM_KINEMATICS_LABELS):
+            axes[row_index, 0].set_ylabel(f"{dof_name}\njerk")
+            axes[row_index, 1].set_ylabel("qddot")
+            axes[row_index, 2].set_ylabel("qdot")
+            axes[row_index, 3].set_ylabel("q")
+
+        legend_handles = []
+        legend_labels = []
+        for solution_index, payload in enumerate(payloads):
+            color = solution_colors[min(solution_index, len(solution_colors) - 1)]
+            linestyle = solution_styles[min(solution_index, len(solution_styles) - 1)]
+            for row_index, dof_payload in enumerate(payload["dofs"]):
+                jerk_axis, qddot_axis, qdot_axis, q_axis = axes[row_index]
+                jerk_times = np.asarray(dof_payload["jerk_times"], dtype=float)
+                jerk_values = np.asarray(dof_payload["jerk_values"], dtype=float)
+                if jerk_values.size:
+                    jerk_plot_times = np.append(jerk_times, jerk_times[-1] + float(dof_payload["jerk_step"]))
+                    jerk_plot_values = np.append(jerk_values, jerk_values[-1])
+                    jerk_axis.step(
+                        jerk_plot_times,
+                        jerk_plot_values,
+                        where="post",
+                        color=color,
+                        linestyle=linestyle,
+                        linewidth=1.8,
+                    )
+                    jerk_bound = float(dof_payload["jerk_bound"])
+                    jerk_axis.axhline(jerk_bound, color=color, linestyle=":", linewidth=1.0, alpha=0.35)
+                    jerk_axis.axhline(-jerk_bound, color=color, linestyle=":", linewidth=1.0, alpha=0.35)
+                qddot_axis.plot(
+                    dof_payload["time"],
+                    dof_payload["qddot"],
+                    color=color,
+                    linestyle=linestyle,
+                    linewidth=1.8,
+                )
+                qdot_axis.plot(
+                    dof_payload["time"],
+                    dof_payload["qdot"],
+                    color=color,
+                    linestyle=linestyle,
+                    linewidth=1.8,
+                )
+                line = q_axis.plot(
+                    dof_payload["time"],
+                    dof_payload["q"],
+                    color=color,
+                    linestyle=linestyle,
+                    linewidth=1.8,
+                )[0]
+                if row_index == 0:
+                    legend_handles.append(line)
+                    legend_labels.append(str(payload["label"]))
+
+        for axis_row in axes:
+            for axis in axis_row:
+                axis.grid(True, alpha=0.3)
+        for axis in axes[-1, :]:
+            axis.set_xlabel("Temps (s)")
+        figure.suptitle("Exploration cinematique des bras", fontsize=14)
+        if legend_handles:
+            figure.legend(legend_handles, legend_labels, loc="upper center", ncol=max(1, len(legend_handles)))
+        self._present_external_figure(figure)
+
+    def _show_kinematic_explorer(self) -> None:
+        """Open an external kinematic explorer for the selected or current solutions."""
+
+        payloads = self._kinematic_explorer_payloads()
+        if not payloads:
+            self.result_var.set("Aucune solution disponible pour explorer la cinematique.")
+            return
+        self._schedule_external_callback(lambda: self._show_kinematic_explorer_figure(payloads))
 
     def _optimization_progress(self, message: str) -> None:
         """Update the optimization status line from the Tk thread."""

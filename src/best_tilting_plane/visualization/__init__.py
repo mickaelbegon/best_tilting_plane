@@ -9,6 +9,7 @@ from .arm_deviation import (
 from .arm_top_view import ARM_TOP_VIEW_MARKERS, arm_top_view_trajectories
 from .btp import best_tilting_plane_axes, best_tilting_plane_corners, best_tilting_plane_normal
 from .dynamics import system_observables
+from .external_figure import present_external_figure
 from .frames import segment_frame_trajectories
 from .markers import SKELETON_CONNECTIONS, marker_trajectories
 
@@ -23,6 +24,7 @@ __all__ = [
     "best_tilting_plane_corners",
     "best_tilting_plane_normal",
     "marker_trajectories",
+    "present_external_figure",
     "system_observables",
     "segment_frame_trajectories",
     "signed_deviation_from_plane",

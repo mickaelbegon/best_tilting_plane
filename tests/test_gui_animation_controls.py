@@ -484,34 +484,70 @@ def test_apply_optimized_values_can_rerun_with_a_custom_prescribed_motion() -> N
     ]
 
 
-def test_show_first_arm_jerk_comparison_uses_external_helper(monkeypatch) -> None:
-    """The dedicated GUI button should open the external comparison window with the GUI values."""
-
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(
-        "best_tilting_plane.gui.app.show_first_arm_piecewise_constant_comparison",
-        lambda variables, **kwargs: captured.update({"variables": variables, "kwargs": kwargs}),
-    )
+def test_show_kinematic_explorer_schedules_external_figure_for_current_solution() -> None:
+    """The explorer button should schedule one external figure using the current displayed solution."""
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
-    app._current_values = lambda: {
-        "right_arm_start": 0.1,
-        "left_plane_initial": -15.0,
-        "left_plane_final": 5.0,
-        "right_plane_initial": 10.0,
-        "right_plane_final": 20.0,
-    }
+    scheduled: list[object] = []
+    captured_payloads: list[list[dict[str, object]]] = []
+    app._schedule_external_callback = lambda callback: scheduled.append(callback)
+    app._show_kinematic_explorer_figure = lambda payloads: captured_payloads.append(payloads)
+    app._selected_scan_candidate_records = lambda: []
+    app._values_with_current_fixed_parameters = lambda values: dict(values)
+    app._current_values = lambda: {"right_arm_start": 0.1}
+    app._last_simulation = AerialSimulationResult(
+        time=np.array([0.0, 0.5, 1.0]),
+        q=np.zeros((3, 10)),
+        qdot=np.zeros((3, 10)),
+        qddot=np.zeros((3, 10)),
+        integrator_method="rk4",
+        rk4_step=0.005,
+        integration_seconds=None,
+    )
     app._standard_optimization_configuration = lambda: SimulationConfiguration(
         final_time=1.0,
         integrator="rk4",
         rk4_step=0.005,
     )
+    app._motion_for_kinematic_candidate = lambda candidate: SimpleNamespace(
+        right_arm_start=float(candidate["values"]["right_arm_start"]),
+        left_plane=SimpleNamespace(
+            jerks=np.zeros(3),
+            step=0.02,
+            position=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+            velocity=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+            acceleration=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+        ),
+        left_elevation=SimpleNamespace(
+            jerks=np.zeros(3),
+            step=0.02,
+            position=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+            velocity=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+            acceleration=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+        ),
+        right_plane=SimpleNamespace(
+            jerks=np.zeros(3),
+            step=0.02,
+            position=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+            velocity=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+            acceleration=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+        ),
+        right_elevation=SimpleNamespace(
+            jerks=np.zeros(3),
+            step=0.02,
+            position=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+            velocity=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+            acceleration=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
+        ),
+    )
 
-    app._show_first_arm_jerk_comparison()
+    app._show_kinematic_explorer()
 
-    assert captured["variables"].right_arm_start == 0.1
-    assert captured["kwargs"] == {"total_time": 1.0, "jerk_step": 0.02, "sample_step": 0.005}
+    assert len(scheduled) == 1
+    scheduled[0]()
+    assert len(captured_payloads) == 1
+    assert captured_payloads[0][0]["label"] == "Courant | t1=0.10 s"
+    assert len(captured_payloads[0][0]["dofs"]) == 4
 
 
 def test_optimize_strategy_applies_optimized_values_and_reruns_animation(

@@ -26,6 +26,7 @@ from best_tilting_plane.simulation import (
     approximate_first_arm_elevation_motion,
     approximate_quintic_segment_with_piecewise_constant_jerk,
 )
+from best_tilting_plane.visualization.external_figure import present_external_figure
 
 LEFT_ARM_ACTIVE_DURATION = 0.3
 RIGHT_ARM_ACTIVE_DURATION = 0.3
@@ -1367,8 +1368,6 @@ def show_dms_start_time_sweep_figure(
 ):
     """Open an external figure summarizing the discrete sweep over the second-arm start time."""
 
-    import matplotlib.pyplot as plt
-
     figure, axis = create_dms_start_time_sweep_figure(
         start_times=start_times,
         final_twist_turns=final_twist_turns,
@@ -1376,8 +1375,7 @@ def show_dms_start_time_sweep_figure(
         success_mask=success_mask,
         best_start_time=best_start_time,
     )
-    figure.canvas.draw_idle()
-    plt.show(block=False)
+    present_external_figure(figure)
     return figure, axis
 
 
@@ -1441,8 +1439,6 @@ def show_dms_jerk_bounds_figure(
 ):
     """Open one external diagnostic figure right after one IPOPT solve."""
 
-    import matplotlib.pyplot as plt
-
     figure, axes = create_dms_jerk_bounds_figure(
         node_times=node_times,
         left_jerk=left_jerk,
@@ -1453,7 +1449,5 @@ def show_dms_jerk_bounds_figure(
         right_upper_bounds=right_upper_bounds,
         right_arm_start=right_arm_start,
     )
-    figure.canvas.draw_idle()
-    if "agg" not in plt.get_backend().lower():
-        plt.show(block=False)
+    present_external_figure(figure)
     return figure, axes

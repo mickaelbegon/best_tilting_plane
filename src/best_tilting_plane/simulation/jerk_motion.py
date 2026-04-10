@@ -12,6 +12,7 @@ from best_tilting_plane.simulation.arm_motion import (
     TwistOptimizationVariables,
 )
 from best_tilting_plane.trajectories import QuinticBoundaryTrajectory
+from best_tilting_plane.visualization.external_figure import present_external_figure
 
 DEFAULT_ARM_MOTION_DURATION = 0.3
 
@@ -521,8 +522,6 @@ def show_first_arm_piecewise_constant_comparison(
 ):
     """Open an external matplotlib window comparing the first-arm elevation kinematics."""
 
-    import matplotlib.pyplot as plt
-
     figure, axes, data = create_first_arm_piecewise_constant_comparison_figure(
         variables,
         total_time=total_time,
@@ -540,6 +539,5 @@ def show_first_arm_piecewise_constant_comparison(
         label="Jerk discretise",
     )
     jerk_axis.set_ylabel("Jerk (rad/s3)")
-    figure.canvas.draw_idle()
-    plt.show(block=False)
+    present_external_figure(figure)
     return figure, axes, data

@@ -24,6 +24,7 @@ from best_tilting_plane.simulation import (
     SimulationConfiguration,
     TwistOptimizationVariables,
 )
+from best_tilting_plane.visualization.external_figure import present_external_figure
 
 RIGHT_ARM_START_BOUNDS = (0.0, 0.7)
 LEFT_ARM_PLANE_BOUNDS = tuple(np.deg2rad(LEFT_ARM_PLANE_BOUNDS_DEG))
@@ -784,14 +785,11 @@ def show_right_arm_start_sweep_figure(
 ):
     """Open an external figure summarizing the discrete 1D sweep."""
 
-    import matplotlib.pyplot as plt
-
     figure, axis = create_right_arm_start_sweep_figure(
         start_times=start_times,
         final_twist_turns=final_twist_turns,
         objective_values=objective_values,
         best_start_time=best_start_time,
     )
-    figure.canvas.draw_idle()
-    plt.show(block=False)
+    present_external_figure(figure)
     return figure, axis
