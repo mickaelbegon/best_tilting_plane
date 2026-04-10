@@ -38,6 +38,11 @@ class _FakeAxis:
 
         self.plot_calls.append({"x": np.asarray(x), "y": np.asarray(y), "kwargs": dict(kwargs)})
 
+    def step(self, x, y, **kwargs) -> None:
+        """Record one stepped curve."""
+
+        self.plot_calls.append({"x": np.asarray(x), "y": np.asarray(y), "kwargs": dict(kwargs), "step": True})
+
     def axhline(self, y, **kwargs) -> None:
         """Record one horizontal bound."""
 
@@ -111,6 +116,14 @@ def _build_app_for_plotting(
                         [0.0, 0.0, 0.0, 0.7, 0.8, 0.9, -0.4, -6.0, 0.4, 6.0],
                         [0.0, 0.0, 0.0, 1.0, 1.1, 1.2, -0.2, -3.0, 0.2, 3.0],
                         [0.0, 0.0, 0.0, 1.3, 1.4, 1.5, 0.0, 0.0, 0.0, 0.0],
+                    ],
+                    dtype=float,
+                ),
+                "qddot": np.array(
+                    [
+                        [0.0, 0.0, 0.0, 1.7, 1.8, 1.9, -0.8, -12.0, 0.8, 12.0],
+                        [0.0, 0.0, 0.0, 2.0, 2.1, 2.2, -0.4, -6.0, 0.4, 6.0],
+                        [0.0, 0.0, 0.0, 2.3, 2.4, 2.5, 0.0, 0.0, 0.0, 0.0],
                     ],
                     dtype=float,
                 ),
@@ -270,6 +283,83 @@ def test_plot_data_can_return_the_four_arm_velocity_curves() -> None:
     assert x_label == "Temps (s)"
     assert y_label == "Vitesses bras (deg/s)"
     assert title == "Vitesses bras en fonction de temps"
+    assert curve_labels == (
+        "Plan bras gauche",
+        "Elevation bras gauche",
+        "Plan bras droit",
+        "Elevation bras droit",
+    )
+
+
+def test_plot_data_can_return_the_four_arm_acceleration_curves() -> None:
+    """The plot selector should expose the four arm DoF accelerations as one 4-curve figure."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Accelerations bras")
+
+    x_data, y_data, x_label, y_label, title, curve_labels = app._plot_data()
+
+    np.testing.assert_allclose(x_data, np.array([0.0, 0.5, 1.0]))
+    np.testing.assert_allclose(
+        y_data,
+        np.rad2deg(
+            np.array(
+                [
+                    [-0.8, -12.0, 0.8, 12.0],
+                    [-0.4, -6.0, 0.4, 6.0],
+                    [0.0, 0.0, 0.0, 0.0],
+                ]
+            )
+        ),
+    )
+    assert x_label == "Temps (s)"
+    assert y_label == "Accelerations bras (deg/s2)"
+    assert title == "Accelerations bras en fonction de temps"
+    assert curve_labels == (
+        "Plan bras gauche",
+        "Elevation bras gauche",
+        "Plan bras droit",
+        "Elevation bras droit",
+    )
+
+
+def test_plot_data_can_return_the_four_arm_jerk_curves() -> None:
+    """The plot selector should expose the four arm DoF jerks as one 4-curve figure."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Jerks bras")
+    app._last_simulation = app._visualization_data["result"]
+    app._current_values = lambda: {"right_arm_start": 0.2}
+    app._values_with_current_fixed_parameters = lambda values: dict(values)
+    app._motion_for_kinematic_candidate = lambda _candidate: type(
+        "FakeMotion",
+        (),
+        {
+            "left_arm_start": 0.2,
+            "right_arm_start": 0.0,
+            "left_plane": type("Trajectory", (), {"jerks": np.array([1.0, 2.0]), "step": 0.5, "control_duration": 1.0})(),
+            "left_elevation": type("Trajectory", (), {"jerks": np.array([3.0, 4.0]), "step": 0.5, "control_duration": 1.0})(),
+            "right_plane": type("Trajectory", (), {"jerks": np.array([5.0, 6.0]), "step": 0.5, "control_duration": 1.0})(),
+            "right_elevation": type("Trajectory", (), {"jerks": np.array([7.0, 8.0]), "step": 0.5, "control_duration": 1.0})(),
+        },
+    )()
+
+    x_data, y_data, x_label, y_label, title, curve_labels = app._plot_data()
+
+    np.testing.assert_allclose(x_data, np.array([0.0, 0.5, 1.0]))
+    np.testing.assert_allclose(
+        y_data,
+        np.rad2deg(
+            np.array(
+                [
+                    [0.0, 0.0, 5.0, 7.0],
+                    [1.0, 3.0, 6.0, 8.0],
+                    [2.0, 4.0, 6.0, 8.0],
+                ]
+            )
+        ),
+    )
+    assert x_label == "Temps (s)"
+    assert y_label == "Jerks bras (deg/s3)"
+    assert title == "Jerks bras en fonction de temps"
     assert curve_labels == (
         "Plan bras gauche",
         "Elevation bras gauche",
@@ -528,6 +618,38 @@ def test_refresh_plot_adds_arm_angle_bounds_when_plotting_arm_kinematics() -> No
         [call["y"] for call in app._plot_axis.axhline_calls],
         [-135.0, 20.0, -180.0, 0.0, -20.0, 135.0, 0.0, 180.0],
     )
+    assert app._plot_canvas.draw_idle_calls == 1
+
+
+def test_refresh_plot_adds_jerk_bounds_when_plotting_arm_jerks() -> None:
+    """The embedded jerk figure should display one jerk bound pair per arm DoF."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Jerks bras")
+    app._plot_axis = _FakeAxis()
+    app._plot_canvas = _FakeCanvas()
+    app._last_simulation = app._visualization_data["result"]
+    app._current_values = lambda: {"right_arm_start": 0.2}
+    app._values_with_current_fixed_parameters = lambda values: dict(values)
+    app._motion_for_kinematic_candidate = lambda _candidate: type(
+        "FakeMotion",
+        (),
+        {
+            "left_arm_start": 0.2,
+            "right_arm_start": 0.0,
+            "left_plane": type("Trajectory", (), {"jerks": np.array([1.0, 2.0]), "step": 0.5, "control_duration": 1.0})(),
+            "left_elevation": type("Trajectory", (), {"jerks": np.array([3.0, 4.0]), "step": 0.5, "control_duration": 1.0})(),
+            "right_plane": type("Trajectory", (), {"jerks": np.array([5.0, 6.0]), "step": 0.5, "control_duration": 1.0})(),
+            "right_elevation": type("Trajectory", (), {"jerks": np.array([7.0, 8.0]), "step": 0.5, "control_duration": 1.0})(),
+        },
+    )()
+
+    app._refresh_plot()
+
+    expected_bounds = sorted(
+        round(value, 6)
+        for value in np.rad2deg(np.array([-2.0, 2.0, -4.0, 4.0, -6.0, 6.0, -8.0, 8.0], dtype=float))
+    )
+    assert sorted(round(call["y"], 6) for call in app._plot_axis.axhline_calls) == expected_bounds
     assert app._plot_canvas.draw_idle_calls == 1
 
 

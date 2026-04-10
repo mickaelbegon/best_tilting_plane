@@ -205,6 +205,12 @@ class FakePlotAxis:
         self.plot_calls.append({"x": list(x), "y": list(y), **kwargs})
         return [None]
 
+    def step(self, x, y, **kwargs):
+        """Record a plotted stepped line."""
+
+        self.plot_calls.append({"x": list(x), "y": list(y), "step": True, **kwargs})
+        return [None]
+
     def set_xlabel(self, _value) -> None:
         """Mirror matplotlib."""
 

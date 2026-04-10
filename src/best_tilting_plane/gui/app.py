@@ -112,6 +112,8 @@ PLOT_Y_OPTIONS = (
     "Twist",
     "Cinematique bras",
     "Vitesses bras",
+    "Accelerations bras",
+    "Jerks bras",
     "Deviations bras",
     "Moment cinetique vrille segments",
 )
@@ -2231,6 +2233,84 @@ class BestTiltingPlaneApp:
             return np.asarray(self._visualization_data["display_qdot"][:, 6:10], dtype=float)
         return np.asarray(self._visualization_data["result"].qdot[:, 6:10], dtype=float)
 
+    def _arm_acceleration_series(self) -> np.ndarray:
+        """Return the four arm accelerations currently shown in the GUI."""
+
+        if self._visualization_data is None:
+            raise RuntimeError("No simulation available for plotting.")
+        return np.asarray(self._visualization_data["result"].qddot[:, 6:10], dtype=float)
+
+    def _trajectory_jerk_series(
+        self,
+        trajectory: PiecewiseConstantJerkTrajectory,
+        sample_times: np.ndarray,
+        *,
+        offset: float,
+    ) -> np.ndarray:
+        """Return one jerk profile sampled on the requested global times."""
+
+        sample_times = np.asarray(sample_times, dtype=float)
+        jerks = np.asarray(trajectory.jerks, dtype=float)
+        series = np.zeros_like(sample_times, dtype=float)
+        if jerks.size == 0:
+            return series
+
+        local_times = sample_times - float(offset)
+        valid_mask = (local_times >= 0.0) & (local_times < trajectory.control_duration)
+        if np.any(valid_mask):
+            interval_indices = np.floor(local_times[valid_mask] / float(trajectory.step)).astype(int)
+            interval_indices = np.clip(interval_indices, 0, jerks.size - 1)
+            series[valid_mask] = jerks[interval_indices]
+
+        terminal_mask = np.isclose(local_times, trajectory.control_duration)
+        if np.any(terminal_mask):
+            series[terminal_mask] = jerks[-1]
+        return series
+
+    def _current_arm_plot_candidate(self) -> dict[str, object]:
+        """Return the current GUI state as one plot candidate."""
+
+        if self._last_simulation is None:
+            raise RuntimeError("No simulation available for plotting.")
+        return {
+            "mode": "Courant",
+            "values": self._values_with_current_fixed_parameters(self._current_values()),
+            "simulation": self._last_simulation,
+        }
+
+    def _jerk_plot_data_for_candidate(
+        self,
+        candidate: dict[str, object],
+    ) -> tuple[np.ndarray, np.ndarray, tuple[tuple[str, ...], tuple[tuple[float, float], ...]]]:
+        """Return arm jerk curves and bounds for one current or selected solution."""
+
+        simulation = candidate.get("simulation")
+        if isinstance(simulation, AerialSimulationResult):
+            sample_times = np.asarray(simulation.time, dtype=float)
+        elif self._last_simulation is not None:
+            sample_times = np.asarray(self._last_simulation.time, dtype=float)
+        else:
+            final_time = float(self._standard_optimization_configuration().final_time)
+            sample_times = np.arange(0.0, final_time + 0.0025, 0.005, dtype=float)
+
+        motion = self._motion_for_kinematic_candidate(candidate)
+        trajectories = (
+            ("Plan bras gauche", motion.left_plane, float(getattr(motion, "left_arm_start", 0.0))),
+            ("Elevation bras gauche", motion.left_elevation, float(getattr(motion, "left_arm_start", 0.0))),
+            ("Plan bras droit", motion.right_plane, float(getattr(motion, "right_arm_start", 0.0))),
+            ("Elevation bras droit", motion.right_elevation, float(getattr(motion, "right_arm_start", 0.0))),
+        )
+        y_columns: list[np.ndarray] = []
+        bounds: list[tuple[float, float]] = []
+        labels: list[str] = []
+        for label, trajectory, offset in trajectories:
+            jerk_series = self._trajectory_jerk_series(trajectory, sample_times, offset=offset)
+            jerk_bound = float(np.max(np.abs(np.asarray(trajectory.jerks, dtype=float)))) if trajectory.jerks.size else 0.0
+            y_columns.append(np.rad2deg(jerk_series))
+            bounds.append(tuple(np.rad2deg(np.array([-jerk_bound, jerk_bound], dtype=float))))
+            labels.append(label)
+        return sample_times, np.column_stack(y_columns), (tuple(labels), tuple(bounds))
+
     def _twist_axis_angular_momentum_group_series(self) -> np.ndarray:
         """Return the z-axis angular momentum split between both arms and the rest of the body."""
 
@@ -2296,6 +2376,10 @@ class BestTiltingPlaneApp:
             y_data = np.rad2deg(display_qdot[:, 6:10])
             y_label = "Vitesses bras (deg/s)"
             curve_labels = ARM_KINEMATICS_LABELS
+        elif y_choice == "Accelerations bras":
+            y_data = np.rad2deg(np.asarray(result.qddot[:, 6:10], dtype=float))
+            y_label = "Accelerations bras (deg/s2)"
+            curve_labels = ARM_KINEMATICS_LABELS
         elif y_choice == "Deviations bras":
             model_path = self._last_model_path or Path(self._model_path())
             frame_trajectories = segment_frame_trajectories(model_path, display_q, ALL_FRAME_SEGMENTS)
@@ -2319,6 +2403,7 @@ class BestTiltingPlaneApp:
         if y_choice not in {
             "Cinematique bras",
             "Vitesses bras",
+            "Accelerations bras",
             "Deviations bras",
             "Moment cinetique vrille segments",
         }:
@@ -2521,10 +2606,14 @@ class BestTiltingPlaneApp:
         self._scan_axis.legend(loc="best")
         self._scan_canvas.draw_idle()
 
-    def _add_arm_kinematic_bounds_to_plot(self, colors: tuple[str, ...]) -> None:
-        """Overlay the validated arm-angle bounds on the current kinematics plot."""
+    def _add_per_curve_bounds_to_plot(
+        self,
+        bounds: tuple[tuple[float, float], ...],
+        colors: tuple[str, ...],
+    ) -> None:
+        """Overlay one lower/upper bound pair per curve on the current plot."""
 
-        for color, (lower_bound, upper_bound) in zip(colors, ARM_KINEMATICS_BOUNDS_DEG, strict=False):
+        for color, (lower_bound, upper_bound) in zip(colors, bounds, strict=False):
             self._plot_axis.axhline(
                 lower_bound,
                 color=color,
@@ -2539,6 +2628,11 @@ class BestTiltingPlaneApp:
                 linewidth=1.0,
                 alpha=0.35,
             )
+
+    def _add_arm_kinematic_bounds_to_plot(self, colors: tuple[str, ...]) -> None:
+        """Overlay the validated arm-angle bounds on the current kinematics plot."""
+
+        self._add_per_curve_bounds_to_plot(ARM_KINEMATICS_BOUNDS_DEG, colors)
 
     def _plot_data(
         self,
@@ -2579,6 +2673,16 @@ class BestTiltingPlaneApp:
             y_data = np.rad2deg(self._arm_velocity_series())
             y_label = "Vitesses bras (deg/s)"
             curve_labels = ARM_KINEMATICS_LABELS
+        elif y_choice == "Accelerations bras":
+            y_data = np.rad2deg(self._arm_acceleration_series())
+            y_label = "Accelerations bras (deg/s2)"
+            curve_labels = ARM_KINEMATICS_LABELS
+        elif y_choice == "Jerks bras":
+            current_candidate = self._current_arm_plot_candidate()
+            x_data, y_data, jerk_metadata = self._jerk_plot_data_for_candidate(current_candidate)
+            curve_labels = jerk_metadata[0]
+            y_label = "Jerks bras (deg/s3)"
+            x_label = "Temps (s)"
         elif y_choice == "Deviations bras":
             y_data = np.rad2deg(np.column_stack((deviations["left"], deviations["right"])))
             y_label = "Deviation bras / BTP (deg)"
@@ -2593,6 +2697,8 @@ class BestTiltingPlaneApp:
         if y_choice not in {
             "Cinematique bras",
             "Vitesses bras",
+            "Accelerations bras",
+            "Jerks bras",
             "Deviations bras",
             "Moment cinetique vrille segments",
         }:
@@ -2721,16 +2827,27 @@ class BestTiltingPlaneApp:
         aspect_setter = getattr(self._plot_axis, "set_aspect", None)
         if callable(aspect_setter):
             aspect_setter("auto")
+        y_choice = self.plot_y_var.get()
         if selected_candidates:
             styles = ("-", "--")
             widths = (2.2, 2.0)
             alphas = (1.0, 0.9)
             colors = ("tab:red", "tab:orange", "tab:blue", "tab:green")
             for selection_index, candidate in enumerate(selected_candidates):
-                simulation = candidate.get("simulation")
-                if not isinstance(simulation, AerialSimulationResult):
-                    continue
-                candidate_x, candidate_y, x_label, y_label, title, curve_labels = self._plot_data_for_result(simulation)
+                jerk_bounds: tuple[tuple[float, float], ...] = ()
+                if y_choice == "Jerks bras":
+                    candidate_x, candidate_y, jerk_metadata = self._jerk_plot_data_for_candidate(candidate)
+                    curve_labels, jerk_bounds = jerk_metadata
+                    x_label = "Temps (s)"
+                    y_label = "Jerks bras (deg/s3)"
+                    title = "Jerks bras en fonction de temps"
+                else:
+                    simulation = candidate.get("simulation")
+                    if not isinstance(simulation, AerialSimulationResult):
+                        continue
+                    candidate_x, candidate_y, x_label, y_label, title, curve_labels = self._plot_data_for_result(
+                        simulation
+                    )
                 linestyle = styles[min(selection_index, len(styles) - 1)]
                 linewidth = widths[min(selection_index, len(widths) - 1)]
                 alpha = alphas[min(selection_index, len(alphas) - 1)]
@@ -2739,7 +2856,8 @@ class BestTiltingPlaneApp:
                 )
                 if np.asarray(candidate_y).ndim == 2:
                     for curve_index, curve_label in enumerate(curve_labels or ()):
-                        self._plot_axis.plot(
+                        plot_method = self._plot_axis.step if y_choice == "Jerks bras" else self._plot_axis.plot
+                        plot_method(
                             candidate_x,
                             candidate_y[:, curve_index],
                             color=colors[curve_index % len(colors)],
@@ -2748,8 +2866,10 @@ class BestTiltingPlaneApp:
                             alpha=alpha,
                             label=f"{curve_label} | {label_suffix}",
                         )
-                    if self.plot_y_var.get() == "Cinematique bras":
+                    if selection_index == 0 and y_choice == "Cinematique bras":
                         self._add_arm_kinematic_bounds_to_plot(colors)
+                    elif selection_index == 0 and y_choice == "Jerks bras":
+                        self._add_per_curve_bounds_to_plot(jerk_bounds, colors)
                 else:
                     self._plot_axis.plot(
                         candidate_x,
@@ -2764,15 +2884,21 @@ class BestTiltingPlaneApp:
         elif np.asarray(y_data).ndim == 2:
             colors = ("tab:red", "tab:orange", "tab:blue", "tab:green")
             for curve_index, curve_label in enumerate(curve_labels or ()):
-                self._plot_axis.plot(
+                plot_method = self._plot_axis.step if y_choice == "Jerks bras" else self._plot_axis.plot
+                plot_method(
                     x_data,
                     y_data[:, curve_index],
                     color=colors[curve_index % len(colors)],
                     linewidth=2.0,
                     label=curve_label,
                 )
-            if self.plot_y_var.get() == "Cinematique bras":
+            if y_choice == "Cinematique bras":
                 self._add_arm_kinematic_bounds_to_plot(colors)
+            elif y_choice == "Jerks bras":
+                _candidate_x, _candidate_y, jerk_metadata = self._jerk_plot_data_for_candidate(
+                    self._current_arm_plot_candidate()
+                )
+                self._add_per_curve_bounds_to_plot(jerk_metadata[1], colors)
             self._plot_axis.legend(loc="best")
         else:
             self._plot_axis.plot(x_data, y_data, color="tab:blue", linewidth=2.0)
