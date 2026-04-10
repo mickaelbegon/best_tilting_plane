@@ -42,10 +42,10 @@ class ArmKinematics:
 class PrescribedArmMotion:
     """Generate prescribed left/right arm kinematics from the optimization variables.
 
-    The left arm always moves from 0.0 s to 0.3 s.
-    The right arm starts at the decision-variable time and lasts 0.3 s.
-    Elevation is imposed from -180 to 0 degrees on the left arm and from +180 to 0 degrees
-    on the right arm so that the sign convention matches the biomod.
+    The right arm always moves from 0.0 s to 0.3 s.
+    The left arm starts at the decision-variable time and lasts 0.3 s.
+    Elevation is imposed from +180 to 0 degrees on the right arm and from -180 to 0 degrees
+    on the left arm so that the sign convention matches the biomod.
     """
 
     def __init__(
@@ -65,7 +65,8 @@ class PrescribedArmMotion:
             raise ValueError("duration must be strictly positive.")
 
         self.variables = variables
-        self.left_start = left_start
+        self.left_start = float(variables.right_arm_start)
+        self.right_start = float(left_start)
         self.duration = duration
         self.left_elevation_initial = left_elevation_initial
         self.left_elevation_final = left_elevation_final
@@ -73,26 +74,26 @@ class PrescribedArmMotion:
         self.right_elevation_final = right_elevation_final
 
         self._left_plane = QuinticBoundaryTrajectory(
-            t0=left_start,
-            t1=left_start + duration,
+            t0=self.left_start,
+            t1=self.left_start + duration,
             q0=variables.left_plane_initial,
             q1=variables.left_plane_final,
         )
         self._left_elevation = QuinticBoundaryTrajectory(
-            t0=left_start,
-            t1=left_start + duration,
+            t0=self.left_start,
+            t1=self.left_start + duration,
             q0=left_elevation_initial,
             q1=left_elevation_final,
         )
         self._right_plane = QuinticBoundaryTrajectory(
-            t0=variables.right_arm_start,
-            t1=variables.right_arm_start + duration,
+            t0=self.right_start,
+            t1=self.right_start + duration,
             q0=variables.right_plane_initial,
             q1=variables.right_plane_final,
         )
         self._right_elevation = QuinticBoundaryTrajectory(
-            t0=variables.right_arm_start,
-            t1=variables.right_arm_start + duration,
+            t0=self.right_start,
+            t1=self.right_start + duration,
             q0=right_elevation_initial,
             q1=right_elevation_final,
         )
@@ -107,7 +108,7 @@ class PrescribedArmMotion:
     def right_end(self) -> float:
         """Return the end time of the right arm motion."""
 
-        return self.variables.right_arm_start + self.duration
+        return self.right_start + self.duration
 
     def left(self, time: float) -> ArmKinematics:
         """Return the left-arm kinematics at a given time."""

@@ -214,7 +214,8 @@ class PiecewiseConstantJerkArmMotion:
         left_plane: PiecewiseConstantJerkTrajectory,
         right_plane: PiecewiseConstantJerkTrajectory,
         *,
-        right_arm_start: float,
+        left_arm_start: float = 0.0,
+        right_arm_start: float = 0.0,
         left_elevation: PiecewiseConstantJerkTrajectory | None = None,
         right_elevation: PiecewiseConstantJerkTrajectory | None = None,
         left_elevation_initial: float = -np.pi,
@@ -227,6 +228,7 @@ class PiecewiseConstantJerkArmMotion:
 
         self.left_plane = left_plane
         self.right_plane = right_plane
+        self.left_arm_start = float(left_arm_start)
         self.right_arm_start = float(right_arm_start)
         self.duration = float(duration)
         self.left_elevation = (
@@ -257,16 +259,17 @@ class PiecewiseConstantJerkArmMotion:
     def left(self, time: float) -> ArmKinematics:
         """Return the left-arm kinematics at a given time."""
 
+        local_time = float(time) - self.left_arm_start
         return ArmKinematics(
             elevation_plane=ArmJointKinematics(
-                position=float(self.left_plane.position(time)),
-                velocity=float(self.left_plane.velocity(time)),
-                acceleration=float(self.left_plane.acceleration(time)),
+                position=float(self.left_plane.position(local_time)),
+                velocity=float(self.left_plane.velocity(local_time)),
+                acceleration=float(self.left_plane.acceleration(local_time)),
             ),
             elevation=ArmJointKinematics(
-                position=float(self.left_elevation.position(time)),
-                velocity=float(self.left_elevation.velocity(time)),
-                acceleration=float(self.left_elevation.acceleration(time)),
+                position=float(self.left_elevation.position(local_time)),
+                velocity=float(self.left_elevation.velocity(local_time)),
+                acceleration=float(self.left_elevation.acceleration(local_time)),
             ),
         )
 
@@ -297,9 +300,9 @@ def build_piecewise_constant_jerk_arm_motion(
 ) -> PiecewiseConstantJerkArmMotion:
     """Build the default jerk-driven left/right arm motion used across the project."""
 
-    right_total_time = max(float(step), float(total_time - variables.right_arm_start))
+    left_total_time = max(float(step), float(total_time - variables.right_arm_start))
     left_plane = approximate_quintic_segment_with_piecewise_constant_jerk(
-        total_time=total_time,
+        total_time=left_total_time,
         step=step,
         active_start=0.0,
         active_duration=duration,
@@ -307,7 +310,7 @@ def build_piecewise_constant_jerk_arm_motion(
         q1=variables.left_plane_final,
     )
     right_plane = approximate_quintic_segment_with_piecewise_constant_jerk(
-        total_time=right_total_time,
+        total_time=total_time,
         step=step,
         active_start=0.0,
         active_duration=duration,
@@ -315,7 +318,7 @@ def build_piecewise_constant_jerk_arm_motion(
         q1=variables.right_plane_final,
     )
     left_elevation = approximate_quintic_segment_with_piecewise_constant_jerk(
-        total_time=total_time,
+        total_time=left_total_time,
         step=step,
         active_start=0.0,
         active_duration=duration,
@@ -323,7 +326,7 @@ def build_piecewise_constant_jerk_arm_motion(
         q1=0.0,
     )
     right_elevation = approximate_quintic_segment_with_piecewise_constant_jerk(
-        total_time=right_total_time,
+        total_time=total_time,
         step=step,
         active_start=0.0,
         active_duration=duration,
@@ -335,7 +338,8 @@ def build_piecewise_constant_jerk_arm_motion(
         right_plane=right_plane,
         left_elevation=left_elevation,
         right_elevation=right_elevation,
-        right_arm_start=variables.right_arm_start,
+        left_arm_start=variables.right_arm_start,
+        right_arm_start=0.0,
         duration=duration,
     )
 
@@ -415,7 +419,7 @@ def approximate_first_arm_elevation_motion(
         step=step,
         active_start=0.0,
         active_duration=0.3,
-        q0=-np.pi,
+        q0=np.pi,
         q1=0.0,
     )
 
@@ -454,15 +458,15 @@ def first_arm_piecewise_constant_comparison_data(
     return {
         "time": samples,
         "reference_q": np.array(
-            [motion.left(float(sample)).elevation.position for sample in samples],
+            [motion.right(float(sample)).elevation.position for sample in samples],
             dtype=float,
         ),
         "reference_qdot": np.array(
-            [motion.left(float(sample)).elevation.velocity for sample in samples],
+            [motion.right(float(sample)).elevation.velocity for sample in samples],
             dtype=float,
         ),
         "reference_qddot": np.array(
-            [motion.left(float(sample)).elevation.acceleration for sample in samples],
+            [motion.right(float(sample)).elevation.acceleration for sample in samples],
             dtype=float,
         ),
         "approximate_q": approximation.position(samples),

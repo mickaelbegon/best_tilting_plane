@@ -1293,7 +1293,8 @@ def test_load_cached_dms_solution_rebuilds_the_prescribed_motion(tmp_path: Path)
     assert cached is not None
     values, motion, final_twist_turns, solver_status, scan_data = cached
     assert values["right_arm_start"] == 0.28
-    assert motion.right_arm_start == 0.28
+    assert motion.left_arm_start == 0.28
+    assert motion.right_arm_start == 0.0
     assert motion.left_plane.jerks.shape == (15,)
     assert motion.right_plane.jerks.shape == (15,)
     assert final_twist_turns == -0.63

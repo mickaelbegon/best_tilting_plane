@@ -37,6 +37,8 @@ def test_elevation_signs_raise_each_arm_outward_from_the_body(tmp_path: Path) ->
     shoulder_left = markers[marker_index["shoulder_left"]].to_array()
     shoulder_right = markers[marker_index["shoulder_right"]].to_array()
 
-    assert hand_left[0] > shoulder_left[0]
-    assert hand_right[0] < shoulder_right[0]
+    assert shoulder_right[0] > 0.0
+    assert shoulder_left[0] < 0.0
+    assert hand_left[0] < shoulder_left[0]
+    assert hand_right[0] > shoulder_right[0]
     np.testing.assert_allclose(hand_left[2], hand_right[2], atol=1e-10)

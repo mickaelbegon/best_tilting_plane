@@ -144,7 +144,15 @@ def _build_app_for_plotting(
                     [5.0, 12.0, 0.0],
                 ],
                 dtype=float,
-            )
+            ),
+            "angular_momentum_groups": np.array(
+                [
+                    [[1.0, 10.0, 100.0], [2.0, 20.0, 200.0], [3.0, 30.0, 300.0]],
+                    [[4.0, 40.0, 110.0], [5.0, 50.0, 210.0], [6.0, 60.0, 310.0]],
+                    [[7.0, 70.0, 120.0], [8.0, 80.0, 220.0], [9.0, 90.0, 320.0]],
+                ],
+                dtype=float,
+            ),
         },
         "frames": {
             "pelvis": {
@@ -294,6 +302,30 @@ def test_plot_data_can_group_both_arm_deviations_on_one_figure() -> None:
     assert y_label == "Deviation bras / BTP (deg)"
     assert title == "Deviations bras en fonction de temps"
     assert curve_labels == ("Bras gauche", "Bras droit")
+
+
+def test_plot_data_can_return_twist_axis_angular_momentum_transfers() -> None:
+    """The plot selector should expose the twist-axis angular momentum split by group."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Moment cinetique vrille segments")
+
+    x_data, y_data, x_label, y_label, title, curve_labels = app._plot_data()
+
+    np.testing.assert_allclose(x_data, np.array([0.0, 0.5, 1.0]))
+    np.testing.assert_allclose(
+        y_data,
+        np.array(
+            [
+                [100.0, 200.0, 300.0],
+                [110.0, 210.0, 310.0],
+                [120.0, 220.0, 320.0],
+            ]
+        ),
+    )
+    assert x_label == "Temps (s)"
+    assert y_label == "H axe vrille au CoM (kg.m2/s)"
+    assert title == "Moment cinetique vrille segments en fonction de temps"
+    assert curve_labels == ("Bras gauche", "Bras droit", "Reste du corps")
 
 
 def test_plot_data_can_use_twist_as_the_horizontal_axis() -> None:

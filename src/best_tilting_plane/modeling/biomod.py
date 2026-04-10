@@ -188,7 +188,7 @@ class ReducedAerialBiomod:
             ),
         ]
 
-        for side, sign in (("left", 1.0), ("right", -1.0)):
+        for side, sign in (("right", 1.0), ("left", -1.0)):
             shoulder_translation = (sign * dims.shoulder_half_width, 0.0, dims.trunk_length)
             hip_translation = (sign * dims.hip_half_width, 0.0, 0.0)
 
@@ -261,7 +261,7 @@ class ReducedAerialBiomod:
             ]
         )
 
-        for side, sign in (("left", 1.0), ("right", -1.0)):
+        for side, sign in (("right", 1.0), ("left", -1.0)):
             parts.extend(
                 [
                     _marker_block(

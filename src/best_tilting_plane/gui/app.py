@@ -84,7 +84,7 @@ class SliderDefinition:
 
 
 SLIDER_DEFINITIONS = (
-    SliderDefinition("right_arm_start", "Start bras droit (s)", 0.0, 0.7, 0.10, resolution=0.02),
+    SliderDefinition("right_arm_start", "Start bras gauche (s)", 0.0, 0.7, 0.10, resolution=0.02),
     SliderDefinition(
         "contact_twist_turns_per_second",
         "Vrille contact (tour/s)",
@@ -113,6 +113,7 @@ PLOT_Y_OPTIONS = (
     "Cinematique bras",
     "Vitesses bras",
     "Deviations bras",
+    "Moment cinetique vrille segments",
 )
 ROOT_INITIAL_OPTIONS = ("Avec q racine(0)=0", "Sans q racine(0)=0")
 TOP_VIEW_LEFT_CHAIN = ("shoulder_left", "elbow_left", "wrist_left", "hand_left")
@@ -130,7 +131,7 @@ ALL_FRAME_SEGMENTS = tuple(
 )
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
-OPTIMIZATION_CACHE_VERSION = 6
+OPTIMIZATION_CACHE_VERSION = 7
 DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.0
@@ -629,6 +630,8 @@ class BestTiltingPlaneApp:
             signature["dms_multistart_offset_from_2d"] = float(DMS_MULTISTART_OFFSET_FROM_2D)
             signature["dms_multistart_start_count"] = int(MULTISTART_START_COUNT)
             signature["dms_jerk_bound_scale"] = float(JERK_BOUND_SCALE)
+            signature["dms_first_arm"] = "right"
+            signature["dms_second_arm"] = "left"
         else:
             signature["twist_rate_lagrange_weight"] = TWIST_RATE_LAGRANGE_WEIGHT
         return signature
@@ -895,7 +898,7 @@ class BestTiltingPlaneApp:
             jerks=np.asarray(left_plane_jerk, dtype=float),
             active_start=0.0,
             active_end=DMS_ACTIVE_DURATION,
-            total_duration=configuration.final_time,
+            total_duration=configuration.final_time - right_arm_start,
         )
         right_plane = PiecewiseConstantJerkTrajectory(
             q0=float(np.deg2rad(optimized_values["right_plane_initial"])),
@@ -905,12 +908,13 @@ class BestTiltingPlaneApp:
             jerks=np.asarray(right_plane_jerk, dtype=float),
             active_start=0.0,
             active_end=DMS_ACTIVE_DURATION,
-            total_duration=configuration.final_time - right_arm_start,
+            total_duration=configuration.final_time,
         )
         return PiecewiseConstantJerkArmMotion(
             left_plane=left_plane,
             right_plane=right_plane,
-            right_arm_start=right_arm_start,
+            left_arm_start=right_arm_start,
+            right_arm_start=0.0,
         )
 
     def _cached_simulation_result_from_record(self, record: dict[str, object]) -> AerialSimulationResult | None:
@@ -1125,10 +1129,10 @@ class BestTiltingPlaneApp:
         )
         left_jerk = np.zeros(optimizer.interval_count, dtype=float)
         right_jerk = np.zeros(optimizer.interval_count, dtype=float)
-        left_jerk[: len(result.left_plane_jerk)] = np.asarray(result.left_plane_jerk, dtype=float)
-        right_start = int(right_start_node_index)
-        right_stop = right_start + len(result.right_plane_jerk)
-        right_jerk[right_start:right_stop] = np.asarray(result.right_plane_jerk, dtype=float)
+        left_start = int(right_start_node_index)
+        left_stop = left_start + len(result.left_plane_jerk)
+        left_jerk[left_start:left_stop] = np.asarray(result.left_plane_jerk, dtype=float)
+        right_jerk[: len(result.right_plane_jerk)] = np.asarray(result.right_plane_jerk, dtype=float)
         node_times = np.asarray(optimizer.node_times, dtype=float).copy()
         self._schedule_external_callback(
             lambda: show_dms_jerk_bounds_figure(
@@ -1232,7 +1236,7 @@ class BestTiltingPlaneApp:
             )
 
         axis.set_ylabel("Vrille finale (tours)")
-        axis.set_xlabel("Debut bras droit t1 (s)")
+        axis.set_xlabel("Debut bras gauche t1 (s)")
         axis.set_title("Comparaison des scans d'optimisation")
         axis.grid(True, alpha=0.3)
         axis.legend(loc="best")
@@ -1650,7 +1654,11 @@ class BestTiltingPlaneApp:
             display_q,
             ALL_FRAME_SEGMENTS,
         )
-        observables = system_observables(self._last_model_path, display_q, display_qdot)
+        observables = system_observables(
+            self._last_model_path,
+            np.asarray(result.q, dtype=float),
+            np.asarray(result.qdot, dtype=float),
+        )
         deviations = arm_deviation_from_frames(frame_trajectories, display_q[:, 3])
         btp_trajectories = arm_btp_reference_trajectories(trajectories, display_q[:, 3])
         return {
@@ -2223,6 +2231,13 @@ class BestTiltingPlaneApp:
             return np.asarray(self._visualization_data["display_qdot"][:, 6:10], dtype=float)
         return np.asarray(self._visualization_data["result"].qdot[:, 6:10], dtype=float)
 
+    def _twist_axis_angular_momentum_group_series(self) -> np.ndarray:
+        """Return the z-axis angular momentum split between both arms and the rest of the body."""
+
+        if self._visualization_data is None:
+            raise RuntimeError("No simulation available for plotting.")
+        return np.asarray(self._visualization_data["observables"]["angular_momentum_groups"][:, :, 2], dtype=float)
+
     def _selected_scan_candidate_records(self) -> list[dict[str, object]]:
         """Return the currently selected scan candidates, in selection order."""
 
@@ -2288,11 +2303,25 @@ class BestTiltingPlaneApp:
             y_data = np.rad2deg(np.column_stack((deviations["left"], deviations["right"])))
             y_label = "Deviation bras / BTP (deg)"
             curve_labels = ("Bras gauche", "Bras droit")
+        elif y_choice == "Moment cinetique vrille segments":
+            observables = system_observables(
+                self._last_model_path or Path(self._model_path()),
+                np.asarray(result.q, dtype=float),
+                np.asarray(result.qdot, dtype=float),
+            )
+            y_data = np.asarray(observables["angular_momentum_groups"][:, :, 2], dtype=float)
+            y_label = "H axe vrille au CoM (kg.m2/s)"
+            curve_labels = ("Bras gauche", "Bras droit", "Reste du corps")
         else:
             y_data = np.asarray(result.time, dtype=float)
             y_label = "Temps (s)"
             curve_labels = None
-        if y_choice not in {"Cinematique bras", "Vitesses bras", "Deviations bras"}:
+        if y_choice not in {
+            "Cinematique bras",
+            "Vitesses bras",
+            "Deviations bras",
+            "Moment cinetique vrille segments",
+        }:
             curve_labels = None
 
         title = f"{y_choice} en fonction de {self.plot_x_var.get().lower()}"
@@ -2412,7 +2441,7 @@ class BestTiltingPlaneApp:
 
         self._scan_axis.clear()
         datasets = self._scan_plot_datasets()
-        self._scan_axis.set_xlabel("Debut bras droit t1 (s)")
+        self._scan_axis.set_xlabel("Debut bras gauche t1 (s)")
         self._scan_axis.set_ylabel("Vrilles finales (tours)")
         self._scan_axis.set_title("Vrilles finales en fonction de t1")
         self._scan_axis.grid(True, alpha=0.3)
@@ -2554,10 +2583,19 @@ class BestTiltingPlaneApp:
             y_data = np.rad2deg(np.column_stack((deviations["left"], deviations["right"])))
             y_label = "Deviation bras / BTP (deg)"
             curve_labels = ("Bras gauche", "Bras droit")
+        elif y_choice == "Moment cinetique vrille segments":
+            y_data = self._twist_axis_angular_momentum_group_series()
+            y_label = "H axe vrille au CoM (kg.m2/s)"
+            curve_labels = ("Bras gauche", "Bras droit", "Reste du corps")
         else:
             y_data = np.rad2deg(self._root_series(result, 2))
             y_label = "Twist (deg)"
-        if y_choice not in {"Cinematique bras", "Vitesses bras", "Deviations bras"}:
+        if y_choice not in {
+            "Cinematique bras",
+            "Vitesses bras",
+            "Deviations bras",
+            "Moment cinetique vrille segments",
+        }:
             curve_labels = None
 
         title = f"{y_choice} en fonction de {self.plot_x_var.get().lower()}"
@@ -2828,10 +2866,18 @@ class BestTiltingPlaneApp:
                 sample_times = np.arange(0.0, final_time + 0.0025, 0.005, dtype=float)
 
             trajectories = (
-                ("Plan bras gauche", motion.left_plane, 0.0),
-                ("Elevation bras gauche", motion.left_elevation, 0.0),
-                ("Plan bras droit", motion.right_plane, float(motion.right_arm_start)),
-                ("Elevation bras droit", motion.right_elevation, float(motion.right_arm_start)),
+                (
+                    "Plan bras gauche",
+                    motion.left_plane,
+                    float(getattr(motion, "left_arm_start", float(candidate["values"]["right_arm_start"]))),
+                ),
+                (
+                    "Elevation bras gauche",
+                    motion.left_elevation,
+                    float(getattr(motion, "left_arm_start", float(candidate["values"]["right_arm_start"]))),
+                ),
+                ("Plan bras droit", motion.right_plane, float(getattr(motion, "right_arm_start", 0.0))),
+                ("Elevation bras droit", motion.right_elevation, float(getattr(motion, "right_arm_start", 0.0))),
             )
             dof_payloads: list[dict[str, object]] = []
             for name, trajectory, offset in trajectories:

@@ -13,6 +13,11 @@ def present_external_figure(figure) -> None:
     if "agg" in plt.get_backend().lower():
         return
 
+    try:
+        plt.ion()
+    except Exception:
+        pass
+
     if figure not in _OPEN_EXTERNAL_FIGURES:
         _OPEN_EXTERNAL_FIGURES.append(figure)
         canvas = getattr(figure, "canvas", None)
@@ -29,6 +34,13 @@ def present_external_figure(figure) -> None:
                 pass
 
     canvas = getattr(figure, "canvas", None)
+    manager = None if canvas is None else getattr(canvas, "manager", None)
+
+    try:
+        plt.figure(figure.number)
+    except Exception:
+        pass
+
     if canvas is not None:
         try:
             canvas.draw()
@@ -38,7 +50,6 @@ def present_external_figure(figure) -> None:
             except Exception:
                 pass
 
-    manager = None if canvas is None else getattr(canvas, "manager", None)
     try:
         if hasattr(figure, "show"):
             figure.show()
@@ -59,6 +70,10 @@ def present_external_figure(figure) -> None:
         except Exception:
             pass
         try:
+            manager_window.update_idletasks()
+        except Exception:
+            pass
+        try:
             manager_window.lift()
         except Exception:
             pass
@@ -66,10 +81,20 @@ def present_external_figure(figure) -> None:
             manager_window.focus_force()
         except Exception:
             pass
+        try:
+            manager_window.attributes("-topmost", True)
+            manager_window.attributes("-topmost", False)
+        except Exception:
+            pass
 
     if canvas is not None and hasattr(canvas, "flush_events"):
         try:
             canvas.flush_events()
+        except Exception:
+            pass
+    if canvas is not None and hasattr(canvas, "start_event_loop"):
+        try:
+            canvas.start_event_loop(0.001)
         except Exception:
             pass
     try:

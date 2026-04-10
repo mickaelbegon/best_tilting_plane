@@ -279,9 +279,9 @@ class DirectMultipleShootingOptimizer:
         left_trajectory, right_trajectory = self._fixed_elevation_trajectories(
             right_arm_start=right_arm_start
         )
-        left_q, left_qdot, left_qddot = left_trajectory.state(time)
-        right_local_time = max(0.0, float(time) - float(right_arm_start))
-        right_q, right_qdot, right_qddot = right_trajectory.state(right_local_time)
+        left_local_time = max(0.0, float(time) - float(right_arm_start))
+        left_q, left_qdot, left_qddot = left_trajectory.state(left_local_time)
+        right_q, right_qdot, right_qddot = right_trajectory.state(time)
         return (
             np.array([left_q, right_q], dtype=float),
             np.array([left_qdot, right_qdot], dtype=float),
@@ -301,7 +301,7 @@ class DirectMultipleShootingOptimizer:
             return cached
 
         left_trajectory = approximate_quintic_segment_with_piecewise_constant_jerk(
-            total_time=self.configuration.final_time,
+            total_time=self.configuration.final_time - float(right_arm_start),
             step=self.shooting_step,
             active_start=0.0,
             active_duration=LEFT_ARM_ACTIVE_DURATION,
@@ -309,7 +309,7 @@ class DirectMultipleShootingOptimizer:
             q1=0.0,
         )
         right_trajectory = approximate_quintic_segment_with_piecewise_constant_jerk(
-            total_time=self.configuration.final_time - float(right_arm_start),
+            total_time=self.configuration.final_time,
             step=self.shooting_step,
             active_start=0.0,
             active_duration=RIGHT_ARM_ACTIVE_DURATION,
@@ -693,14 +693,14 @@ class DirectMultipleShootingOptimizer:
 
         left_lower = np.zeros(self.interval_count, dtype=float)
         left_upper = np.zeros(self.interval_count, dtype=float)
-        left_lower[: self.active_control_count] = -self.jerk_bound
-        left_upper[: self.active_control_count] = self.jerk_bound
+        left_terminal_node_index = right_start_node_index + self.active_control_count
+        left_lower[right_start_node_index:left_terminal_node_index] = -self.jerk_bound
+        left_upper[right_start_node_index:left_terminal_node_index] = self.jerk_bound
 
         right_lower = np.zeros(self.interval_count, dtype=float)
         right_upper = np.zeros(self.interval_count, dtype=float)
-        right_terminal_node_index = right_start_node_index + self.active_control_count
-        right_lower[right_start_node_index:right_terminal_node_index] = -self.jerk_bound
-        right_upper[right_start_node_index:right_terminal_node_index] = self.jerk_bound
+        right_lower[: self.active_control_count] = -self.jerk_bound
+        right_upper[: self.active_control_count] = self.jerk_bound
         return left_lower, left_upper, right_lower, right_upper
 
     def _build_solver(
@@ -918,13 +918,13 @@ class DirectMultipleShootingOptimizer:
             contact_twist_rate=initial_guess.contact_twist_rate,
         )
         right_start_node_index = int(round(right_arm_start / self.shooting_step))
-        right_terminal_node_index = right_start_node_index + self.active_control_count
+        left_terminal_node_index = right_start_node_index + self.active_control_count
 
         initial_motion = self._initial_guess_motion(fixed_variables, right_arm_start=right_arm_start)
         initial_root_states = self._initial_guess_root_state_history(fixed_variables, initial_motion)
-        initial_left_states = self._plane_state_history(initial_motion.left_plane, self.node_times)
-        right_local_times = np.maximum(0.0, self.node_times - right_arm_start)
-        initial_right_states = self._plane_state_history(initial_motion.right_plane, right_local_times)
+        left_local_times = np.maximum(0.0, self.node_times - right_arm_start)
+        initial_left_states = self._plane_state_history(initial_motion.left_plane, left_local_times)
+        initial_right_states = self._plane_state_history(initial_motion.right_plane, self.node_times)
 
         initial_root_state = self._symbolic_initial_root_state(fixed_variables)
         initial_left_plane_state = self._plane_state_vector(fixed_variables.left_plane_initial)
@@ -954,7 +954,7 @@ class DirectMultipleShootingOptimizer:
             if state_index == 0:
                 lbx.extend(initial_left_plane_state.tolist())
                 ubx.extend(initial_left_plane_state.tolist())
-            elif state_index == self.active_control_count:
+            elif state_index == left_terminal_node_index:
                 lbx.extend(terminal_left_plane_state.tolist())
                 ubx.extend(terminal_left_plane_state.tolist())
             else:
@@ -967,7 +967,7 @@ class DirectMultipleShootingOptimizer:
             if state_index == 0:
                 lbx.extend(initial_right_plane_state.tolist())
                 ubx.extend(initial_right_plane_state.tolist())
-            elif state_index == right_terminal_node_index:
+            elif state_index == self.active_control_count:
                 lbx.extend(terminal_right_plane_state.tolist())
                 ubx.extend(terminal_right_plane_state.tolist())
             else:
@@ -976,8 +976,8 @@ class DirectMultipleShootingOptimizer:
 
         for control_index in range(self.interval_count):
             jerk_guess = (
-                initial_motion.left_plane.jerks[control_index]
-                if control_index < self.active_control_count
+                initial_motion.left_plane.jerks[control_index - right_start_node_index]
+                if right_start_node_index <= control_index < left_terminal_node_index
                 else 0.0
             )
             x0.append(float(jerk_guess))
@@ -985,9 +985,9 @@ class DirectMultipleShootingOptimizer:
             ubx.append(float(left_upper_bounds[control_index]))
 
         for control_index in range(self.interval_count):
-            active = right_start_node_index <= control_index < right_terminal_node_index
+            active = control_index < self.active_control_count
             jerk_guess = (
-                initial_motion.right_plane.jerks[control_index - right_start_node_index]
+                initial_motion.right_plane.jerks[control_index]
                 if active
                 else 0.0
             )
@@ -1062,10 +1062,10 @@ class DirectMultipleShootingOptimizer:
                 right_arm_start=right_arm_start,
             )
 
-        left_control_values = left_control_global_values[: self.active_control_count]
-        right_control_values = right_control_global_values[
+        left_control_values = left_control_global_values[
             right_start_node_index : right_start_node_index + self.active_control_count
         ]
+        right_control_values = right_control_global_values[: self.active_control_count]
         left_plane = PiecewiseConstantJerkTrajectory(
             q0=fixed_variables.left_plane_initial,
             qdot0=0.0,
@@ -1074,7 +1074,7 @@ class DirectMultipleShootingOptimizer:
             jerks=left_control_values,
             active_start=0.0,
             active_end=LEFT_ARM_ACTIVE_DURATION,
-            total_duration=self.configuration.final_time,
+            total_duration=self.configuration.final_time - right_arm_start,
         )
         right_plane = PiecewiseConstantJerkTrajectory(
             q0=fixed_variables.right_plane_initial,
@@ -1084,12 +1084,13 @@ class DirectMultipleShootingOptimizer:
             jerks=right_control_values,
             active_start=0.0,
             active_end=RIGHT_ARM_ACTIVE_DURATION,
-            total_duration=self.configuration.final_time - right_arm_start,
+            total_duration=self.configuration.final_time,
         )
         motion = PiecewiseConstantJerkArmMotion(
             left_plane=left_plane,
             right_plane=right_plane,
-            right_arm_start=right_arm_start,
+            left_arm_start=right_arm_start,
+            right_arm_start=0.0,
         )
         simulation = PredictiveAerialTwistSimulator(
             self.model_path,
@@ -1130,10 +1131,13 @@ class DirectMultipleShootingOptimizer:
             node_times=self.node_times.copy(),
             arm_node_times=self.arm_node_times.copy(),
             root_state_nodes=root_state_nodes,
-            left_plane_state_nodes=left_plane_global_states[:, : self.active_control_count + 1].copy(),
+            left_plane_state_nodes=left_plane_global_states[
+                :,
+                right_start_node_index : left_terminal_node_index + 1,
+            ].copy(),
             right_plane_state_nodes=right_plane_global_states[
                 :,
-                right_start_node_index : right_terminal_node_index + 1,
+                : self.active_control_count + 1,
             ].copy(),
             prescribed_motion=motion,
             simulation=simulation,
@@ -1174,10 +1178,13 @@ class DirectMultipleShootingOptimizer:
         )
         right_control_offset = left_control_offset + self.interval_count
 
-        left_slice = slice(left_control_offset, left_control_offset + self.active_control_count)
+        left_slice = slice(
+            left_control_offset + right_start_node_index,
+            left_control_offset + right_start_node_index + self.active_control_count,
+        )
         right_slice = slice(
-            right_control_offset + right_start_node_index,
-            right_control_offset + right_start_node_index + self.active_control_count,
+            right_control_offset,
+            right_control_offset + self.active_control_count,
         )
         perturbation_scale = 0.35 * self.jerk_bound
         randomized[left_slice] += generator.uniform(
@@ -1265,12 +1272,12 @@ class DirectMultipleShootingOptimizer:
                 node_times=best_result.node_times,
                 left_jerk=np.pad(
                     np.asarray(best_result.left_plane_jerk, dtype=float),
-                    (0, self.interval_count - best_result.left_plane_jerk.size),
+                    (right_start_node_index, self.interval_count - right_start_node_index - best_result.left_plane_jerk.size),
                     mode="constant",
                 ),
                 right_jerk=np.pad(
                     np.asarray(best_result.right_plane_jerk, dtype=float),
-                    (right_start_node_index, self.interval_count - right_start_node_index - best_result.right_plane_jerk.size),
+                    (0, self.interval_count - best_result.right_plane_jerk.size),
                     mode="constant",
                 ),
                 left_lower_bounds=self._global_jerk_bounds(right_start_node_index=right_start_node_index)[0],
@@ -1351,7 +1358,7 @@ def create_dms_start_time_sweep_figure(
         label="Meilleure solution",
     )
     axis.set_ylabel("Vrille finale (tours)")
-    axis.set_xlabel("Debut bras droit t1 (s)")
+    axis.set_xlabel("Debut bras gauche t1 (s)")
     axis.set_title("Balayage DMS sur les noeuds de t1")
     axis.grid(True, alpha=0.3)
     axis.legend(loc="best")

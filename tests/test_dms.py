@@ -53,14 +53,14 @@ def test_direct_multiple_shooting_initial_guess_motion_respects_activation_windo
     assert motion.left_plane.active_end == dms_module.LEFT_ARM_ACTIVE_DURATION
     assert motion.right_plane.active_start == 0.0
     assert motion.right_plane.active_end == dms_module.RIGHT_ARM_ACTIVE_DURATION
-    assert motion.left_plane.jerks.shape == (optimizer.interval_count,)
-    assert motion.right_plane.jerks.shape == (optimizer.interval_count - int(round(0.16 / optimizer.shooting_step)),)
+    assert motion.left_plane.jerks.shape == (optimizer.interval_count - int(round(0.16 / optimizer.shooting_step)),)
+    assert motion.right_plane.jerks.shape == (optimizer.interval_count,)
     np.testing.assert_allclose(motion.left_plane.jerks[optimizer.active_control_count :], 0.0)
     np.testing.assert_allclose(motion.right_plane.jerks[optimizer.active_control_count :], 0.0)
-    assert motion.left_plane.duration == optimizer.configuration.final_time
-    assert motion.right_plane.duration == pytest.approx(
+    assert motion.left_plane.duration == pytest.approx(
         optimizer.configuration.final_time - 0.16
     )
+    assert motion.right_plane.duration == optimizer.configuration.final_time
 
 
 def test_direct_multiple_shooting_jerk_bound_matches_left_elevation_fitting(
@@ -149,16 +149,16 @@ def test_direct_multiple_shooting_global_jerk_bounds_follow_the_active_windows(
         right_start_node_index=15
     )
 
-    np.testing.assert_allclose(left_lower[: optimizer.active_control_count], -optimizer.jerk_bound)
-    np.testing.assert_allclose(left_upper[: optimizer.active_control_count], optimizer.jerk_bound)
-    np.testing.assert_allclose(left_lower[optimizer.active_control_count :], 0.0)
-    np.testing.assert_allclose(left_upper[optimizer.active_control_count :], 0.0)
-    np.testing.assert_allclose(right_lower[:15], 0.0)
-    np.testing.assert_allclose(right_upper[:15], 0.0)
-    np.testing.assert_allclose(right_lower[15 : 15 + optimizer.active_control_count], -optimizer.jerk_bound)
-    np.testing.assert_allclose(right_upper[15 : 15 + optimizer.active_control_count], optimizer.jerk_bound)
-    np.testing.assert_allclose(right_lower[15 + optimizer.active_control_count :], 0.0)
-    np.testing.assert_allclose(right_upper[15 + optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(left_lower[:15], 0.0)
+    np.testing.assert_allclose(left_upper[:15], 0.0)
+    np.testing.assert_allclose(left_lower[15 : 15 + optimizer.active_control_count], -optimizer.jerk_bound)
+    np.testing.assert_allclose(left_upper[15 : 15 + optimizer.active_control_count], optimizer.jerk_bound)
+    np.testing.assert_allclose(left_lower[15 + optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(left_upper[15 + optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(right_lower[: optimizer.active_control_count], -optimizer.jerk_bound)
+    np.testing.assert_allclose(right_upper[: optimizer.active_control_count], optimizer.jerk_bound)
+    np.testing.assert_allclose(right_lower[optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(right_upper[optimizer.active_control_count :], 0.0)
 
 
 def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_returns_motion(
@@ -286,7 +286,8 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     assert result.right_plane_jerk.shape == (optimizer.active_control_count,)
     assert result.left_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)
     assert result.right_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)
-    assert result.prescribed_motion.right_arm_start == initial_guess.right_arm_start
+    assert result.prescribed_motion.left_arm_start == initial_guess.right_arm_start
+    assert result.prescribed_motion.right_arm_start == 0.0
     assert result.objective == -0.5
     assert configured_threads == [6]
     assert captured["options"]["ipopt.max_iter"] == 3
@@ -323,18 +324,35 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     left_control_upper_bounds = all_upper_bounds[-2 * control_block_size : -control_block_size]
     right_control_lower_bounds = all_lower_bounds[-control_block_size:]
     right_control_upper_bounds = all_upper_bounds[-control_block_size:]
-    np.testing.assert_allclose(left_control_lower_bounds[: optimizer.active_control_count], -optimizer.jerk_bound)
-    np.testing.assert_allclose(left_control_upper_bounds[: optimizer.active_control_count], optimizer.jerk_bound)
-    np.testing.assert_allclose(left_control_lower_bounds[optimizer.active_control_count :], 0.0)
-    np.testing.assert_allclose(left_control_upper_bounds[optimizer.active_control_count :], 0.0)
+    left_start_index = int(round(initial_guess.right_arm_start / optimizer.shooting_step))
+    np.testing.assert_allclose(left_control_lower_bounds[:left_start_index], 0.0)
+    np.testing.assert_allclose(left_control_upper_bounds[:left_start_index], 0.0)
     np.testing.assert_allclose(
-        right_control_lower_bounds[: int(round(initial_guess.right_arm_start / optimizer.shooting_step))],
+        left_control_lower_bounds[left_start_index : left_start_index + optimizer.active_control_count],
+        -optimizer.jerk_bound,
+    )
+    np.testing.assert_allclose(
+        left_control_upper_bounds[left_start_index : left_start_index + optimizer.active_control_count],
+        optimizer.jerk_bound,
+    )
+    np.testing.assert_allclose(
+        left_control_lower_bounds[left_start_index + optimizer.active_control_count :],
         0.0,
     )
     np.testing.assert_allclose(
-        right_control_upper_bounds[: int(round(initial_guess.right_arm_start / optimizer.shooting_step))],
+        left_control_upper_bounds[left_start_index + optimizer.active_control_count :],
         0.0,
     )
+    np.testing.assert_allclose(
+        right_control_lower_bounds[: optimizer.active_control_count],
+        -optimizer.jerk_bound,
+    )
+    np.testing.assert_allclose(
+        right_control_upper_bounds[: optimizer.active_control_count],
+        optimizer.jerk_bound,
+    )
+    np.testing.assert_allclose(right_control_lower_bounds[optimizer.active_control_count :], 0.0)
+    np.testing.assert_allclose(right_control_upper_bounds[optimizer.active_control_count :], 0.0)
 
 
 def test_direct_multiple_shooting_sweep_keeps_the_best_successful_candidate(tmp_path: Path) -> None:

@@ -398,8 +398,8 @@ class TwistStrategyOptimizer:
         """Return symbolic prescribed arm kinematics."""
 
         duration = 0.3
-        left_start = 0.0
-        right_start = variables[0]
+        left_start = variables[0]
+        right_start = 0.0
         left_end = left_start + duration
         right_end = right_start + duration
 
@@ -769,7 +769,7 @@ def create_right_arm_start_sweep_figure(
         label="Meilleure solution",
     )
     axis.set_ylabel("Vrille finale (tours)")
-    axis.set_xlabel("Debut bras droit t1 (s)")
+    axis.set_xlabel("Debut bras gauche t1 (s)")
     axis.set_title("Balayage 1D sur les noeuds de t1")
     axis.grid(True, alpha=0.3)
     axis.legend(loc="best")
