@@ -192,7 +192,7 @@ def optimize_black_box_ipopt(
 
 
 class TwistStrategyOptimizer:
-    """Optimize the arm strategy that minimizes the final number of twists."""
+    """Optimize the arm strategy that maximizes the final number of twists."""
 
     def __init__(
         self,
@@ -317,12 +317,12 @@ class TwistStrategyOptimizer:
             self.twist_rate_lagrange_weight
             * np.trapz(np.asarray(result.qdot[:, 5], dtype=float), np.asarray(result.time, dtype=float))
         )
-        objective = float(result.final_twist_angle + twist_rate_lagrange)
+        objective = float(-(result.final_twist_angle + twist_rate_lagrange))
         self._cache[point] = (objective, result)
         return objective, result
 
     def objective(self, vector: np.ndarray) -> float:
-        """Return the IPOPT scalar objective, i.e. the final twist angle."""
+        """Return the IPOPT scalar objective, i.e. the negative twist-maximization cost."""
 
         return self.evaluate(vector)[0]
 
@@ -564,7 +564,7 @@ class TwistStrategyOptimizer:
         objective_function = ca.Function(
             f"final_twist_symbolic_{size}d",
             [decision_variables],
-            [state[5] + self.twist_rate_lagrange_weight * twist_rate_integral],
+            [-(state[5] + self.twist_rate_lagrange_weight * twist_rate_integral)],
         )
         self._symbolic_objectives[size] = objective_function
         return objective_function
@@ -769,7 +769,7 @@ def create_right_arm_start_sweep_figure(
         label="Meilleure solution",
     )
     axis.set_ylabel("Vrille finale (tours)")
-    axis.set_xlabel("Debut bras gauche t1 (s)")
+    axis.set_xlabel("Debut bras droit t1 (s)")
     axis.set_title("Balayage 1D sur les noeuds de t1")
     axis.grid(True, alpha=0.3)
     axis.legend(loc="best")

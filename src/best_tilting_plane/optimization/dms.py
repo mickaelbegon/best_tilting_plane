@@ -742,8 +742,8 @@ class DirectMultipleShootingOptimizer:
             twist_rate_lagrange += 0.5 * (
                 root_state_symbols[interval_index][11] + root_state_symbols[interval_index + 1][11]
             )
-        objective = root_state_symbols[-1][5] / (2.0 * np.pi)
-        objective += self.twist_rate_lagrange_weight * self.shooting_step * twist_rate_lagrange
+        objective = -(root_state_symbols[-1][5] / (2.0 * np.pi))
+        objective -= self.twist_rate_lagrange_weight * self.shooting_step * twist_rate_lagrange
         objective += self.jerk_regularization * self.shooting_step * (
             ca.sumsqr(left_control_symbols) + ca.sumsqr(right_control_symbols)
         )
@@ -868,7 +868,7 @@ class DirectMultipleShootingOptimizer:
 
         twist_rate_series = np.asarray(root_state_nodes[11, :], dtype=float)
         return float(
-            self.twist_rate_lagrange_weight
+            -self.twist_rate_lagrange_weight
             * np.trapz(twist_rate_series, np.asarray(self.node_times, dtype=float))
         )
 
@@ -1041,7 +1041,7 @@ class DirectMultipleShootingOptimizer:
         offset += self.interval_count
         right_control_global_values = raw_solution[offset : offset + self.interval_count]
         root_state_nodes = root_state_values.reshape(self.interval_count + 1, ROOT_STATE_SIZE).T
-        twist_objective_value = float(root_state_nodes[5, -1] / (2.0 * np.pi))
+        twist_objective_value = float(-(root_state_nodes[5, -1] / (2.0 * np.pi)))
         twist_rate_lagrange_value = self._twist_rate_lagrange_from_state_nodes(
             root_state_nodes=root_state_nodes
         )

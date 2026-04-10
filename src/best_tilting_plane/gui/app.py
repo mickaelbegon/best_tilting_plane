@@ -84,7 +84,7 @@ class SliderDefinition:
 
 
 SLIDER_DEFINITIONS = (
-    SliderDefinition("right_arm_start", "Start bras gauche (s)", 0.0, 0.7, 0.10, resolution=0.02),
+    SliderDefinition("right_arm_start", "Start bras droit (s)", 0.0, 0.7, 0.10, resolution=0.02),
     SliderDefinition(
         "contact_twist_turns_per_second",
         "Vrille contact (tour/s)",
@@ -131,7 +131,7 @@ ALL_FRAME_SEGMENTS = tuple(
 )
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
-OPTIMIZATION_CACHE_VERSION = 7
+OPTIMIZATION_CACHE_VERSION = 8
 DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.0
@@ -1236,7 +1236,7 @@ class BestTiltingPlaneApp:
             )
 
         axis.set_ylabel("Vrille finale (tours)")
-        axis.set_xlabel("Debut bras gauche t1 (s)")
+        axis.set_xlabel("Debut bras droit t1 (s)")
         axis.set_title("Comparaison des scans d'optimisation")
         axis.grid(True, alpha=0.3)
         axis.legend(loc="best")
@@ -2441,7 +2441,7 @@ class BestTiltingPlaneApp:
 
         self._scan_axis.clear()
         datasets = self._scan_plot_datasets()
-        self._scan_axis.set_xlabel("Debut bras gauche t1 (s)")
+        self._scan_axis.set_xlabel("Debut bras droit t1 (s)")
         self._scan_axis.set_ylabel("Vrilles finales (tours)")
         self._scan_axis.set_title("Vrilles finales en fonction de t1")
         self._scan_axis.grid(True, alpha=0.3)
