@@ -28,6 +28,7 @@ class _FakeAxis:
     def __init__(self) -> None:
         self.plot_calls: list[dict[str, object]] = []
         self.axhline_calls: list[dict[str, object]] = []
+        self.aspect_calls: list[tuple[object, ...]] = []
 
     def clear(self) -> None:
         """Mirror the matplotlib API."""
@@ -56,6 +57,11 @@ class _FakeAxis:
 
     def grid(self, *_args, **_kwargs) -> None:
         """Mirror the matplotlib API."""
+
+    def set_aspect(self, *args, **_kwargs) -> None:
+        """Record aspect-ratio changes."""
+
+        self.aspect_calls.append(args)
 
 
 class _FakeCanvas:
@@ -264,6 +270,32 @@ def test_plot_data_can_return_the_four_arm_velocity_curves() -> None:
     )
 
 
+def test_plot_data_can_group_both_arm_deviations_on_one_figure() -> None:
+    """The deviation plot should show both arms together with two curve labels."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Deviations bras")
+
+    x_data, y_data, x_label, y_label, title, curve_labels = app._plot_data()
+
+    np.testing.assert_allclose(x_data, np.array([0.0, 0.5, 1.0]))
+    np.testing.assert_allclose(
+        y_data,
+        np.rad2deg(
+            np.array(
+                [
+                    [0.0, 0.0],
+                    [0.1, -0.1],
+                    [0.2, -0.2],
+                ]
+            )
+        ),
+    )
+    assert x_label == "Temps (s)"
+    assert y_label == "Deviation bras / BTP (deg)"
+    assert title == "Deviations bras en fonction de temps"
+    assert curve_labels == ("Bras gauche", "Bras droit")
+
+
 def test_plot_data_can_use_twist_as_the_horizontal_axis() -> None:
     """The x-axis selector should expose the root twist angle in degrees."""
 
@@ -465,3 +497,15 @@ def test_refresh_plot_adds_arm_angle_bounds_when_plotting_arm_kinematics() -> No
         [-135.0, 20.0, -180.0, 0.0, -20.0, 135.0, 0.0, 180.0],
     )
     assert app._plot_canvas.draw_idle_calls == 1
+
+
+def test_refresh_plot_restores_automatic_axis_aspect_in_curve_mode() -> None:
+    """Returning to curve mode should reset the 2D axis aspect after top-view plotting."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Twist")
+    app._plot_axis = _FakeAxis()
+    app._plot_canvas = _FakeCanvas()
+
+    app._refresh_plot()
+
+    assert app._plot_axis.aspect_calls == [("auto",)]

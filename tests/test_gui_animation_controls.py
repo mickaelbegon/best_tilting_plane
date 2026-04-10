@@ -411,8 +411,27 @@ def test_apply_animation_reference_maps_popup_choices_to_internal_modes() -> Non
     assert app.animation_mode_var.get() == ANIMATION_MODE_OPTIONS[0]
 
     app._apply_animation_reference(ANIMATION_REFERENCE_OPTIONS[2])
+    assert app.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]
+    assert app.animation_mode_var.get() == ANIMATION_MODE_OPTIONS[0]
+
+    app._apply_animation_reference(ANIMATION_REFERENCE_OPTIONS[3])
     assert app.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[1]
     assert app.animation_mode_var.get() == ANIMATION_MODE_OPTIONS[1]
+
+
+def test_apply_camera_view_uses_root_side_view_for_kinogram_root() -> None:
+    """The kinogram-in-root mode should reuse the root side camera."""
+
+    app, _drawn_frames, _scheduler = _build_app_for_animation()
+    app._animation_axis = FakeAxis()
+    app.animation_reference_var = FakeVar(ANIMATION_REFERENCE_OPTIONS[2])
+
+    app._apply_camera_view()
+
+    assert app._animation_axis.camera == (
+        ROOT_VIEW_CAMERA_ELEVATION_DEG,
+        ROOT_VIEW_CAMERA_AZIMUTH_DEG,
+    )
 
 
 def test_draw_animation_frame_dispatches_to_btp_animation_mode() -> None:
@@ -734,6 +753,27 @@ def test_prepare_standard_animation_scene_adds_light_gray_dashed_overlay_for_sec
     assert all(line.kwargs["color"] == "black" for line in primary_calls)
     assert all(line.kwargs["color"] == "0.8" for line in secondary_calls)
     assert all(line.kwargs["linestyle"] == "--" for line in secondary_calls)
+
+
+def test_prepare_standard_animation_scene_builds_kinogram_when_requested() -> None:
+    """The root kinogram mode should create extra sampled posture artists."""
+
+    marker_names = {name for connection in SKELETON_CONNECTIONS for name in connection}
+    trajectories = {name: np.zeros((12, 3)) for name in marker_names}
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app._visualization_data = {"trajectories": trajectories}
+    app._secondary_visualization_data = None
+    app._animation_axis = Fake3DAxis()
+    app._apply_camera_view = lambda: None
+    app._draw_animation_frame = lambda _frame_index: None
+    app.show_btp = FakeVar(False)
+    app._animation_frame_index = 0
+    app.animation_reference_var = FakeVar(ANIMATION_REFERENCE_OPTIONS[2])
+
+    app._prepare_standard_animation_scene()
+
+    assert len(app._kinogram_line_artists) > 0
 
 
 def test_draw_animation_frame_updates_secondary_overlay_from_selected_condition() -> None:

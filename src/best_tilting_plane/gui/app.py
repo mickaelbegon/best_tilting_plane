@@ -13,6 +13,7 @@ from tkinter import ttk
 from types import SimpleNamespace
 
 import numpy as np
+from matplotlib import colormaps
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
@@ -102,7 +103,7 @@ GUI_VALUE_NAMES = tuple(definition.name for definition in SLIDER_DEFINITIONS) + 
 PLOT_X_OPTIONS = ("Temps", "Somersault", "Vrille")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
-ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Best tilting plane")
+ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Kinogramme-Racine", "Best tilting plane")
 OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 3D", "Optimize 3D BTP")
 PLOT_Y_OPTIONS = (
     "Somersault",
@@ -110,9 +111,7 @@ PLOT_Y_OPTIONS = (
     "Twist",
     "Cinematique bras",
     "Vitesses bras",
-    "Deviation bras gauche",
-    "Deviation bras droit",
-    "Vrilles selon t1",
+    "Deviations bras",
 )
 ROOT_INITIAL_OPTIONS = ("Avec q racine(0)=0", "Sans q racine(0)=0")
 TOP_VIEW_LEFT_CHAIN = ("shoulder_left", "elbow_left", "wrist_left", "hand_left")
@@ -123,6 +122,7 @@ BTP_CAMERA_ELEVATION_DEG = 22.0
 BTP_CAMERA_AZIMUTH_DEG = -35.0
 ROOT_VIEW_CAMERA_ELEVATION_DEG = 0.0
 ROOT_VIEW_CAMERA_AZIMUTH_DEG = -90.0
+KINOGRAM_SAMPLE_COUNT = 9
 ALL_FRAME_SEGMENTS = tuple(
     dict.fromkeys(ARM_SEGMENTS_FOR_VISUALIZATION + ARM_SEGMENTS_FOR_DEVIATION)
 )
@@ -486,6 +486,7 @@ class BestTiltingPlaneApp:
 
         self._line_artists: tuple[object, ...] = ()
         self._secondary_line_artists: tuple[object, ...] = ()
+        self._kinogram_line_artists: tuple[tuple[object, ...], ...] = ()
         self._frame_artists: dict[str, tuple[object, object, object]] = {}
         self._btp_chain_artists: dict[str, object] = {}
         self._btp_path_artists: dict[str, object] = {}
@@ -1584,7 +1585,10 @@ class BestTiltingPlaneApp:
         """Return the generalized coordinates used for display."""
 
         q_history = np.asarray(result.q, dtype=float).copy()
-        if self._animation_reference() == ANIMATION_REFERENCE_OPTIONS[1]:
+        if self._animation_reference() in {
+            ANIMATION_REFERENCE_OPTIONS[1],
+            ANIMATION_REFERENCE_OPTIONS[2],
+        }:
             q_history[:, :6] = 0.0
         return q_history
 
@@ -1592,7 +1596,10 @@ class BestTiltingPlaneApp:
         """Return the generalized velocities used for display."""
 
         qdot_history = np.asarray(result.qdot, dtype=float).copy()
-        if self._animation_reference() == ANIMATION_REFERENCE_OPTIONS[1]:
+        if self._animation_reference() in {
+            ANIMATION_REFERENCE_OPTIONS[1],
+            ANIMATION_REFERENCE_OPTIONS[2],
+        }:
             qdot_history[:, :6] = 0.0
         return qdot_history
 
@@ -1602,7 +1609,7 @@ class BestTiltingPlaneApp:
         if hasattr(self, "animation_reference_var"):
             return self.animation_reference_var.get()
         if hasattr(self, "animation_mode_var") and self.animation_mode_var.get() == ANIMATION_MODE_OPTIONS[1]:
-            return ANIMATION_REFERENCE_OPTIONS[2]
+            return ANIMATION_REFERENCE_OPTIONS[3]
         if hasattr(self, "root_initial_mode") and self.root_initial_mode.get() == ROOT_INITIAL_OPTIONS[0]:
             return ANIMATION_REFERENCE_OPTIONS[1]
         return ANIMATION_REFERENCE_OPTIONS[0]
@@ -1610,10 +1617,10 @@ class BestTiltingPlaneApp:
     def _apply_animation_reference(self, reference: str) -> None:
         """Map the user-facing animation reference to the internal display settings."""
 
-        if reference == ANIMATION_REFERENCE_OPTIONS[2]:
+        if reference == ANIMATION_REFERENCE_OPTIONS[3]:
             self.root_initial_mode.set(ROOT_INITIAL_OPTIONS[1])
             self.animation_mode_var.set(ANIMATION_MODE_OPTIONS[1])
-        elif reference == ANIMATION_REFERENCE_OPTIONS[1]:
+        elif reference in {ANIMATION_REFERENCE_OPTIONS[1], ANIMATION_REFERENCE_OPTIONS[2]}:
             self.root_initial_mode.set(ROOT_INITIAL_OPTIONS[0])
             self.animation_mode_var.set(ANIMATION_MODE_OPTIONS[0])
         else:
@@ -1753,6 +1760,32 @@ class BestTiltingPlaneApp:
             )[0]
             for _ in SKELETON_CONNECTIONS
         ) if secondary_trajectories is not None else ()
+        self._kinogram_line_artists = ()
+        if self._animation_reference() == ANIMATION_REFERENCE_OPTIONS[2]:
+            kinogram_indices = self._kinogram_sample_indices(
+                next(iter(trajectories.values())).shape[0]
+            )
+            cmap = colormaps["viridis"]
+            kinogram_groups: list[tuple[object, ...]] = []
+            for color_index, frame_index in enumerate(kinogram_indices):
+                color = cmap(0.2 + 0.7 * color_index / max(len(kinogram_indices) - 1, 1))
+                artists = tuple(
+                    self._animation_axis.plot(
+                        [],
+                        [],
+                        [],
+                        color=color,
+                        linewidth=1.6,
+                        alpha=0.45,
+                    )[0]
+                    for _ in SKELETON_CONNECTIONS
+                )
+                for artist, (start_name, end_name) in zip(artists, SKELETON_CONNECTIONS):
+                    segment = np.vstack((trajectories[start_name][frame_index], trajectories[end_name][frame_index]))
+                    artist.set_data(segment[:, 0], segment[:, 1])
+                    artist.set_3d_properties(segment[:, 2])
+                kinogram_groups.append(artists)
+            self._kinogram_line_artists = tuple(kinogram_groups)
         self._frame_artists = {
             segment_name: tuple(
                 self._animation_axis.plot([], [], [], color=color, linewidth=2.0)[0]
@@ -1866,7 +1899,10 @@ class BestTiltingPlaneApp:
     def _apply_camera_view(self) -> None:
         """Apply the default or root-aligned camera depending on the selected reference."""
 
-        if self._animation_reference() == ANIMATION_REFERENCE_OPTIONS[1]:
+        if self._animation_reference() in {
+            ANIMATION_REFERENCE_OPTIONS[1],
+            ANIMATION_REFERENCE_OPTIONS[2],
+        }:
             self._animation_axis.view_init(
                 elev=ROOT_VIEW_CAMERA_ELEVATION_DEG,
                 azim=ROOT_VIEW_CAMERA_AZIMUTH_DEG,
@@ -1876,6 +1912,15 @@ class BestTiltingPlaneApp:
             elev=DEFAULT_CAMERA_ELEVATION_DEG,
             azim=DEFAULT_CAMERA_AZIMUTH_DEG,
         )
+
+    @staticmethod
+    def _kinogram_sample_indices(frame_count: int) -> np.ndarray:
+        """Return evenly spaced frame indices used to draw a root-frame kinogram."""
+
+        if frame_count <= 0:
+            return np.array([], dtype=int)
+        sample_count = min(KINOGRAM_SAMPLE_COUNT, frame_count)
+        return np.unique(np.linspace(0, frame_count - 1, sample_count, dtype=int))
 
     def _stop_animation_loop(self) -> None:
         """Cancel the currently scheduled animation callback, if any."""
@@ -2240,19 +2285,18 @@ class BestTiltingPlaneApp:
             y_data = np.rad2deg(display_qdot[:, 6:10])
             y_label = "Vitesses bras (deg/s)"
             curve_labels = ARM_KINEMATICS_LABELS
-        elif y_choice in {"Deviation bras gauche", "Deviation bras droit"}:
+        elif y_choice == "Deviations bras":
             model_path = self._last_model_path or Path(self._model_path())
             frame_trajectories = segment_frame_trajectories(model_path, display_q, ALL_FRAME_SEGMENTS)
             deviations = arm_deviation_from_frames(frame_trajectories, display_q[:, 3])
-            side = "left" if y_choice == "Deviation bras gauche" else "right"
-            y_data = np.rad2deg(deviations[side])
-            y_label = f"Deviation bras {'gauche' if side == 'left' else 'droit'} / BTP (deg)"
-            curve_labels = None
+            y_data = np.rad2deg(np.column_stack((deviations["left"], deviations["right"])))
+            y_label = "Deviation bras / BTP (deg)"
+            curve_labels = ("Bras gauche", "Bras droit")
         else:
             y_data = np.asarray(result.time, dtype=float)
             y_label = "Temps (s)"
             curve_labels = None
-        if y_choice not in {"Cinematique bras", "Vitesses bras"}:
+        if y_choice not in {"Cinematique bras", "Vitesses bras", "Deviations bras"}:
             curve_labels = None
 
         title = f"{y_choice} en fonction de {self.plot_x_var.get().lower()}"
@@ -2510,16 +2554,14 @@ class BestTiltingPlaneApp:
             y_data = np.rad2deg(self._arm_velocity_series())
             y_label = "Vitesses bras (deg/s)"
             curve_labels = ARM_KINEMATICS_LABELS
-        elif y_choice == "Deviation bras gauche":
-            y_data = np.rad2deg(deviations["left"])
-            y_label = "Deviation bras gauche / BTP (deg)"
-        elif y_choice == "Deviation bras droit":
-            y_data = np.rad2deg(deviations["right"])
-            y_label = "Deviation bras droit / BTP (deg)"
+        elif y_choice == "Deviations bras":
+            y_data = np.rad2deg(np.column_stack((deviations["left"], deviations["right"])))
+            y_label = "Deviation bras / BTP (deg)"
+            curve_labels = ("Bras gauche", "Bras droit")
         else:
-            y_data = np.rad2deg(deviations["right"])
-            y_label = "Deviation bras droit / BTP (deg)"
-        if y_choice not in {"Cinematique bras", "Vitesses bras"}:
+            y_data = np.rad2deg(self._root_series(result, 2))
+            y_label = "Twist (deg)"
+        if y_choice not in {"Cinematique bras", "Vitesses bras", "Deviations bras"}:
             curve_labels = None
 
         title = f"{y_choice} en fonction de {self.plot_x_var.get().lower()}"
@@ -2638,13 +2680,13 @@ class BestTiltingPlaneApp:
         if self.plot_mode_var.get() == PLOT_MODE_OPTIONS[1]:
             self._refresh_top_view_plot()
             return
-        if self.plot_y_var.get() == "Vrilles selon t1":
-            self._refresh_scan_plot()
-            return
 
         x_data, y_data, x_label, y_label, title, curve_labels = self._plot_data()
         selected_candidates = self._selected_scan_candidate_records()
         self._plot_axis.clear()
+        aspect_setter = getattr(self._plot_axis, "set_aspect", None)
+        if callable(aspect_setter):
+            aspect_setter("auto")
         if selected_candidates:
             styles = ("-", "--")
             widths = (2.2, 2.0)
