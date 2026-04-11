@@ -28,6 +28,7 @@ class _FakeAxis:
     def __init__(self) -> None:
         self.plot_calls: list[dict[str, object]] = []
         self.axhline_calls: list[dict[str, object]] = []
+        self.axvline_calls: list[dict[str, object]] = []
         self.aspect_calls: list[tuple[object, ...]] = []
 
     def clear(self) -> None:
@@ -47,6 +48,21 @@ class _FakeAxis:
         """Record one horizontal bound."""
 
         self.axhline_calls.append({"y": float(y), "kwargs": dict(kwargs)})
+
+    def axvline(self, x, **kwargs):
+        """Record one vertical indicator line."""
+
+        call = {"x": float(x), "kwargs": dict(kwargs), "xdata": [float(x), float(x)]}
+        self.axvline_calls.append(call)
+
+        class _Line:
+            def __init__(self, payload) -> None:
+                self.payload = payload
+
+            def set_xdata(self, values) -> None:
+                self.payload["xdata"] = list(values)
+
+        return _Line(call)
 
     def legend(self, **_kwargs) -> None:
         """Mirror the matplotlib API."""
@@ -163,6 +179,14 @@ def _build_app_for_plotting(
                     [[1.0, 10.0, 100.0], [2.0, 20.0, 200.0], [3.0, 30.0, 300.0]],
                     [[4.0, 40.0, 110.0], [5.0, 50.0, 210.0], [6.0, 60.0, 310.0]],
                     [[7.0, 70.0, 120.0], [8.0, 80.0, 220.0], [9.0, 90.0, 320.0]],
+                ],
+                dtype=float,
+            ),
+            "shoulder_torques": np.array(
+                [
+                    [[1.0, 0.1, 0.01, 0.001], [2.0, 0.2, 0.02, 0.002], [3.0, 0.3, 0.03, 0.003], [4.0, 0.4, 0.04, 0.004]],
+                    [[5.0, 0.5, 0.05, 0.005], [6.0, 0.6, 0.06, 0.006], [7.0, 0.7, 0.07, 0.007], [8.0, 0.8, 0.08, 0.008]],
+                    [[9.0, 0.9, 0.09, 0.009], [10.0, 1.0, 0.10, 0.010], [11.0, 1.1, 0.11, 0.011], [12.0, 1.2, 0.12, 0.012]],
                 ],
                 dtype=float,
             ),
@@ -418,6 +442,24 @@ def test_plot_data_can_return_twist_axis_angular_momentum_transfers() -> None:
     assert curve_labels == ("Bras gauche", "Bras droit", "Reste du corps")
 
 
+def test_plot_data_can_return_shoulder_torques_and_decomposition() -> None:
+    """The plot selector should expose shoulder torques and their decomposition terms."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Couples epaules")
+
+    x_data, y_data, x_label, y_label, title, curve_labels = app._plot_data()
+
+    np.testing.assert_allclose(x_data, np.array([0.0, 0.5, 1.0]))
+    assert y_data.shape == (3, 16)
+    np.testing.assert_allclose(y_data[0, :4], np.array([1.0, 0.1, 0.01, 0.001]))
+    assert x_label == "Temps (s)"
+    assert y_label == "Couples epaules (N.m)"
+    assert title == "Couples epaules en fonction de temps"
+    assert curve_labels[0] == "Plan bras gauche | Total"
+    assert curve_labels[3] == "Plan bras gauche | N(q,qdot)-N(q,0)"
+    assert curve_labels[-1] == "Elevation bras droit | N(q,qdot)-N(q,0)"
+
+
 def test_plot_data_can_use_twist_as_the_horizontal_axis() -> None:
     """The x-axis selector should expose the root twist angle in degrees."""
 
@@ -484,7 +526,7 @@ def test_scan_plot_datasets_returns_current_mode_then_other_cached_mode(tmp_path
     """The embedded scan figure should prioritize the current optimization mode and overlay the other one."""
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
-    app.optimization_mode_var = _FakeVar("Optimize DMS")
+    app.optimization_mode_var = _FakeVar("Optimize 3D")
     app._model_path = lambda: tmp_path / "reduced.bioMod"
     app._standard_optimization_configuration = lambda: SimulationConfiguration(
         final_time=1.0,
@@ -508,8 +550,8 @@ def test_scan_plot_datasets_returns_current_mode_then_other_cached_mode(tmp_path
                         "scan_final_twist_turns": [-0.30, -0.50],
                         "scan_objective_values": [-0.29, -0.49],
                     },
-                    "optimize_dms": {
-                        "signature": app._optimization_cache_signature_for_mode("Optimize DMS"),
+                    "optimize_3d": {
+                        "signature": app._optimization_cache_signature_for_mode("Optimize 3D"),
                         "values": {
                             "right_arm_start": 0.28,
                             "left_plane_initial": 0.0,
@@ -530,7 +572,7 @@ def test_scan_plot_datasets_returns_current_mode_then_other_cached_mode(tmp_path
 
     datasets = app._scan_plot_datasets()
 
-    assert [dataset["mode"] for dataset in datasets] == ["Optimize DMS", "Optimize 2D"]
+    assert [dataset["mode"] for dataset in datasets] == ["Optimize 3D", "Optimize 2D"]
     assert datasets[0]["best_start_time"] == 0.28
     assert datasets[1]["best_start_time"] == 0.20
 

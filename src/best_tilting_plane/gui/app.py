@@ -13,9 +13,9 @@ from tkinter import ttk
 from types import SimpleNamespace
 
 import numpy as np
-from matplotlib import colormaps
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from best_tilting_plane.gui.debounce import DebouncedRunner
@@ -104,8 +104,9 @@ GUI_VALUE_NAMES = tuple(definition.name for definition in SLIDER_DEFINITIONS) + 
 PLOT_X_OPTIONS = ("Temps", "Somersault", "Vrille")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
-ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Kinogramme-Racine", "Best tilting plane")
-OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 3D", "Optimize 3D BTP")
+ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Racine (main)", "Best tilting plane")
+OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 3D")
+SCAN_DATASET_MODES = ("Optimize 2D", "Optimize 3D", "Optimize 3D BTP")
 PLOT_Y_OPTIONS = (
     "Somersault",
     "Tilt",
@@ -116,18 +117,17 @@ PLOT_Y_OPTIONS = (
     "Jerks bras",
     "Deviations bras",
     "Moment cinetique vrille segments",
+    "Couples epaules",
 )
 ROOT_INITIAL_OPTIONS = ("Avec q racine(0)=0", "Sans q racine(0)=0")
 TOP_VIEW_LEFT_CHAIN = ("shoulder_left", "elbow_left", "wrist_left", "hand_left")
 TOP_VIEW_RIGHT_CHAIN = ("shoulder_right", "elbow_right", "wrist_right", "hand_right")
-KINEMATIC_EXPLORER_COLUMN_LABELS = ("Jerk", "Acceleration", "Velocity", "Position")
 DEFAULT_CAMERA_ELEVATION_DEG = 20.0
 DEFAULT_CAMERA_AZIMUTH_DEG = -60.0
 BTP_CAMERA_ELEVATION_DEG = 22.0
 BTP_CAMERA_AZIMUTH_DEG = -35.0
 ROOT_VIEW_CAMERA_ELEVATION_DEG = 0.0
 ROOT_VIEW_CAMERA_AZIMUTH_DEG = -90.0
-KINOGRAM_SAMPLE_COUNT = 9
 ALL_FRAME_SEGMENTS = tuple(
     dict.fromkeys(ARM_SEGMENTS_FOR_VISUALIZATION + ARM_SEGMENTS_FOR_DEVIATION)
 )
@@ -157,6 +157,11 @@ ARM_KINEMATICS_BOUNDS_DEG = (
     RIGHT_ARM_PLANE_BOUNDS_DEG,
     RIGHT_ARM_ELEVATION_BOUNDS_DEG,
 )
+ARM_CURVE_COLORS = ("tab:red", "tab:orange", "tab:blue", "tab:purple")
+SHOULDER_TORQUE_COMPONENT_LABELS = ("Total", "Mqddot", "N(q,0)", "N(q,qdot)-N(q,0)")
+SHOULDER_TORQUE_DOF_LABELS = ARM_KINEMATICS_LABELS
+SECONDARY_AVATAR_COLOR = "0.65"
+PLOT_LEGEND_FONT_SIZE = 8.0
 SCAN_PLOT_STYLE_BY_MODE = {
     "Optimize 2D": {"color": "tab:blue", "marker": "o", "label": "Optimize 2D"},
     "Optimize 3D": {"color": "tab:orange", "marker": "s", "label": "Optimize 3D"},
@@ -409,11 +414,6 @@ class BestTiltingPlaneApp:
         ttk.Button(controls, text="Simulate", command=self._run_simulation).grid(
             row=scan_row + 6, column=0, sticky="w", pady=(10, 0)
         )
-        ttk.Button(
-            controls,
-            text="Explorer cinematique",
-            command=self._show_kinematic_explorer,
-        ).grid(row=scan_row + 6, column=1, columnspan=2, sticky="ew", pady=(10, 0))
         self.ignore_optimization_cache_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             controls,
@@ -488,17 +488,22 @@ class BestTiltingPlaneApp:
         self._plot_axis = self._plot_figure.add_subplot(111)
         self._plot_canvas = FigureCanvasTkAgg(self._plot_figure, master=display)
         self._plot_canvas.get_tk_widget().grid(row=2, column=0, sticky="nsew")
+        self._plot_canvas.mpl_connect("button_press_event", self._on_plot_press)
+        self._plot_canvas.mpl_connect("motion_notify_event", self._on_plot_motion)
+        self._plot_canvas.mpl_connect("button_release_event", self._on_plot_release)
 
         self._line_artists: tuple[object, ...] = ()
         self._secondary_line_artists: tuple[object, ...] = ()
-        self._kinogram_line_artists: tuple[tuple[object, ...], ...] = ()
         self._frame_artists: dict[str, tuple[object, object, object]] = {}
         self._btp_chain_artists: dict[str, object] = {}
         self._btp_path_artists: dict[str, object] = {}
         self._btp_marker_artists: dict[str, object] = {}
+        self._root_hand_path_artists: dict[str, object] = {}
         self._secondary_visualization_data: dict[str, object] | None = None
         self._angular_momentum_artist = None
         self._plane_artist: Poly3DCollection | None = None
+        self._plot_time_indicator = None
+        self._dragging_plot_time_indicator = False
 
         self._run_simulation()
 
@@ -926,6 +931,7 @@ class BestTiltingPlaneApp:
         qdot_history = record.get("qdot")
         if not isinstance(q_history, list) or not isinstance(qdot_history, list):
             return None
+        qddot_history = record.get("qddot")
         try:
             q_array = np.asarray(q_history, dtype=float)
             qdot_array = np.asarray(qdot_history, dtype=float)
@@ -940,11 +946,29 @@ class BestTiltingPlaneApp:
             return None
 
         configuration = self._standard_optimization_configuration()
+        if isinstance(qddot_history, list):
+            try:
+                qddot_array = np.asarray(qddot_history, dtype=float)
+            except (TypeError, ValueError):
+                qddot_array = None
+            else:
+                if qddot_array.shape != q_array.shape:
+                    qddot_array = None
+        else:
+            qddot_array = None
+
+        if qddot_array is None:
+            if q_array.shape[0] >= 2:
+                sample_times = np.linspace(0.0, float(configuration.final_time), q_array.shape[0])
+                qddot_array = np.gradient(qdot_array, sample_times, axis=0, edge_order=1)
+            else:
+                qddot_array = np.zeros_like(q_array)
+
         return AerialSimulationResult(
             time=np.linspace(0.0, float(configuration.final_time), q_array.shape[0]),
             q=q_array,
             qdot=qdot_array,
-            qddot=np.zeros_like(q_array),
+            qddot=np.asarray(qddot_array, dtype=float),
             integrator_method=str(configuration.integrator),
             rk4_step=configuration.rk4_step,
             integration_seconds=None,
@@ -959,8 +983,20 @@ class BestTiltingPlaneApp:
 
         if simulation_result is None:
             return record
-        record["q"] = np.asarray(simulation_result.q, dtype=float).tolist()
-        record["qdot"] = np.asarray(simulation_result.qdot, dtype=float).tolist()
+        q_array = np.asarray(simulation_result.q, dtype=float)
+        qdot_array = np.asarray(simulation_result.qdot, dtype=float)
+        qddot_history = getattr(simulation_result, "qddot", None)
+        if qddot_history is None:
+            if q_array.shape[0] >= 2:
+                sample_times = np.linspace(0.0, 1.0, q_array.shape[0])
+                qddot_array = np.gradient(qdot_array, sample_times, axis=0, edge_order=1)
+            else:
+                qddot_array = np.zeros_like(q_array)
+        else:
+            qddot_array = np.asarray(qddot_history, dtype=float)
+        record["q"] = q_array.tolist()
+        record["qdot"] = qdot_array.tolist()
+        record["qddot"] = qddot_array.tolist()
         return record
 
     def _scan_candidate_record(
@@ -1659,6 +1695,7 @@ class BestTiltingPlaneApp:
         observables = system_observables(
             self._last_model_path,
             np.asarray(result.q, dtype=float),
+            np.asarray(result.qddot, dtype=float),
             np.asarray(result.qdot, dtype=float),
         )
         deviations = arm_deviation_from_frames(frame_trajectories, display_q[:, 3])
@@ -1751,47 +1788,48 @@ class BestTiltingPlaneApp:
         self._animation_axis.set_ylim(center[1] - radius, center[1] + radius)
         self._animation_axis.set_zlim(center[2] - radius, center[2] + radius)
 
+        def connection_style(start_name: str, end_name: str) -> dict[str, object]:
+            if "left" in start_name and "left" in end_name:
+                return {"color": "tab:red", "linewidth": 2.4}
+            if "right" in start_name and "right" in end_name:
+                return {"color": "tab:blue", "linewidth": 2.4}
+            return {"color": "black", "linewidth": 2.0}
+
         self._line_artists = tuple(
-            self._animation_axis.plot([], [], [], color="black", linewidth=2.0)[0]
-            for _ in SKELETON_CONNECTIONS
+            self._animation_axis.plot([], [], [], **connection_style(start_name, end_name))[0]
+            for start_name, end_name in SKELETON_CONNECTIONS
         )
         self._secondary_line_artists = tuple(
             self._animation_axis.plot(
                 [],
                 [],
                 [],
-                color="0.8",
+                color=SECONDARY_AVATAR_COLOR,
                 linewidth=1.8,
                 linestyle="--",
             )[0]
             for _ in SKELETON_CONNECTIONS
         ) if secondary_trajectories is not None else ()
-        self._kinogram_line_artists = ()
+        self._root_hand_path_artists = {}
         if self._animation_reference() == ANIMATION_REFERENCE_OPTIONS[2]:
-            kinogram_indices = self._kinogram_sample_indices(
-                next(iter(trajectories.values())).shape[0]
-            )
-            cmap = colormaps["viridis"]
-            kinogram_groups: list[tuple[object, ...]] = []
-            for color_index, frame_index in enumerate(kinogram_indices):
-                color = cmap(0.2 + 0.7 * color_index / max(len(kinogram_indices) - 1, 1))
-                artists = tuple(
-                    self._animation_axis.plot(
-                        [],
-                        [],
-                        [],
-                        color=color,
-                        linewidth=1.6,
-                        alpha=0.45,
-                    )[0]
-                    for _ in SKELETON_CONNECTIONS
-                )
-                for artist, (start_name, end_name) in zip(artists, SKELETON_CONNECTIONS):
-                    segment = np.vstack((trajectories[start_name][frame_index], trajectories[end_name][frame_index]))
-                    artist.set_data(segment[:, 0], segment[:, 1])
-                    artist.set_3d_properties(segment[:, 2])
-                kinogram_groups.append(artists)
-            self._kinogram_line_artists = tuple(kinogram_groups)
+            self._root_hand_path_artists = {
+                "left": self._animation_axis.plot(
+                    [],
+                    [],
+                    [],
+                    color="tab:red",
+                    linewidth=1.8,
+                    alpha=0.45,
+                )[0],
+                "right": self._animation_axis.plot(
+                    [],
+                    [],
+                    [],
+                    color="tab:blue",
+                    linewidth=1.8,
+                    alpha=0.45,
+                )[0],
+            }
         self._frame_artists = {
             segment_name: tuple(
                 self._animation_axis.plot([], [], [], color=color, linewidth=2.0)[0]
@@ -1810,6 +1848,7 @@ class BestTiltingPlaneApp:
             self._animation_axis.add_collection3d(self._plane_artist)
 
         self._draw_animation_frame(self._animation_frame_index)
+        self._refresh_animation_legend()
 
     def _prepare_btp_animation_scene(self) -> None:
         """Prepare the full-model animation expressed in the best-tilting-plane frame."""
@@ -1854,7 +1893,7 @@ class BestTiltingPlaneApp:
                 [],
                 [],
                 [],
-                color="0.8",
+                color=SECONDARY_AVATAR_COLOR,
                 linewidth=1.8,
                 linestyle="--",
             )[0]
@@ -1893,6 +1932,7 @@ class BestTiltingPlaneApp:
             )
             self._animation_axis.add_collection3d(self._plane_artist)
         self._draw_animation_frame(self._animation_frame_index)
+        self._refresh_animation_legend()
 
     def _start_animation_loop(self) -> None:
         """Start or restart the embedded animation loop."""
@@ -1918,15 +1958,6 @@ class BestTiltingPlaneApp:
             elev=DEFAULT_CAMERA_ELEVATION_DEG,
             azim=DEFAULT_CAMERA_AZIMUTH_DEG,
         )
-
-    @staticmethod
-    def _kinogram_sample_indices(frame_count: int) -> np.ndarray:
-        """Return evenly spaced frame indices used to draw a root-frame kinogram."""
-
-        if frame_count <= 0:
-            return np.array([], dtype=int)
-        sample_count = min(KINOGRAM_SAMPLE_COUNT, frame_count)
-        return np.unique(np.linspace(0, frame_count - 1, sample_count, dtype=int))
 
     def _stop_animation_loop(self) -> None:
         """Cancel the currently scheduled animation callback, if any."""
@@ -2117,6 +2148,14 @@ class BestTiltingPlaneApp:
                 artist.set_data(segment[:, 0], segment[:, 1])
                 artist.set_3d_properties(segment[:, 2])
 
+        if getattr(self, "_root_hand_path_artists", {}):
+            left_path = trajectories["hand_left"][: frame_index + 1]
+            right_path = trajectories["hand_right"][: frame_index + 1]
+            self._root_hand_path_artists["left"].set_data(left_path[:, 0], left_path[:, 1])
+            self._root_hand_path_artists["left"].set_3d_properties(left_path[:, 2])
+            self._root_hand_path_artists["right"].set_data(right_path[:, 0], right_path[:, 1])
+            self._root_hand_path_artists["right"].set_3d_properties(right_path[:, 2])
+
         for segment_name, artists in self._frame_artists.items():
             origin = frame_trajectories[segment_name]["origin"][frame_index]
             axes_matrix = frame_trajectories[segment_name]["axes"][frame_index]
@@ -2128,7 +2167,7 @@ class BestTiltingPlaneApp:
 
         com = observables["center_of_mass"][frame_index]
         angular_momentum = observables["angular_momentum"][frame_index]
-        momentum_points = np.vstack((com, com + 0.08 * angular_momentum))
+        momentum_points = np.vstack((com, com + 0.04 * angular_momentum))
         self._angular_momentum_artist.set_data(momentum_points[:, 0], momentum_points[:, 1])
         self._angular_momentum_artist.set_3d_properties(momentum_points[:, 2])
 
@@ -2207,6 +2246,38 @@ class BestTiltingPlaneApp:
             f"dev. D = {np.rad2deg(deviations['right'][frame_index]):.1f} deg"
         )
         self._animation_canvas.draw_idle()
+
+    def _refresh_animation_legend(self) -> None:
+        """Show the currently compared optimization conditions in the animation panel."""
+
+        if not hasattr(self, "_animation_axis"):
+            return
+        legend = getattr(self._animation_axis, "legend_", None)
+        if legend is not None:
+            try:
+                legend.remove()
+            except Exception:
+                pass
+        selected_candidates = self._selected_scan_candidate_records()
+        legend_handles: list[Line2D] = []
+        legend_labels: list[str] = []
+        for index, candidate in enumerate(selected_candidates[:2], start=1):
+            mode = str(candidate.get("mode", "Solution")).replace("Optimize ", "")
+            try:
+                start_time = float(candidate["values"]["right_arm_start"])
+            except (KeyError, TypeError, ValueError):
+                start_time = float("nan")
+            linestyle = "-" if index == 1 else "--"
+            color = "black" if index == 1 else SECONDARY_AVATAR_COLOR
+            legend_handles.append(Line2D([0], [0], color=color, linestyle=linestyle, linewidth=2.0))
+            legend_labels.append(f"{mode} t1={start_time:.2f}s")
+        if legend_handles:
+            self._animation_axis.legend(
+                legend_handles,
+                legend_labels,
+                loc="upper right",
+                fontsize=PLOT_LEGEND_FONT_SIZE,
+            )
 
     def _root_series(self, result, root_index: int) -> np.ndarray:
         """Return one root-angle series from the currently displayed configurations."""
@@ -2318,6 +2389,35 @@ class BestTiltingPlaneApp:
             raise RuntimeError("No simulation available for plotting.")
         return np.asarray(self._visualization_data["observables"]["angular_momentum_groups"][:, :, 2], dtype=float)
 
+    def _shoulder_torque_series(self) -> np.ndarray:
+        """Return the shoulder torques and their decomposition for the four arm DoFs."""
+
+        if self._visualization_data is None:
+            raise RuntimeError("No simulation available for plotting.")
+        components = np.asarray(self._visualization_data["observables"]["shoulder_torques"], dtype=float)
+        frame_count, dof_count, component_count = components.shape
+        return components.reshape(frame_count, dof_count * component_count)
+
+    @staticmethod
+    def _shoulder_torque_curve_labels() -> tuple[str, ...]:
+        """Return the detailed labels used for the shoulder-torque figure."""
+
+        return tuple(
+            f"{dof_label} | {component_label}"
+            for dof_label in SHOULDER_TORQUE_DOF_LABELS
+            for component_label in SHOULDER_TORQUE_COMPONENT_LABELS
+        )
+
+    @staticmethod
+    def _curve_colors_for_plot_choice(y_choice: str) -> tuple[str, ...]:
+        """Return the color palette associated with one multi-curve plot."""
+
+        if y_choice == "Deviations bras":
+            return ("tab:red", "tab:blue")
+        if y_choice == "Moment cinetique vrille segments":
+            return ("tab:red", "tab:blue", "black")
+        return ARM_CURVE_COLORS
+
     def _selected_scan_candidate_records(self) -> list[dict[str, object]]:
         """Return the currently selected scan candidates, in selection order."""
 
@@ -2391,11 +2491,22 @@ class BestTiltingPlaneApp:
             observables = system_observables(
                 self._last_model_path or Path(self._model_path()),
                 np.asarray(result.q, dtype=float),
+                np.asarray(result.qddot, dtype=float),
                 np.asarray(result.qdot, dtype=float),
             )
             y_data = np.asarray(observables["angular_momentum_groups"][:, :, 2], dtype=float)
             y_label = "H axe vrille au CoM (kg.m2/s)"
             curve_labels = ("Bras gauche", "Bras droit", "Reste du corps")
+        elif y_choice == "Couples epaules":
+            observables = system_observables(
+                self._last_model_path or Path(self._model_path()),
+                np.asarray(result.q, dtype=float),
+                np.asarray(result.qddot, dtype=float),
+                np.asarray(result.qdot, dtype=float),
+            )
+            y_data = np.asarray(observables["shoulder_torques"], dtype=float).reshape(result.time.size, -1)
+            y_label = "Couples epaules (N.m)"
+            curve_labels = self._shoulder_torque_curve_labels()
         else:
             y_data = np.asarray(result.time, dtype=float)
             y_label = "Temps (s)"
@@ -2406,6 +2517,7 @@ class BestTiltingPlaneApp:
             "Accelerations bras",
             "Deviations bras",
             "Moment cinetique vrille segments",
+            "Couples epaules",
         }:
             curve_labels = None
 
@@ -2422,7 +2534,7 @@ class BestTiltingPlaneApp:
         datasets: list[dict[str, object]] = []
         seen_modes: set[str] = set()
         ordered_modes = [current_mode] + [
-            mode for mode in OPTIMIZATION_MODE_OPTIONS if mode != current_mode
+            mode for mode in SCAN_DATASET_MODES if mode != current_mode
         ]
         for mode in ordered_modes:
             if current_mode == "Optimize DMS" and mode == "Optimize 3D":
@@ -2519,7 +2631,11 @@ class BestTiltingPlaneApp:
             self._selected_scan_solutions = self._selected_scan_solutions[-2:]
         self._refresh_scan_plot()
         self._refresh_plot()
-        self._apply_scan_candidate_solution(candidate)
+        selected_candidates = self._selected_scan_candidate_records()
+        if selected_candidates:
+            self._apply_scan_candidate_solution(selected_candidates[0])
+        else:
+            self._apply_scan_candidate_solution(candidate)
 
     def _refresh_scan_plot(self) -> None:
         """Draw the embedded scan figure showing the final twist count as a function of `t1`."""
@@ -2691,6 +2807,10 @@ class BestTiltingPlaneApp:
             y_data = self._twist_axis_angular_momentum_group_series()
             y_label = "H axe vrille au CoM (kg.m2/s)"
             curve_labels = ("Bras gauche", "Bras droit", "Reste du corps")
+        elif y_choice == "Couples epaules":
+            y_data = self._shoulder_torque_series()
+            y_label = "Couples epaules (N.m)"
+            curve_labels = self._shoulder_torque_curve_labels()
         else:
             y_data = np.rad2deg(self._root_series(result, 2))
             y_label = "Twist (deg)"
@@ -2701,6 +2821,7 @@ class BestTiltingPlaneApp:
             "Jerks bras",
             "Deviations bras",
             "Moment cinetique vrille segments",
+            "Couples epaules",
         }:
             curve_labels = None
 
@@ -2719,9 +2840,9 @@ class BestTiltingPlaneApp:
             raise RuntimeError("No simulation available for plotting.")
 
         frame_count = np.asarray(self._visualization_data["result"].time, dtype=float).size
-        if self._animation_playing and self._animation_after_id is not None:
+        if getattr(self, "_animation_playing", False) and getattr(self, "_animation_after_id", None) is not None:
             return (self._animation_frame_index - 1) % frame_count
-        return int(np.clip(self._animation_frame_index, 0, frame_count - 1))
+        return int(np.clip(getattr(self, "_animation_frame_index", 0), 0, frame_count - 1))
 
     def _top_view_plot_data(self) -> tuple[dict[str, np.ndarray], int]:
         """Return the top-view arm trajectories and the highlighted frame index."""
@@ -2741,6 +2862,7 @@ class BestTiltingPlaneApp:
         top_view, frame_index = self._top_view_plot_data()
         current_time = float(self._visualization_data["result"].time[frame_index])
         self._plot_axis.clear()
+        self._plot_time_indicator = None
 
         all_points = np.concatenate(list(top_view.values()), axis=0)
         minimum = np.min(all_points, axis=0)
@@ -2811,6 +2933,70 @@ class BestTiltingPlaneApp:
         self._plot_axis.legend(loc="upper right")
         self._plot_canvas.draw_idle()
 
+    def _plot_time_indicator_is_enabled(self) -> bool:
+        """Return whether the main plot supports a draggable time cursor."""
+
+        return (
+            self.plot_mode_var.get() == PLOT_MODE_OPTIONS[0]
+            and self.plot_x_var.get() == "Temps"
+            and self._visualization_data is not None
+        )
+
+    def _ensure_plot_time_indicator(self) -> None:
+        """Create or update the vertical time cursor shown on the main plot."""
+
+        if not self._plot_time_indicator_is_enabled():
+            self._plot_time_indicator = None
+            return
+        frame_index = self._current_plot_frame_index()
+        current_time = float(self._visualization_data["result"].time[frame_index])
+        if self._plot_time_indicator is None:
+            self._plot_time_indicator = self._plot_axis.axvline(
+                current_time,
+                color="black",
+                linewidth=1.2,
+                linestyle=":",
+                alpha=0.7,
+            )
+            return
+        self._plot_time_indicator.set_xdata([current_time, current_time])
+
+    def _move_animation_to_time(self, time_value: float) -> None:
+        """Move the animation and synced plot to one requested time."""
+
+        if self._visualization_data is None:
+            return
+        self._stop_animation_loop()
+        frame_index = self._frame_index_from_time(float(time_value))
+        self._animation_frame_index = frame_index
+        self._draw_animation_frame(frame_index)
+        self._sync_time_slider_to_frame(frame_index)
+        self._refresh_plot()
+
+    def _on_plot_press(self, event) -> None:
+        """Start dragging the vertical time cursor on the main plot."""
+
+        if getattr(event, "inaxes", None) is not self._plot_axis or event.xdata is None:
+            return
+        if not self._plot_time_indicator_is_enabled():
+            return
+        self._dragging_plot_time_indicator = True
+        self._move_animation_to_time(float(event.xdata))
+
+    def _on_plot_motion(self, event) -> None:
+        """Update the animation while dragging the main-plot time cursor."""
+
+        if not self._dragging_plot_time_indicator or event.xdata is None:
+            return
+        if getattr(event, "inaxes", None) is not self._plot_axis:
+            return
+        self._move_animation_to_time(float(event.xdata))
+
+    def _on_plot_release(self, _event) -> None:
+        """Stop dragging the vertical time cursor on the main plot."""
+
+        self._dragging_plot_time_indicator = False
+
     def _refresh_plot(self) -> None:
         """Refresh the embedded 2D plot using the latest simulation result."""
 
@@ -2824,6 +3010,7 @@ class BestTiltingPlaneApp:
         x_data, y_data, x_label, y_label, title, curve_labels = self._plot_data()
         selected_candidates = self._selected_scan_candidate_records()
         self._plot_axis.clear()
+        self._plot_time_indicator = None
         aspect_setter = getattr(self._plot_axis, "set_aspect", None)
         if callable(aspect_setter):
             aspect_setter("auto")
@@ -2832,7 +3019,8 @@ class BestTiltingPlaneApp:
             styles = ("-", "--")
             widths = (2.2, 2.0)
             alphas = (1.0, 0.9)
-            colors = ("tab:red", "tab:orange", "tab:blue", "tab:green")
+            colors = self._curve_colors_for_plot_choice(y_choice)
+            shoulder_component_styles = ("-", "--", ":", "-.")
             for selection_index, candidate in enumerate(selected_candidates):
                 jerk_bounds: tuple[tuple[float, float], ...] = ()
                 if y_choice == "Jerks bras":
@@ -2857,12 +3045,21 @@ class BestTiltingPlaneApp:
                 if np.asarray(candidate_y).ndim == 2:
                     for curve_index, curve_label in enumerate(curve_labels or ()):
                         plot_method = self._plot_axis.step if y_choice == "Jerks bras" else self._plot_axis.plot
+                        curve_color = colors[curve_index % len(colors)]
+                        curve_linestyle = linestyle
+                        if y_choice == "Couples epaules":
+                            curve_color = colors[
+                                (curve_index // len(SHOULDER_TORQUE_COMPONENT_LABELS)) % len(colors)
+                            ]
+                            curve_linestyle = shoulder_component_styles[
+                                curve_index % len(SHOULDER_TORQUE_COMPONENT_LABELS)
+                            ]
                         plot_method(
                             candidate_x,
                             candidate_y[:, curve_index],
-                            color=colors[curve_index % len(colors)],
+                            color=curve_color,
                             linewidth=linewidth,
-                            linestyle=linestyle,
+                            linestyle=curve_linestyle,
                             alpha=alpha,
                             label=f"{curve_label} | {label_suffix}",
                         )
@@ -2880,32 +3077,47 @@ class BestTiltingPlaneApp:
                         alpha=alpha,
                         label=label_suffix,
                     )
-            self._plot_axis.legend(loc="best")
+            self._plot_axis.legend(loc="upper right", fontsize=PLOT_LEGEND_FONT_SIZE)
         elif np.asarray(y_data).ndim == 2:
-            colors = ("tab:red", "tab:orange", "tab:blue", "tab:green")
-            for curve_index, curve_label in enumerate(curve_labels or ()):
-                plot_method = self._plot_axis.step if y_choice == "Jerks bras" else self._plot_axis.plot
-                plot_method(
-                    x_data,
-                    y_data[:, curve_index],
-                    color=colors[curve_index % len(colors)],
-                    linewidth=2.0,
-                    label=curve_label,
-                )
-            if y_choice == "Cinematique bras":
-                self._add_arm_kinematic_bounds_to_plot(colors)
-            elif y_choice == "Jerks bras":
-                _candidate_x, _candidate_y, jerk_metadata = self._jerk_plot_data_for_candidate(
-                    self._current_arm_plot_candidate()
-                )
-                self._add_per_curve_bounds_to_plot(jerk_metadata[1], colors)
-            self._plot_axis.legend(loc="best")
+            if y_choice == "Couples epaules":
+                colors = ARM_CURVE_COLORS
+                linestyles = ("-", "--", ":", "-.")
+                for curve_index, curve_label in enumerate(curve_labels or ()):
+                    self._plot_axis.plot(
+                        x_data,
+                        y_data[:, curve_index],
+                        color=colors[(curve_index // len(SHOULDER_TORQUE_COMPONENT_LABELS)) % len(colors)],
+                        linestyle=linestyles[curve_index % len(SHOULDER_TORQUE_COMPONENT_LABELS)],
+                        linewidth=1.6,
+                        label=curve_label,
+                    )
+                self._plot_axis.legend(loc="upper right", fontsize=PLOT_LEGEND_FONT_SIZE)
+            else:
+                colors = self._curve_colors_for_plot_choice(y_choice)
+                for curve_index, curve_label in enumerate(curve_labels or ()):
+                    plot_method = self._plot_axis.step if y_choice == "Jerks bras" else self._plot_axis.plot
+                    plot_method(
+                        x_data,
+                        y_data[:, curve_index],
+                        color=colors[curve_index % len(colors)],
+                        linewidth=2.0,
+                        label=curve_label,
+                    )
+                if y_choice == "Cinematique bras":
+                    self._add_arm_kinematic_bounds_to_plot(colors)
+                elif y_choice == "Jerks bras":
+                    _candidate_x, _candidate_y, jerk_metadata = self._jerk_plot_data_for_candidate(
+                        self._current_arm_plot_candidate()
+                    )
+                    self._add_per_curve_bounds_to_plot(jerk_metadata[1], colors)
+                self._plot_axis.legend(loc="upper right", fontsize=PLOT_LEGEND_FONT_SIZE)
         else:
             self._plot_axis.plot(x_data, y_data, color="tab:blue", linewidth=2.0)
         self._plot_axis.set_xlabel(x_label)
         self._plot_axis.set_ylabel(y_label)
         self._plot_axis.set_title(title)
         self._plot_axis.grid(True, alpha=0.3)
+        self._ensure_plot_time_indicator()
         self._plot_canvas.draw_idle()
 
     def _refresh_animation_scene(self) -> None:

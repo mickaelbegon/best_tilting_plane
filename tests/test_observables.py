@@ -20,8 +20,9 @@ def test_system_observables_return_com_and_angular_momentum(tmp_path: Path) -> N
     model_path = ReducedAerialBiomod().write(tmp_path / "reduced.bioMod")
     q_history = np.zeros((4, 10))
     qdot_history = np.zeros((4, 10))
+    qddot_history = np.zeros((4, 10))
 
-    observables = system_observables(model_path, q_history, qdot_history)
+    observables = system_observables(model_path, q_history, qddot_history, qdot_history)
 
     assert observables["center_of_mass"].shape == (4, 3)
     assert observables["angular_momentum"].shape == (4, 3)
@@ -63,7 +64,7 @@ def test_angular_momentum_stays_nearly_conserved_during_nontrivial_simulation(
     )
 
     result = simulator.simulate()
-    angular_momentum = system_observables(model_path, result.q, result.qdot)["angular_momentum"]
+    angular_momentum = system_observables(model_path, result.q, result.qddot, result.qdot)["angular_momentum"]
     drift = np.linalg.norm(angular_momentum - angular_momentum[0], axis=1)
 
     assert np.max(drift) < 1e-3

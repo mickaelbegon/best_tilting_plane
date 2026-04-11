@@ -189,12 +189,18 @@ class Fake3DAxis(FakeAxis):
 
         self.title = value
 
+    def legend(self, *_args, **_kwargs) -> None:
+        """Mirror matplotlib."""
+
+    legend_ = None
+
 
 class FakePlotAxis:
     """Minimal 2D axis stub recording plotted lines and labels."""
 
     def __init__(self) -> None:
         self.plot_calls: list[dict[str, object]] = []
+        self.axvline_calls: list[dict[str, object]] = []
 
     def clear(self) -> None:
         """Mirror matplotlib."""
@@ -227,6 +233,24 @@ class FakePlotAxis:
         """Mirror matplotlib."""
 
     def axhline(self, *_args, **_kwargs) -> None:
+        """Mirror matplotlib."""
+
+    def axvline(self, x, **kwargs):
+        """Record the time-indicator line."""
+
+        payload = {"x": float(x), "kwargs": dict(kwargs), "xdata": [float(x), float(x)]}
+        self.axvline_calls.append(payload)
+
+        class FakeLine:
+            def __init__(self, data) -> None:
+                self.data = data
+
+            def set_xdata(self, values) -> None:
+                self.data["xdata"] = list(values)
+
+        return FakeLine(payload)
+
+    def set_aspect(self, *_args, **_kwargs) -> None:
         """Mirror matplotlib."""
 
 
@@ -425,8 +449,8 @@ def test_apply_animation_reference_maps_popup_choices_to_internal_modes() -> Non
     assert app.animation_mode_var.get() == ANIMATION_MODE_OPTIONS[1]
 
 
-def test_apply_camera_view_uses_root_side_view_for_kinogram_root() -> None:
-    """The kinogram-in-root mode should reuse the root side camera."""
+def test_apply_camera_view_uses_root_side_view_for_root_hand_mode() -> None:
+    """The root-hand mode should reuse the root side camera."""
 
     app, _drawn_frames, _scheduler = _build_app_for_animation()
     app._animation_axis = FakeAxis()
@@ -488,68 +512,6 @@ def test_apply_optimized_values_can_rerun_with_a_custom_prescribed_motion() -> N
         ("set", {"right_arm_start": 0.25}),
         ("run_motion", "custom-motion"),
     ]
-
-
-def test_show_kinematic_explorer_opens_external_figure_for_current_solution() -> None:
-    """The explorer button should open one external figure using the current displayed solution."""
-
-    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
-    captured_payloads: list[list[dict[str, object]]] = []
-    app._show_kinematic_explorer_figure = lambda payloads: captured_payloads.append(payloads)
-    app._selected_scan_candidate_records = lambda: []
-    app._values_with_current_fixed_parameters = lambda values: dict(values)
-    app._current_values = lambda: {"right_arm_start": 0.1}
-    app._last_simulation = AerialSimulationResult(
-        time=np.array([0.0, 0.5, 1.0]),
-        q=np.zeros((3, 10)),
-        qdot=np.zeros((3, 10)),
-        qddot=np.zeros((3, 10)),
-        integrator_method="rk4",
-        rk4_step=0.005,
-        integration_seconds=None,
-    )
-    app._standard_optimization_configuration = lambda: SimulationConfiguration(
-        final_time=1.0,
-        integrator="rk4",
-        rk4_step=0.005,
-    )
-    app._motion_for_kinematic_candidate = lambda candidate: SimpleNamespace(
-        right_arm_start=float(candidate["values"]["right_arm_start"]),
-        left_plane=SimpleNamespace(
-            jerks=np.zeros(3),
-            step=0.02,
-            position=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-            velocity=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-            acceleration=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-        ),
-        left_elevation=SimpleNamespace(
-            jerks=np.zeros(3),
-            step=0.02,
-            position=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-            velocity=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-            acceleration=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-        ),
-        right_plane=SimpleNamespace(
-            jerks=np.zeros(3),
-            step=0.02,
-            position=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-            velocity=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-            acceleration=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-        ),
-        right_elevation=SimpleNamespace(
-            jerks=np.zeros(3),
-            step=0.02,
-            position=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-            velocity=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-            acceleration=lambda t: np.zeros_like(np.asarray(t, dtype=float)),
-        ),
-    )
-
-    app._show_kinematic_explorer()
-
-    assert len(captured_payloads) == 1
-    assert captured_payloads[0][0]["label"] == "Courant | t1=0.10 s"
-    assert len(captured_payloads[0][0]["dofs"]) == 4
 
 
 def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
@@ -844,7 +806,7 @@ def test_refresh_plot_labels_all_arm_velocity_curves_for_selected_solution() -> 
 
 
 def test_prepare_standard_animation_scene_adds_light_gray_dashed_overlay_for_second_condition() -> None:
-    """A second selected condition should create dashed light-gray artists in the 3D scene."""
+    """A second selected condition should create dashed darker-gray artists in the 3D scene."""
 
     marker_names = {name for connection in SKELETON_CONNECTIONS for name in connection}
     trajectories = {name: np.zeros((2, 3)) for name in marker_names}
@@ -864,13 +826,14 @@ def test_prepare_standard_animation_scene_adds_light_gray_dashed_overlay_for_sec
     secondary_calls = app._animation_axis.plot_calls[
         len(SKELETON_CONNECTIONS) : 2 * len(SKELETON_CONNECTIONS)
     ]
-    assert all(line.kwargs["color"] == "black" for line in primary_calls)
-    assert all(line.kwargs["color"] == "0.8" for line in secondary_calls)
+    assert primary_calls[1].kwargs["color"] == "tab:red"
+    assert primary_calls[4].kwargs["color"] == "tab:blue"
+    assert all(line.kwargs["color"] == "0.65" for line in secondary_calls)
     assert all(line.kwargs["linestyle"] == "--" for line in secondary_calls)
 
 
-def test_prepare_standard_animation_scene_builds_kinogram_when_requested() -> None:
-    """The root kinogram mode should create extra sampled posture artists."""
+def test_prepare_standard_animation_scene_builds_root_hand_paths_when_requested() -> None:
+    """The root-hand mode should create persistent left/right hand trajectory artists."""
 
     marker_names = {name for connection in SKELETON_CONNECTIONS for name in connection}
     trajectories = {name: np.zeros((12, 3)) for name in marker_names}
@@ -887,7 +850,7 @@ def test_prepare_standard_animation_scene_builds_kinogram_when_requested() -> No
 
     app._prepare_standard_animation_scene()
 
-    assert len(app._kinogram_line_artists) > 0
+    assert set(app._root_hand_path_artists) == {"left", "right"}
 
 
 def test_draw_animation_frame_updates_secondary_overlay_from_selected_condition() -> None:
@@ -935,10 +898,10 @@ def test_draw_animation_frame_updates_secondary_overlay_from_selected_condition(
     assert app._secondary_line_artists[0].y == expected_segment[:, 1].tolist()
 
 
-def test_optimization_mode_options_expose_2d_and_two_3d_modes() -> None:
-    """The GUI should expose the 2D sweep and both 3D optimization modes."""
+def test_optimization_mode_options_hide_the_btp_mode_from_the_menu() -> None:
+    """The GUI menu should expose only the active 2D and 3D modes."""
 
-    assert OPTIMIZATION_MODE_OPTIONS == ("Optimize 2D", "Optimize 3D", "Optimize 3D BTP")
+    assert OPTIMIZATION_MODE_OPTIONS == ("Optimize 2D", "Optimize 3D")
 
 
 def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> None:
@@ -1307,6 +1270,31 @@ def test_load_cached_dms_solution_rebuilds_the_prescribed_motion(tmp_path: Path)
     assert solver_status == "Solve_Succeeded"
     assert scan_data is not None
     assert scan_data["start_times"] == [0.10, 0.12, 0.14]
+
+
+def test_cached_simulation_result_reuses_qddot_when_present(tmp_path: Path) -> None:
+    """Cached simulation replay should preserve stored accelerations when available."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+
+    q = np.zeros((3, 10))
+    qdot = np.ones((3, 10))
+    qddot = 2.0 * np.ones((3, 10))
+    result = app._cached_simulation_result_from_record(
+        {
+            "q": q.tolist(),
+            "qdot": qdot.tolist(),
+            "qddot": qddot.tolist(),
+        }
+    )
+
+    assert result is not None
+    np.testing.assert_allclose(result.qddot, qddot)
 
 
 def test_optimization_cache_key_changes_with_contact_twist_slider() -> None:
