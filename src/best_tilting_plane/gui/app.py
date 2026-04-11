@@ -49,6 +49,7 @@ from best_tilting_plane.optimization.dms import (
     show_dms_jerk_bounds_figure,
 )
 from best_tilting_plane.optimization.ipopt import DEFAULT_TWIST_RATE_LAGRANGE_WEIGHT
+from best_tilting_plane.optimization.ipopt import FIRST_ARM_PLANE_SWEEP_STEP_DEG
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
     build_piecewise_constant_jerk_arm_motion,
@@ -99,14 +100,15 @@ GUI_FIXED_VALUES = {
     "left_plane_final": 0.0,
     "right_plane_initial": 0.0,
     "right_plane_final": 0.0,
+    "first_arm_start": 0.0,
 }
 GUI_VALUE_NAMES = tuple(definition.name for definition in SLIDER_DEFINITIONS) + tuple(GUI_FIXED_VALUES.keys())
 PLOT_X_OPTIONS = ("Temps", "Somersault", "Vrille")
 PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
 ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Racine (main)", "Best tilting plane")
-OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 3D")
-SCAN_DATASET_MODES = ("Optimize 2D", "Optimize 3D", "Optimize 3D BTP")
+OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize bras 1", "Optimize 3D")
+SCAN_DATASET_MODES = ("Optimize 2D", "Optimize bras 1", "Optimize 3D", "Optimize 3D BTP")
 PLOT_Y_OPTIONS = (
     "Somersault",
     "Tilt",
@@ -117,7 +119,8 @@ PLOT_Y_OPTIONS = (
     "Jerks bras",
     "Deviations bras",
     "Moment cinetique vrille segments",
-    "Couples epaules",
+    "Couples epaules total",
+    "Couples epaules detail",
 )
 ROOT_INITIAL_OPTIONS = ("Avec q racine(0)=0", "Sans q racine(0)=0")
 TOP_VIEW_LEFT_CHAIN = ("shoulder_left", "elbow_left", "wrist_left", "hand_left")
@@ -158,12 +161,13 @@ ARM_KINEMATICS_BOUNDS_DEG = (
     RIGHT_ARM_ELEVATION_BOUNDS_DEG,
 )
 ARM_CURVE_COLORS = ("tab:red", "tab:orange", "tab:blue", "tab:purple")
-SHOULDER_TORQUE_COMPONENT_LABELS = ("Total", "Mqddot", "N(q,0)", "N(q,qdot)-N(q,0)")
+SHOULDER_TORQUE_COMPONENT_LABELS = ("Total", "Mqddot", "N(q,qdot)", "G(q)")
 SHOULDER_TORQUE_DOF_LABELS = ARM_KINEMATICS_LABELS
 SECONDARY_AVATAR_COLOR = "0.65"
 PLOT_LEGEND_FONT_SIZE = 8.0
 SCAN_PLOT_STYLE_BY_MODE = {
     "Optimize 2D": {"color": "tab:blue", "marker": "o", "label": "Optimize 2D"},
+    "Optimize bras 1": {"color": "tab:purple", "marker": "D", "label": "Optimize bras 1"},
     "Optimize 3D": {"color": "tab:orange", "marker": "s", "label": "Optimize 3D"},
     "Optimize 3D BTP": {"color": "tab:green", "marker": "^", "label": "Optimize 3D BTP"},
     "Optimize DMS": {"color": "tab:orange", "marker": "s", "label": "Optimize 3D"},
@@ -188,6 +192,12 @@ def _optimization_mode_label(mode: str) -> str:
     """Return one short user-facing optimization label."""
 
     return "DMS" if mode == "Optimize DMS" else mode
+
+
+def _is_first_arm_optimization_mode(mode: str) -> bool:
+    """Return whether one optimization mode targets the first-arm kinematics sweep."""
+
+    return mode == "Optimize bras 1"
 
 
 def _dms_result_is_better(candidate, reference) -> bool:
@@ -224,6 +234,7 @@ def _variables_from_gui(values: dict[str, float]) -> TwistOptimizationVariables:
         ),
         right_plane_final=np.deg2rad(float(values.get("right_plane_final", GUI_FIXED_VALUES["right_plane_final"]))),
         contact_twist_rate=2.0 * np.pi * float(values.get("contact_twist_turns_per_second", 0.0)),
+        first_arm_start=float(values.get("first_arm_start", GUI_FIXED_VALUES["first_arm_start"])),
     )
 
 
@@ -236,6 +247,7 @@ def _gui_values_from_variables(variables: TwistOptimizationVariables) -> dict[st
         "left_plane_final": float(np.rad2deg(variables.left_plane_final)),
         "right_plane_initial": float(np.rad2deg(variables.right_plane_initial)),
         "right_plane_final": float(np.rad2deg(variables.right_plane_final)),
+        "first_arm_start": float(getattr(variables, "first_arm_start", 0.0)),
     }
 
 
@@ -265,6 +277,7 @@ class BestTiltingPlaneApp:
         self._optimization_thread: threading.Thread | None = None
         self._optimization_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._optimization_poll_after_id: str | None = None
+        self._fixed_values_state = dict(GUI_FIXED_VALUES)
         self._auto_runner = DebouncedRunner(self.root, self._run_simulation, delay_ms=250)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -544,7 +557,7 @@ class BestTiltingPlaneApp:
     def _current_values(self) -> dict[str, float]:
         """Return the current GUI values as a plain dictionary."""
 
-        values = dict(GUI_FIXED_VALUES)
+        values = dict(getattr(self, "_fixed_values_state", GUI_FIXED_VALUES))
         values.update({name: float(variable.get()) for name, variable in self._entries.items()})
         return values
 
@@ -558,7 +571,9 @@ class BestTiltingPlaneApp:
             return ("Bras gauche", "Bras droit")
         if y_choice == "Moment cinetique vrille segments":
             return ("Bras gauche", "Bras droit", "Reste du corps")
-        if y_choice == "Couples epaules":
+        if y_choice == "Couples epaules total":
+            return SHOULDER_TORQUE_DOF_LABELS
+        if y_choice == "Couples epaules detail":
             return BestTiltingPlaneApp._shoulder_torque_curve_labels()
         return ()
 
@@ -630,6 +645,10 @@ class BestTiltingPlaneApp:
 
         self._auto_simulation_suspended = True
         for name, value in values.items():
+            if not hasattr(self, "_fixed_values_state"):
+                self._fixed_values_state = dict(GUI_FIXED_VALUES)
+            if name in self._fixed_values_state:
+                self._fixed_values_state[name] = float(value)
             if name not in self._scales or name not in self._entries:
                 continue
             self._scales[name].set(float(value))
@@ -736,6 +755,8 @@ class BestTiltingPlaneApp:
             signature["dms_second_arm"] = "left"
         else:
             signature["twist_rate_lagrange_weight"] = TWIST_RATE_LAGRANGE_WEIGHT
+            if _is_first_arm_optimization_mode(mode):
+                signature["first_arm_plane_sweep_step_deg"] = float(FIRST_ARM_PLANE_SWEEP_STEP_DEG)
         return signature
 
     def _read_optimization_cache_file(self) -> dict[str, object]:
@@ -805,6 +826,7 @@ class BestTiltingPlaneApp:
             return None
         normalized = dict(values)
         normalized.setdefault("contact_twist_turns_per_second", 0.0)
+        normalized.setdefault("first_arm_start", 0.0)
         expected_names = set(GUI_VALUE_NAMES)
         if set(normalized) != expected_names:
             return None
@@ -817,6 +839,8 @@ class BestTiltingPlaneApp:
         """Augment one optimized-value payload with the current non-optimized GUI parameters."""
 
         merged = dict(values)
+        for name, default_value in getattr(self, "_fixed_values_state", GUI_FIXED_VALUES).items():
+            merged.setdefault(name, float(default_value))
         merged.setdefault("contact_twist_turns_per_second", self._current_contact_twist_turns_per_second())
         return merged
 
@@ -851,7 +875,7 @@ class BestTiltingPlaneApp:
         if values is None:
             return None
         try:
-            best_start_time = float(values["right_arm_start"])
+            best_start_time = float(values["first_arm_start"] if _is_first_arm_optimization_mode(mode) else values["right_arm_start"])
         except (KeyError, TypeError, ValueError):
             return None
         scan_start_times = record.get("scan_start_times")
@@ -916,14 +940,35 @@ class BestTiltingPlaneApp:
         self,
         *,
         initial_guess: TwistOptimizationVariables,
-    ) -> tuple[object, object, dict[str, float]]:
-        """Run the current 2D discrete sweep and return its best result in GUI-friendly form."""
+        mode: str,
+    ) -> tuple[object, object, dict[str, float], object | None]:
+        """Run the current non-3D discrete sweep and return its best result in GUI-friendly form."""
 
-        del initial_guess
         optimizer = TwistStrategyOptimizer.from_builder(
             self._model_path(),
             configuration=self._standard_optimization_configuration(),
         )
+        if mode == "Optimize bras 1" and hasattr(optimizer, "sweep_first_arm_kinematics"):
+            sweep = optimizer.sweep_first_arm_kinematics(
+                second_arm_start=float(initial_guess.right_arm_start),
+                start_step=DMS_SHOOTING_STEP,
+            )
+            best_candidate = sweep.best_candidate
+            result = best_candidate.result
+            optimized_values = self._values_with_current_fixed_parameters(
+                {
+                    **_gui_values_from_variables(result.variables),
+                    "first_arm_start": float(best_candidate.first_arm_start),
+                }
+            )
+            prescribed_motion = build_piecewise_constant_jerk_arm_motion(
+                _variables_from_gui(optimized_values),
+                total_time=self._standard_optimization_configuration().final_time,
+                step=DMS_SHOOTING_STEP,
+                first_arm_start=float(best_candidate.first_arm_start),
+            )
+            setattr(prescribed_motion, "_cached_simulation_result", result.simulation)
+            return sweep, result, optimized_values, prescribed_motion
         if hasattr(optimizer, "sweep_right_arm_start_only"):
             sweep = optimizer.sweep_right_arm_start_only(
                 step=DMS_SHOOTING_STEP,
@@ -944,7 +989,7 @@ class BestTiltingPlaneApp:
                 objective_values=np.array([objective_value], dtype=float),
                 best_result=result,
             )
-        return sweep, result, _gui_values_from_variables(result.variables)
+        return sweep, result, _gui_values_from_variables(result.variables), None
 
     def _dms_multistart_reference_start_time(
         self,
@@ -964,7 +1009,10 @@ class BestTiltingPlaneApp:
             best_two_d_start = float(cached_two_d_values["right_arm_start"])
         else:
             report("Preparation multistart 3D: balayage 2D de reference...")
-            two_d_sweep, two_d_result, two_d_values = self._evaluate_two_d_sweep(initial_guess=initial_guess)
+            two_d_sweep, two_d_result, two_d_values, _ = self._evaluate_two_d_sweep(
+                initial_guess=initial_guess,
+                mode="Optimize 2D",
+            )
             best_two_d_start = float(two_d_result.variables.right_arm_start)
             if use_cache:
                 self._store_cached_optimized_values(
@@ -992,6 +1040,7 @@ class BestTiltingPlaneApp:
 
         configuration = self._standard_optimization_configuration()
         right_arm_start = float(optimized_values["right_arm_start"])
+        first_arm_start = float(optimized_values.get("first_arm_start", 0.0))
         left_plane = PiecewiseConstantJerkTrajectory(
             q0=float(np.deg2rad(optimized_values["left_plane_initial"])),
             qdot0=0.0,
@@ -1010,13 +1059,13 @@ class BestTiltingPlaneApp:
             jerks=np.asarray(right_plane_jerk, dtype=float),
             active_start=0.0,
             active_end=DMS_ACTIVE_DURATION,
-            total_duration=configuration.final_time,
+            total_duration=configuration.final_time - first_arm_start,
         )
         return PiecewiseConstantJerkArmMotion(
             left_plane=left_plane,
             right_plane=right_plane,
             left_arm_start=right_arm_start,
-            right_arm_start=0.0,
+            right_arm_start=first_arm_start,
         )
 
     def _cached_simulation_result_from_record(self, record: dict[str, object]) -> AerialSimulationResult | None:
@@ -2184,6 +2233,9 @@ class BestTiltingPlaneApp:
         self.time_slider_var.set(time_value)
         self._time_slider_updating = False
         self.time_value_var.set(f"{time_value:.2f} s")
+        if self._plot_time_indicator is not None:
+            self._plot_time_indicator.set_xdata([time_value, time_value])
+            self._plot_canvas.draw_idle()
 
     def _on_time_slider_change(self, value: str) -> None:
         """Jump to the selected time and pause the animation for manual inspection."""
@@ -2358,14 +2410,11 @@ class BestTiltingPlaneApp:
         legend_labels: list[str] = []
         for index, candidate in enumerate(selected_candidates[:2], start=1):
             mode = str(candidate.get("mode", "Solution")).replace("Optimize ", "")
-            try:
-                start_time = float(candidate["values"]["right_arm_start"])
-            except (KeyError, TypeError, ValueError):
-                start_time = float("nan")
+            start_name, start_time = self._candidate_start_label(candidate)
             linestyle = "-" if index == 1 else "--"
             color = "black" if index == 1 else SECONDARY_AVATAR_COLOR
             legend_handles.append(Line2D([0], [0], color=color, linestyle=linestyle, linewidth=2.0))
-            legend_labels.append(f"{mode} t1={start_time:.2f}s")
+            legend_labels.append(f"{mode} {start_name}={start_time:.2f}s")
         if legend_handles:
             self._animation_axis.legend(
                 legend_handles,
@@ -2511,6 +2560,8 @@ class BestTiltingPlaneApp:
             return ("tab:red", "tab:blue")
         if y_choice == "Moment cinetique vrille segments":
             return ("tab:red", "tab:blue", "black")
+        if y_choice == "Couples epaules total":
+            return ARM_CURVE_COLORS
         return ARM_CURVE_COLORS
 
     def _selected_scan_candidate_records(self) -> list[dict[str, object]]:
@@ -2533,6 +2584,23 @@ class BestTiltingPlaneApp:
             if isinstance(candidate, dict):
                 selected_candidates.append(candidate)
         return selected_candidates
+
+    @staticmethod
+    def _candidate_start_label(candidate: dict[str, object]) -> tuple[str, float]:
+        """Return the start-time label/value associated with one scan candidate."""
+
+        mode = str(candidate.get("mode", ""))
+        values = candidate.get("values", {})
+        if _is_first_arm_optimization_mode(mode):
+            return "t0", float(values.get("first_arm_start", 0.0))
+        return "t1", float(values.get("right_arm_start", 0.0))
+
+    def _scan_axis_label_for_mode(self, mode: str) -> str:
+        """Return the x-axis label used by the scan figure for one optimization mode."""
+
+        if _is_first_arm_optimization_mode(mode):
+            return "Debut bras droit 1 t0 (s)"
+        return "Debut bras droit t1 (s)"
 
     def _plot_data_for_result(
         self,
@@ -2590,9 +2658,19 @@ class BestTiltingPlaneApp:
                 np.asarray(result.qdot, dtype=float),
             )
             y_data = np.asarray(observables["angular_momentum_groups"][:, :, 2], dtype=float)
-            y_label = "H axe vrille au CoM (kg.m2/s)"
+            y_label = "H axe z global au CoM (kg.m2/s)"
             curve_labels = ("Bras gauche", "Bras droit", "Reste du corps")
-        elif y_choice == "Couples epaules":
+        elif y_choice == "Couples epaules total":
+            observables = system_observables(
+                self._last_model_path or Path(self._model_path()),
+                np.asarray(result.q, dtype=float),
+                np.asarray(result.qddot, dtype=float),
+                np.asarray(result.qdot, dtype=float),
+            )
+            y_data = np.asarray(observables["shoulder_torques"][:, :, 0], dtype=float)
+            y_label = "Couples epaules totaux (N.m)"
+            curve_labels = SHOULDER_TORQUE_DOF_LABELS
+        elif y_choice == "Couples epaules detail":
             observables = system_observables(
                 self._last_model_path or Path(self._model_path()),
                 np.asarray(result.q, dtype=float),
@@ -2600,7 +2678,7 @@ class BestTiltingPlaneApp:
                 np.asarray(result.qdot, dtype=float),
             )
             y_data = np.asarray(observables["shoulder_torques"], dtype=float).reshape(result.time.size, -1)
-            y_label = "Couples epaules (N.m)"
+            y_label = "Couples epaules detail (N.m)"
             curve_labels = self._shoulder_torque_curve_labels()
         else:
             y_data = np.asarray(result.time, dtype=float)
@@ -2612,7 +2690,8 @@ class BestTiltingPlaneApp:
             "Accelerations bras",
             "Deviations bras",
             "Moment cinetique vrille segments",
-            "Couples epaules",
+            "Couples epaules total",
+            "Couples epaules detail",
         }:
             curve_labels = None
 
@@ -2737,9 +2816,12 @@ class BestTiltingPlaneApp:
 
         self._scan_axis.clear()
         datasets = self._scan_plot_datasets()
-        self._scan_axis.set_xlabel("Debut bras droit t1 (s)")
+        current_mode = str(self.optimization_mode_var.get())
+        self._scan_axis.set_xlabel(self._scan_axis_label_for_mode(current_mode))
         self._scan_axis.set_ylabel("Vrilles finales (tours)")
-        self._scan_axis.set_title("Vrilles finales en fonction de t1")
+        self._scan_axis.set_title(
+            "Vrilles finales en fonction de " + ("t0" if _is_first_arm_optimization_mode(current_mode) else "t1")
+        )
         self._scan_axis.grid(True, alpha=0.3)
         if not datasets:
             self._scan_axis.text(
@@ -2900,11 +2982,15 @@ class BestTiltingPlaneApp:
             curve_labels = ("Bras gauche", "Bras droit")
         elif y_choice == "Moment cinetique vrille segments":
             y_data = self._twist_axis_angular_momentum_group_series()
-            y_label = "H axe vrille au CoM (kg.m2/s)"
+            y_label = "H axe z global au CoM (kg.m2/s)"
             curve_labels = ("Bras gauche", "Bras droit", "Reste du corps")
-        elif y_choice == "Couples epaules":
+        elif y_choice == "Couples epaules total":
+            y_data = np.asarray(self._visualization_data["observables"]["shoulder_torques"][:, :, 0], dtype=float)
+            y_label = "Couples epaules totaux (N.m)"
+            curve_labels = SHOULDER_TORQUE_DOF_LABELS
+        elif y_choice == "Couples epaules detail":
             y_data = self._shoulder_torque_series()
-            y_label = "Couples epaules (N.m)"
+            y_label = "Couples epaules detail (N.m)"
             curve_labels = self._shoulder_torque_curve_labels()
         else:
             y_data = np.rad2deg(self._root_series(result, 2))
@@ -2916,7 +3002,8 @@ class BestTiltingPlaneApp:
             "Jerks bras",
             "Deviations bras",
             "Moment cinetique vrille segments",
-            "Couples epaules",
+            "Couples epaules total",
+            "Couples epaules detail",
         }:
             curve_labels = None
 
@@ -3135,9 +3222,8 @@ class BestTiltingPlaneApp:
                 linestyle = styles[min(selection_index, len(styles) - 1)]
                 linewidth = widths[min(selection_index, len(widths) - 1)]
                 alpha = alphas[min(selection_index, len(alphas) - 1)]
-                label_suffix = (
-                    f"t1={float(candidate['values']['right_arm_start']):.2f} s"
-                )
+                start_label, start_value = self._candidate_start_label(candidate)
+                label_suffix = f"{start_label}={start_value:.2f} s"
                 if np.asarray(candidate_y).ndim == 2:
                     candidate_selected_curve_indices = self._selected_curve_indices(curve_labels)
                     for curve_index in candidate_selected_curve_indices:
@@ -3145,7 +3231,7 @@ class BestTiltingPlaneApp:
                         plot_method = self._plot_axis.step if y_choice == "Jerks bras" else self._plot_axis.plot
                         curve_color = colors[curve_index % len(colors)]
                         curve_linestyle = linestyle
-                        if y_choice == "Couples epaules":
+                        if y_choice == "Couples epaules detail":
                             curve_color = colors[
                                 (curve_index // len(SHOULDER_TORQUE_COMPONENT_LABELS)) % len(colors)
                             ]
@@ -3177,7 +3263,7 @@ class BestTiltingPlaneApp:
                     )
             self._plot_axis.legend(loc="upper right", fontsize=PLOT_LEGEND_FONT_SIZE)
         elif np.asarray(y_data).ndim == 2:
-            if y_choice == "Couples epaules":
+            if y_choice == "Couples epaules detail":
                 colors = ARM_CURVE_COLORS
                 linestyles = ("-", "--", ":", "-.")
                 for curve_index in selected_curve_indices:
@@ -3575,7 +3661,10 @@ class BestTiltingPlaneApp:
         elif not _is_three_d_optimization_mode(mode) and use_cache:
             cached_values = self._load_cached_optimized_values()
             if cached_values is not None:
-                cached_scan_data = self._load_cached_optimized_scan_data()
+                cached_scan_data = self._load_cached_scan_bundle_for_mode(mode)
+                best_cached_start = float(
+                    cached_values["first_arm_start"] if _is_first_arm_optimization_mode(mode) else cached_values["right_arm_start"]
+                )
                 return {
                     "optimized_values": cached_values,
                     "status_suffix": "optimum charge depuis le cache",
@@ -3586,7 +3675,7 @@ class BestTiltingPlaneApp:
                             "start_times": cached_scan_data["start_times"],
                             "final_twist_turns": cached_scan_data["final_twist_turns"],
                             "objective_values": cached_scan_data["objective_values"],
-                            "best_start_time": cached_values["right_arm_start"],
+                            "best_start_time": best_cached_start,
                         }
                     ),
                     "show_embedded_scan": cached_scan_data is not None,
@@ -3896,19 +3985,47 @@ class BestTiltingPlaneApp:
                 "jerk_diagnostic": {"optimizer": optimizer, "result": result},
             }
 
-        sweep, result, optimized_values = self._evaluate_two_d_sweep(initial_guess=initial_guess)
-        scan_candidate_solutions = [
-            self._scan_candidate_record(
-                optimized_values=_gui_values_from_variables(candidate_result.variables),
-                simulation_result=getattr(candidate_result, "simulation", None),
-                mode="Optimize 2D",
-                final_twist_turns=candidate_result.final_twist_turns,
-                objective=candidate_result.objective,
-                solver_status=candidate_result.solver_status,
-                success=bool(candidate_result.success),
+        sweep, result, optimized_values, prescribed_motion = self._evaluate_two_d_sweep(
+            initial_guess=initial_guess,
+            mode=mode,
+        )
+        if _is_first_arm_optimization_mode(mode):
+            scan_candidate_solutions = [
+                self._scan_candidate_record(
+                    optimized_values=self._values_with_current_fixed_parameters(
+                        {
+                            **_gui_values_from_variables(candidate.result.variables),
+                            "first_arm_start": float(candidate.first_arm_start),
+                        }
+                    ),
+                    simulation_result=getattr(candidate.result, "simulation", None),
+                    mode=mode,
+                    final_twist_turns=candidate.result.final_twist_turns,
+                    objective=candidate.result.objective,
+                    solver_status=candidate.result.solver_status,
+                    success=bool(candidate.result.success),
+                )
+                for candidate in getattr(sweep, "candidate_results", ())
+            ]
+            best_start_time = float(optimized_values["first_arm_start"])
+            status_suffix = (
+                f"optimum balayage bras 1: {result.final_twist_turns:.2f} tours ({result.solver_status})"
             )
-            for candidate_result in getattr(sweep, "candidate_results", ())
-        ]
+        else:
+            scan_candidate_solutions = [
+                self._scan_candidate_record(
+                    optimized_values=_gui_values_from_variables(candidate_result.variables),
+                    simulation_result=getattr(candidate_result, "simulation", None),
+                    mode="Optimize 2D",
+                    final_twist_turns=candidate_result.final_twist_turns,
+                    objective=candidate_result.objective,
+                    solver_status=candidate_result.solver_status,
+                    success=bool(candidate_result.success),
+                )
+                for candidate_result in getattr(sweep, "candidate_results", ())
+            ]
+            best_start_time = float(result.variables.right_arm_start)
+            status_suffix = f"optimum balayage 1D: {result.final_twist_turns:.2f} tours ({result.solver_status})"
         self._store_cached_optimized_values(
             optimized_values,
             final_twist_turns=result.final_twist_turns,
@@ -3920,14 +4037,15 @@ class BestTiltingPlaneApp:
         )
         return {
             "optimized_values": optimized_values,
-            "status_suffix": f"optimum balayage 1D: {result.final_twist_turns:.2f} tours ({result.solver_status})",
+            "status_suffix": status_suffix,
             "scan_figure": {
                 "start_times": sweep.start_times,
                 "final_twist_turns": sweep.final_twist_turns,
                 "objective_values": sweep.objective_values,
-                "best_start_time": result.variables.right_arm_start,
+                "best_start_time": best_start_time,
             },
             "show_embedded_scan": True,
+            "prescribed_motion": prescribed_motion,
         }
 
     def _report_callback_exception(self, exception_class, exception, trace) -> None:

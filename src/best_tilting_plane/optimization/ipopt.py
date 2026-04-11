@@ -31,6 +31,9 @@ LEFT_ARM_PLANE_BOUNDS = tuple(np.deg2rad(LEFT_ARM_PLANE_BOUNDS_DEG))
 RIGHT_ARM_PLANE_BOUNDS = tuple(np.deg2rad(RIGHT_ARM_PLANE_BOUNDS_DEG))
 SYMBOLIC_RK4_TOLERANCE = 1e-12
 DEFAULT_TWIST_RATE_LAGRANGE_WEIGHT = 1e-3
+FIRST_ARM_START_BOUNDS = (0.0, 0.7)
+FIRST_ARM_PLANE_INITIAL = 0.0
+FIRST_ARM_PLANE_SWEEP_STEP_DEG = 5.0
 
 
 @dataclass(frozen=True)
@@ -106,6 +109,47 @@ class RightArmStartSweepResult:
         """Return the solver-success mask for the scanned start times."""
 
         return np.array([result.success for result in self.candidate_results], dtype=bool)
+
+
+@dataclass(frozen=True)
+class FirstArmSweepCandidate:
+    """Best candidate associated with one tested first-arm start time."""
+
+    first_arm_start: float
+    plane_final: float
+    result: TwistOptimizationResult
+
+
+@dataclass(frozen=True)
+class FirstArmKinematicsSweepResult:
+    """Discrete sweep result for the first-arm kinematics optimization mode."""
+
+    best_candidate: FirstArmSweepCandidate
+    candidate_results: tuple[FirstArmSweepCandidate, ...]
+
+    @property
+    def start_times(self) -> np.ndarray:
+        """Return the scanned first-arm start times."""
+
+        return np.array([candidate.first_arm_start for candidate in self.candidate_results], dtype=float)
+
+    @property
+    def objective_values(self) -> np.ndarray:
+        """Return the best objective retained for each first-arm start time."""
+
+        return np.array([candidate.result.objective for candidate in self.candidate_results], dtype=float)
+
+    @property
+    def final_twist_turns(self) -> np.ndarray:
+        """Return the retained final twist count at each first-arm start time."""
+
+        return np.array([candidate.result.final_twist_turns for candidate in self.candidate_results], dtype=float)
+
+    @property
+    def success_mask(self) -> np.ndarray:
+        """Return the success mask associated with the retained candidates."""
+
+        return np.array([candidate.result.success for candidate in self.candidate_results], dtype=bool)
 
 
 class _ScalarObjectiveCallback(ca.Callback):
@@ -366,6 +410,42 @@ class TwistStrategyOptimizer:
             contact_twist_rate=self._fixed_contact_twist_rate(),
         )
         return self.evaluate(self.to_vector(variables))
+
+    def evaluate_first_arm_kinematics(
+        self,
+        *,
+        first_arm_start: float,
+        second_arm_start: float,
+        first_arm_plane_final: float,
+    ) -> tuple[float, AerialSimulationResult]:
+        """Evaluate one strategy where only the first-arm plan motion is optimized."""
+
+        variables = TwistOptimizationVariables(
+            right_arm_start=float(second_arm_start),
+            left_plane_initial=0.0,
+            left_plane_final=0.0,
+            right_plane_initial=FIRST_ARM_PLANE_INITIAL,
+            right_plane_final=float(first_arm_plane_final),
+            contact_twist_rate=self._fixed_contact_twist_rate(),
+        )
+        simulator = PredictiveAerialTwistSimulator(
+            self.model_path,
+            build_piecewise_constant_jerk_arm_motion(
+                variables,
+                total_time=self.configuration.final_time,
+                step=0.02,
+                first_arm_start=float(first_arm_start),
+            ),
+            configuration=self.configuration,
+            model=self.model,
+        )
+        result = simulator.simulate()
+        twist_rate_lagrange = float(
+            self.twist_rate_lagrange_weight
+            * np.trapz(np.asarray(result.qdot[:, 5], dtype=float), np.asarray(result.time, dtype=float))
+        )
+        objective = float(-(result.final_twist_angle + twist_rate_lagrange))
+        return objective, result
 
     @staticmethod
     def _quintic_profile(phase: ca.MX) -> tuple[ca.MX, ca.MX, ca.MX]:
@@ -739,6 +819,71 @@ class TwistStrategyOptimizer:
         return RightArmStartSweepResult(
             best_result=best_result,
             candidate_results=candidate_results_tuple,
+        )
+
+    def sweep_first_arm_kinematics(
+        self,
+        *,
+        second_arm_start: float,
+        start_step: float = 0.02,
+        plane_step_deg: float = FIRST_ARM_PLANE_SWEEP_STEP_DEG,
+    ) -> FirstArmKinematicsSweepResult:
+        """Scan the first-arm start time and plane-final angle with direct simulations."""
+
+        first_node = int(round(FIRST_ARM_START_BOUNDS[0] / start_step))
+        last_node = int(round(FIRST_ARM_START_BOUNDS[1] / start_step))
+        start_times = start_step * np.arange(first_node, last_node + 1, dtype=float)
+        plane_values_deg = np.arange(
+            RIGHT_ARM_PLANE_BOUNDS_DEG[0],
+            RIGHT_ARM_PLANE_BOUNDS_DEG[1] + 0.5 * plane_step_deg,
+            plane_step_deg,
+            dtype=float,
+        )
+        plane_values = np.deg2rad(plane_values_deg)
+        best_candidates: list[FirstArmSweepCandidate] = []
+
+        for first_arm_start in start_times:
+            best_candidate_for_start: FirstArmSweepCandidate | None = None
+            for plane_final in plane_values:
+                objective, simulation = self.evaluate_first_arm_kinematics(
+                    first_arm_start=float(first_arm_start),
+                    second_arm_start=float(second_arm_start),
+                    first_arm_plane_final=float(plane_final),
+                )
+                candidate_result = TwistOptimizationResult(
+                    variables=TwistOptimizationVariables(
+                        right_arm_start=float(second_arm_start),
+                        left_plane_initial=0.0,
+                        left_plane_final=0.0,
+                        right_plane_initial=FIRST_ARM_PLANE_INITIAL,
+                        right_plane_final=float(plane_final),
+                        contact_twist_rate=self._fixed_contact_twist_rate(),
+                    ),
+                    final_twist_angle=simulation.final_twist_angle,
+                    final_twist_turns=simulation.final_twist_turns,
+                    objective=float(objective),
+                    solver_status="Discrete_Sweep",
+                    success=True,
+                    simulation=simulation,
+                )
+                candidate = FirstArmSweepCandidate(
+                    first_arm_start=float(first_arm_start),
+                    plane_final=float(plane_final),
+                    result=candidate_result,
+                )
+                if (
+                    best_candidate_for_start is None
+                    or candidate.result.objective < best_candidate_for_start.result.objective
+                ):
+                    best_candidate_for_start = candidate
+            assert best_candidate_for_start is not None
+            best_candidates.append(best_candidate_for_start)
+
+        candidate_results = tuple(best_candidates)
+        best_candidate = min(candidate_results, key=lambda candidate: candidate.result.objective)
+        return FirstArmKinematicsSweepResult(
+            best_candidate=best_candidate,
+            candidate_results=candidate_results,
         )
 
 

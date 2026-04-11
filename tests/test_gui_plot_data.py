@@ -437,7 +437,7 @@ def test_plot_data_can_return_twist_axis_angular_momentum_transfers() -> None:
         ),
     )
     assert x_label == "Temps (s)"
-    assert y_label == "H axe vrille au CoM (kg.m2/s)"
+    assert y_label == "H axe z global au CoM (kg.m2/s)"
     assert title == "Moment cinetique vrille segments en fonction de temps"
     assert curve_labels == ("Bras gauche", "Bras droit", "Reste du corps")
 
@@ -445,7 +445,7 @@ def test_plot_data_can_return_twist_axis_angular_momentum_transfers() -> None:
 def test_plot_data_can_return_shoulder_torques_and_decomposition() -> None:
     """The plot selector should expose shoulder torques and their decomposition terms."""
 
-    app = _build_app_for_plotting(plot_x="Temps", plot_y="Couples epaules")
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Couples epaules detail")
 
     x_data, y_data, x_label, y_label, title, curve_labels = app._plot_data()
 
@@ -453,8 +453,8 @@ def test_plot_data_can_return_shoulder_torques_and_decomposition() -> None:
     assert y_data.shape == (3, 16)
     np.testing.assert_allclose(y_data[0, :4], np.array([1.0, 0.1, 0.01, 0.001]))
     assert x_label == "Temps (s)"
-    assert y_label == "Couples epaules (N.m)"
-    assert title == "Couples epaules en fonction de temps"
+    assert y_label == "Couples epaules detail (N.m)"
+    assert title == "Couples epaules detail en fonction de temps"
     assert curve_labels[0] == "Plan bras gauche | Total"
     assert curve_labels[3] == "Plan bras gauche | N(q,qdot)-N(q,0)"
     assert curve_labels[-1] == "Elevation bras droit | N(q,qdot)-N(q,0)"

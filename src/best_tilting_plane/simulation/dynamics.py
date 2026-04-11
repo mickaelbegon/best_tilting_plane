@@ -120,6 +120,7 @@ class PredictiveAerialTwistSimulator:
                 variables,
                 total_time=(configuration or SimulationConfiguration()).final_time,
                 step=jerk_step,
+                first_arm_start=float(getattr(variables, "first_arm_start", 0.0)),
             ),
             configuration=configuration,
         )

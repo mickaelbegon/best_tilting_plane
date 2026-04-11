@@ -20,6 +20,7 @@ class TwistOptimizationVariables:
     right_plane_initial: float
     right_plane_final: float
     contact_twist_rate: float = 0.0
+    first_arm_start: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -66,7 +67,7 @@ class PrescribedArmMotion:
 
         self.variables = variables
         self.left_start = float(variables.right_arm_start)
-        self.right_start = float(left_start)
+        self.right_start = float(getattr(variables, "first_arm_start", left_start))
         self.duration = duration
         self.left_elevation_initial = left_elevation_initial
         self.left_elevation_final = left_elevation_final

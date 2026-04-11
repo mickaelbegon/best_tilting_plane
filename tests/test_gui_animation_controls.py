@@ -821,18 +821,18 @@ def test_refresh_plot_can_filter_selected_shoulder_torque_curves() -> None:
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app._visualization_data = {"result": simulation}
     app.plot_mode_var = FakeVar("Courbe")
-    app.plot_y_var = FakeVar("Couples epaules")
+    app.plot_y_var = FakeVar("Couples epaules detail")
     app.plot_x_var = FakeVar("Temps")
     app._plot_axis = FakePlotAxis()
     app._plot_canvas = SimpleNamespace(draw_idle=lambda: None)
-    app._curve_selection_by_plot = {"Couples epaules": ("Plan bras gauche | Total", "Plan bras droit | Mqddot")}
+    app._curve_selection_by_plot = {"Couples epaules detail": ("Plan bras gauche | Total", "Plan bras droit | Mqddot")}
     app._selected_scan_solutions = []
     app._plot_data = lambda: (
         np.array([0.0, 0.2, 0.4]),
         np.arange(48, dtype=float).reshape(3, 16),
         "Temps (s)",
-        "Couples epaules (N.m)",
-        "Couples epaules en fonction de temps",
+        "Couples epaules detail (N.m)",
+        "Couples epaules detail en fonction de temps",
         BestTiltingPlaneApp._shoulder_torque_curve_labels(),
     )
 
@@ -940,7 +940,7 @@ def test_draw_animation_frame_updates_secondary_overlay_from_selected_condition(
 def test_optimization_mode_options_hide_the_btp_mode_from_the_menu() -> None:
     """The GUI menu should expose only the active 2D and 3D modes."""
 
-    assert OPTIMIZATION_MODE_OPTIONS == ("Optimize 2D", "Optimize 3D")
+    assert OPTIMIZATION_MODE_OPTIONS == ("Optimize 2D", "Optimize bras 1", "Optimize 3D")
 
 
 def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> None:

@@ -41,18 +41,17 @@ def system_observables(
             q_biorbd, qdot_biorbd, True
         ).to_array()
         inverse_dynamics = model.InverseDynamics(q_biorbd, qdot_biorbd, qddot_biorbd).to_array()
-        nonlinear_static = model.NonLinearEffect(
+        gravity_effects = model.NonLinearEffect(
             q_biorbd,
             biorbd.GeneralizedVelocity(zero_qdot),
         ).to_array()
         nonlinear_full = model.NonLinearEffect(q_biorbd, qdot_biorbd).to_array()
         inertial = model.massMatrix(q_biorbd).to_array() @ qddot
-        coriolis_centrifugal = nonlinear_full - nonlinear_static
         for shoulder_index, dof_index in enumerate(SHOULDER_DOF_INDICES):
             shoulder_torques[frame_index, shoulder_index, 0] = inverse_dynamics[dof_index]
             shoulder_torques[frame_index, shoulder_index, 1] = inertial[dof_index]
-            shoulder_torques[frame_index, shoulder_index, 2] = nonlinear_static[dof_index]
-            shoulder_torques[frame_index, shoulder_index, 3] = coriolis_centrifugal[dof_index]
+            shoulder_torques[frame_index, shoulder_index, 2] = nonlinear_full[dof_index]
+            shoulder_torques[frame_index, shoulder_index, 3] = gravity_effects[dof_index]
         for group_index, velocity_slice in enumerate(
             (LEFT_ARM_VELOCITY_SLICE, RIGHT_ARM_VELOCITY_SLICE, BODY_VELOCITY_SLICE)
         ):
