@@ -805,6 +805,45 @@ def test_refresh_plot_labels_all_arm_velocity_curves_for_selected_solution() -> 
     ]
 
 
+def test_refresh_plot_can_filter_selected_shoulder_torque_curves() -> None:
+    """The shoulder-torque plot should honor the GUI curve selection."""
+
+    simulation = AerialSimulationResult(
+        time=np.array([0.0, 0.2, 0.4]),
+        q=np.zeros((3, 10)),
+        qdot=np.zeros((3, 10)),
+        qddot=np.zeros((3, 10)),
+        integrator_method="rk4",
+        rk4_step=0.005,
+        integration_seconds=None,
+    )
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app._visualization_data = {"result": simulation}
+    app.plot_mode_var = FakeVar("Courbe")
+    app.plot_y_var = FakeVar("Couples epaules")
+    app.plot_x_var = FakeVar("Temps")
+    app._plot_axis = FakePlotAxis()
+    app._plot_canvas = SimpleNamespace(draw_idle=lambda: None)
+    app._curve_selection_by_plot = {"Couples epaules": ("Plan bras gauche | Total", "Plan bras droit | Mqddot")}
+    app._selected_scan_solutions = []
+    app._plot_data = lambda: (
+        np.array([0.0, 0.2, 0.4]),
+        np.arange(48, dtype=float).reshape(3, 16),
+        "Temps (s)",
+        "Couples epaules (N.m)",
+        "Couples epaules en fonction de temps",
+        BestTiltingPlaneApp._shoulder_torque_curve_labels(),
+    )
+
+    app._refresh_plot()
+
+    assert [call["label"] for call in app._plot_axis.plot_calls] == [
+        "Plan bras gauche | Total",
+        "Plan bras droit | Mqddot",
+    ]
+
+
 def test_prepare_standard_animation_scene_adds_light_gray_dashed_overlay_for_second_condition() -> None:
     """A second selected condition should create dashed darker-gray artists in the 3D scene."""
 

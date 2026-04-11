@@ -663,6 +663,22 @@ def test_refresh_plot_adds_arm_angle_bounds_when_plotting_arm_kinematics() -> No
     assert app._plot_canvas.draw_idle_calls == 1
 
 
+def test_refresh_plot_can_filter_selected_arm_curves() -> None:
+    """The embedded plot should draw only the arm curves selected by the user."""
+
+    app = _build_app_for_plotting(plot_x="Temps", plot_y="Cinematique bras")
+    app._plot_axis = _FakeAxis()
+    app._plot_canvas = _FakeCanvas()
+    app._curve_selection_by_plot = {"Cinematique bras": ("Plan bras gauche", "Plan bras droit")}
+
+    app._refresh_plot()
+
+    assert [call["kwargs"]["label"] for call in app._plot_axis.plot_calls] == [
+        "Plan bras gauche",
+        "Plan bras droit",
+    ]
+
+
 def test_refresh_plot_adds_jerk_bounds_when_plotting_arm_jerks() -> None:
     """The embedded jerk figure should display one jerk bound pair per arm DoF."""
 

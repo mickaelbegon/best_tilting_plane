@@ -409,17 +409,34 @@ class BestTiltingPlaneApp:
         plot_y_box.grid(
             row=scan_row + 5, column=1, columnspan=2, sticky="ew", pady=4
         )
-        plot_y_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
+        plot_y_box.bind("<<ComboboxSelected>>", lambda _event: self._on_plot_choice_change())
+
+        ttk.Label(controls, text="Courbes").grid(
+            row=scan_row + 6, column=0, sticky="nw", pady=(6, 0)
+        )
+        self._curve_selector = tk.Listbox(
+            controls,
+            selectmode=tk.MULTIPLE,
+            exportselection=False,
+            height=6,
+        )
+        self._curve_selector.grid(
+            row=scan_row + 6, column=1, columnspan=2, sticky="ew", pady=(6, 0)
+        )
+        self._curve_selector.bind("<<ListboxSelect>>", lambda _event: self._on_curve_selection_change())
+        self._curve_selection_by_plot: dict[str, tuple[str, ...]] = {}
+        self._curve_selector_labels: tuple[str, ...] = ()
+        self._updating_curve_selector = False
 
         ttk.Button(controls, text="Simulate", command=self._run_simulation).grid(
-            row=scan_row + 6, column=0, sticky="w", pady=(10, 0)
+            row=scan_row + 7, column=0, sticky="w", pady=(10, 0)
         )
         self.ignore_optimization_cache_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             controls,
             text="Ignorer le cache optimum",
             variable=self.ignore_optimization_cache_var,
-        ).grid(row=scan_row + 7, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        ).grid(row=scan_row + 8, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self.optimization_mode_var = tk.StringVar(value=OPTIMIZATION_MODE_OPTIONS[0])
         optimization_mode_box = ttk.Combobox(
             controls,
@@ -429,15 +446,15 @@ class BestTiltingPlaneApp:
             width=18,
         )
         optimization_mode_box.grid(
-            row=scan_row + 8, column=0, columnspan=2, sticky="ew", pady=(10, 0), padx=(0, 8)
+            row=scan_row + 9, column=0, columnspan=2, sticky="ew", pady=(10, 0), padx=(0, 8)
         )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=scan_row + 8, column=2, sticky="w", pady=(10, 0)
+            row=scan_row + 9, column=2, sticky="w", pady=(10, 0)
         )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
-            row=scan_row + 9, column=0, columnspan=3, sticky="w", pady=(10, 0)
+            row=scan_row + 10, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.root.report_callback_exception = self._report_callback_exception
         self.sequence_var = tk.StringVar(
@@ -450,7 +467,7 @@ class BestTiltingPlaneApp:
             )
         )
         ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
-            row=scan_row + 10, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=scan_row + 11, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
         self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
@@ -505,6 +522,7 @@ class BestTiltingPlaneApp:
         self._plot_time_indicator = None
         self._dragging_plot_time_indicator = False
 
+        self._update_curve_selector()
         self._run_simulation()
 
     def _on_slider_change(self, _name: str, variable: tk.StringVar, value: str) -> None:
@@ -529,6 +547,83 @@ class BestTiltingPlaneApp:
         values = dict(GUI_FIXED_VALUES)
         values.update({name: float(variable.get()) for name, variable in self._entries.items()})
         return values
+
+    @staticmethod
+    def _curve_filter_labels_for_choice(y_choice: str) -> tuple[str, ...]:
+        """Return the selectable curve labels associated with one `Figure y` choice."""
+
+        if y_choice in {"Cinematique bras", "Vitesses bras", "Accelerations bras", "Jerks bras"}:
+            return ARM_KINEMATICS_LABELS
+        if y_choice == "Deviations bras":
+            return ("Bras gauche", "Bras droit")
+        if y_choice == "Moment cinetique vrille segments":
+            return ("Bras gauche", "Bras droit", "Reste du corps")
+        if y_choice == "Couples epaules":
+            return BestTiltingPlaneApp._shoulder_torque_curve_labels()
+        return ()
+
+    def _on_plot_choice_change(self) -> None:
+        """Refresh the curve selector and the main plot after a plotting-choice change."""
+
+        self._update_curve_selector()
+        self._refresh_plot()
+
+    def _update_curve_selector(self) -> None:
+        """Populate the multi-selection widget with the labels relevant to the current plot."""
+
+        selector = getattr(self, "_curve_selector", None)
+        if selector is None or not hasattr(self, "plot_y_var"):
+            return
+        y_choice = str(self.plot_y_var.get())
+        labels = self._curve_filter_labels_for_choice(y_choice)
+        self._updating_curve_selector = True
+        selector.delete(0, tk.END)
+        for label in labels:
+            selector.insert(tk.END, label)
+        self._curve_selector_labels = labels
+        if labels:
+            selection_by_plot = getattr(self, "_curve_selection_by_plot", {})
+            selected_labels = selection_by_plot.get(y_choice, labels)
+            for index, label in enumerate(labels):
+                if label in selected_labels:
+                    selector.selection_set(index)
+            selector.configure(height=min(max(len(labels), 2), 8), state=tk.NORMAL)
+        else:
+            selector.configure(height=2, state=tk.DISABLED)
+        self._updating_curve_selector = False
+
+    def _on_curve_selection_change(self) -> None:
+        """Store the selected curve labels and refresh the main plot."""
+
+        if getattr(self, "_updating_curve_selector", False):
+            return
+        selector = getattr(self, "_curve_selector", None)
+        if selector is None or not hasattr(self, "plot_y_var"):
+            return
+        labels = getattr(self, "_curve_selector_labels", ())
+        selected_indices = tuple(int(index) for index in selector.curselection())
+        selected_labels = tuple(labels[index] for index in selected_indices if 0 <= index < len(labels))
+        if not hasattr(self, "_curve_selection_by_plot"):
+            self._curve_selection_by_plot = {}
+        self._curve_selection_by_plot[str(self.plot_y_var.get())] = selected_labels
+        self._refresh_plot()
+
+    def _selected_curve_indices(
+        self,
+        curve_labels: tuple[str, ...] | None,
+    ) -> tuple[int, ...]:
+        """Return the indices of the curves currently selected by the user."""
+
+        if not curve_labels:
+            return ()
+        selection_by_plot = getattr(self, "_curve_selection_by_plot", None)
+        if not isinstance(selection_by_plot, dict) or not hasattr(self, "plot_y_var"):
+            return tuple(range(len(curve_labels)))
+        selected_labels = selection_by_plot.get(str(self.plot_y_var.get()))
+        if not selected_labels:
+            return tuple(range(len(curve_labels)))
+        selected_set = set(selected_labels)
+        return tuple(index for index, label in enumerate(curve_labels) if label in selected_set)
 
     def _set_values(self, values: dict[str, float]) -> None:
         """Write a new set of values back to the sliders and entry boxes."""
@@ -3009,6 +3104,7 @@ class BestTiltingPlaneApp:
 
         x_data, y_data, x_label, y_label, title, curve_labels = self._plot_data()
         selected_candidates = self._selected_scan_candidate_records()
+        selected_curve_indices = self._selected_curve_indices(curve_labels)
         self._plot_axis.clear()
         self._plot_time_indicator = None
         aspect_setter = getattr(self._plot_axis, "set_aspect", None)
@@ -3043,7 +3139,9 @@ class BestTiltingPlaneApp:
                     f"t1={float(candidate['values']['right_arm_start']):.2f} s"
                 )
                 if np.asarray(candidate_y).ndim == 2:
-                    for curve_index, curve_label in enumerate(curve_labels or ()):
+                    candidate_selected_curve_indices = self._selected_curve_indices(curve_labels)
+                    for curve_index in candidate_selected_curve_indices:
+                        curve_label = curve_labels[curve_index]
                         plot_method = self._plot_axis.step if y_choice == "Jerks bras" else self._plot_axis.plot
                         curve_color = colors[curve_index % len(colors)]
                         curve_linestyle = linestyle
@@ -3082,7 +3180,8 @@ class BestTiltingPlaneApp:
             if y_choice == "Couples epaules":
                 colors = ARM_CURVE_COLORS
                 linestyles = ("-", "--", ":", "-.")
-                for curve_index, curve_label in enumerate(curve_labels or ()):
+                for curve_index in selected_curve_indices:
+                    curve_label = curve_labels[curve_index]
                     self._plot_axis.plot(
                         x_data,
                         y_data[:, curve_index],
@@ -3094,7 +3193,8 @@ class BestTiltingPlaneApp:
                 self._plot_axis.legend(loc="upper right", fontsize=PLOT_LEGEND_FONT_SIZE)
             else:
                 colors = self._curve_colors_for_plot_choice(y_choice)
-                for curve_index, curve_label in enumerate(curve_labels or ()):
+                for curve_index in selected_curve_indices:
+                    curve_label = curve_labels[curve_index]
                     plot_method = self._plot_axis.step if y_choice == "Jerks bras" else self._plot_axis.plot
                     plot_method(
                         x_data,
