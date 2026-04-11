@@ -578,13 +578,14 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
     assert applied == [
         (
             {
+                "first_arm_start": 0.0,
                 "right_arm_start": 0.35,
                 "left_plane_initial": 0.0,
                 "left_plane_final": 0.0,
                 "right_plane_initial": 0.0,
                 "right_plane_final": 0.0,
             },
-            "optimum balayage 1D: -0.75 tours (Solve_Succeeded)",
+            "optimum Optimize 2D bras 1: -0.75 tours (Solve_Succeeded)",
         )
     ]
     assert app.plot_y_var.get() == "Twist"
@@ -940,7 +941,7 @@ def test_draw_animation_frame_updates_secondary_overlay_from_selected_condition(
 def test_optimization_mode_options_hide_the_btp_mode_from_the_menu() -> None:
     """The GUI menu should expose only the active 2D and 3D modes."""
 
-    assert OPTIMIZATION_MODE_OPTIONS == ("Optimize 2D", "Optimize bras 1", "Optimize 3D")
+    assert OPTIMIZATION_MODE_OPTIONS == ("Optimize 2D", "Optimize 3D")
 
 
 def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> None:
@@ -958,6 +959,7 @@ def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> N
                     "optimize_2d": {
                         "signature": app._optimization_cache_signature(),
                         "values": {
+                            "first_arm_start": 0.0,
                             "right_arm_start": 0.35,
                             "left_plane_initial": 0.0,
                             "left_plane_final": 0.0,
@@ -973,6 +975,7 @@ def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> N
 
     assert app._load_cached_optimized_values() == {
         "contact_twist_turns_per_second": 0.0,
+        "first_arm_start": 0.0,
         "right_arm_start": 0.35,
         "left_plane_initial": 0.0,
         "left_plane_final": 0.0,
@@ -1010,9 +1013,10 @@ def test_optimize_strategy_uses_cache_without_running_ipopt(monkeypatch, tmp_pat
         json.dumps(
             {
                 "records": {
-                    "optimize_2d": {
-                        "signature": app._optimization_cache_signature(),
+                    "arm1_2d": {
+                        "signature": app._optimization_cache_signature_for_mode("Arm1 2D"),
                         "values": {
+                            "first_arm_start": 0.0,
                             "right_arm_start": 0.42,
                             "left_plane_initial": 0.0,
                             "left_plane_final": 0.0,
@@ -1034,16 +1038,17 @@ def test_optimize_strategy_uses_cache_without_running_ipopt(monkeypatch, tmp_pat
 
     assert app._auto_runner.cancelled
     assert applied == [
-            (
-                {
-                    "contact_twist_turns_per_second": 0.0,
-                    "right_arm_start": 0.42,
-                    "left_plane_initial": 0.0,
-                    "left_plane_final": 0.0,
-                    "right_plane_initial": 0.0,
-                    "right_plane_final": 0.0,
+        (
+            {
+                "contact_twist_turns_per_second": 0.0,
+                "first_arm_start": 0.0,
+                "right_arm_start": 0.42,
+                "left_plane_initial": 0.0,
+                "left_plane_final": 0.0,
+                "right_plane_initial": 0.0,
+                "right_plane_final": 0.0,
             },
-            "optimum charge depuis le cache",
+            "optimum Optimize 2D bras 1 charge depuis le cache",
         )
     ]
 
@@ -1101,9 +1106,10 @@ def test_optimize_strategy_can_ignore_cached_ipopt_solution(monkeypatch, tmp_pat
         json.dumps(
             {
                 "records": {
-                    "optimize_2d": {
-                        "signature": app._optimization_cache_signature(),
+                    "arm1_2d": {
+                        "signature": app._optimization_cache_signature_for_mode("Arm1 2D"),
                         "values": {
+                            "first_arm_start": 0.0,
                             "right_arm_start": 0.42,
                             "left_plane_initial": 0.0,
                             "left_plane_final": 0.0,
@@ -1126,13 +1132,14 @@ def test_optimize_strategy_can_ignore_cached_ipopt_solution(monkeypatch, tmp_pat
     assert applied == [
         (
             {
+                "first_arm_start": 0.0,
                 "right_arm_start": 0.35,
                 "left_plane_initial": 0.0,
                 "left_plane_final": 0.0,
                 "right_plane_initial": 0.0,
                 "right_plane_final": 0.0,
             },
-            "optimum balayage 1D: -0.75 tours (Solve_Succeeded)",
+            "optimum Optimize 2D bras 1: -0.75 tours (Solve_Succeeded)",
         )
     ]
 
@@ -1230,9 +1237,10 @@ def test_optimize_strategy_writes_cache_after_ipopt(monkeypatch, tmp_path: Path)
     app._optimize_strategy()
 
     stored = json.loads((tmp_path / "optimization_cache.json").read_text(encoding="utf-8"))
-    record = stored["records"]["optimize_2d"]
+    record = stored["records"]["arm1_2d"]
     assert record["values"] == {
         "contact_twist_turns_per_second": 0.0,
+        "first_arm_start": 0.0,
         "right_arm_start": 0.35,
         "left_plane_initial": 0.0,
         "left_plane_final": 0.0,
@@ -1244,13 +1252,14 @@ def test_optimize_strategy_writes_cache_after_ipopt(monkeypatch, tmp_path: Path)
     assert applied == [
         (
             {
+                "first_arm_start": 0.0,
                 "right_arm_start": 0.35,
                 "left_plane_initial": 0.0,
                 "left_plane_final": 0.0,
                 "right_plane_initial": 0.0,
                 "right_plane_final": 0.0,
             },
-            "optimum balayage 1D: -0.75 tours (Solve_Succeeded)",
+            "optimum Optimize 2D bras 1: -0.75 tours (Solve_Succeeded)",
         )
     ]
 
@@ -1504,6 +1513,7 @@ def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
     assert app._auto_runner.cancelled
     assert applied[0][0] == {
         "contact_twist_turns_per_second": 0.0,
+        "first_arm_start": 0.0,
         "right_arm_start": 0.28,
         "left_plane_initial": 0.0,
         "left_plane_final": 0.0,
@@ -1511,7 +1521,7 @@ def test_optimize_strategy_uses_cached_dms_solution_without_running_solver(
         "right_plane_final": 0.0,
     }
     assert applied[0][1] is not None
-    assert applied[0][2] == "optimum DMS charge depuis le cache: -0.63 tours (Solve_Succeeded)"
+    assert applied[0][2] == "optimum DMS bras 2 charge depuis le cache: -0.63 tours (Solve_Succeeded)"
     assert len(shown) == 1
     np.testing.assert_allclose(shown[0]["start_times"], [0.10, 0.12, 0.28])
     np.testing.assert_allclose(shown[0]["final_twist_turns"], [-0.40, -0.55, -0.63])
@@ -1667,6 +1677,7 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
     assert applied == [
         (
             {
+                "first_arm_start": 0.0,
                 "right_arm_start": 0.28,
                 "left_plane_initial": 0.0,
                 "left_plane_final": 0.0,
@@ -1674,7 +1685,7 @@ def test_optimize_strategy_runs_dms_and_replays_the_optimized_motion(
                 "right_plane_final": 0.0,
             },
             "dms-motion",
-            "optimum DMS: -0.63 tours (Solve_Succeeded)",
+            "optimum DMS bras 2: -0.63 tours (Solve_Succeeded)",
         )
     ]
     assert len(shown) == 1
@@ -2244,6 +2255,7 @@ def test_optimize_strategy_can_ignore_cached_dms_solution_and_restart_sweep(
     assert applied == [
         (
             {
+                "first_arm_start": 0.0,
                 "right_arm_start": 0.12,
                 "left_plane_initial": 0.0,
                 "left_plane_final": 0.0,
@@ -2251,7 +2263,7 @@ def test_optimize_strategy_can_ignore_cached_dms_solution_and_restart_sweep(
                 "right_plane_final": 0.0,
             },
             "dms-motion-0.12",
-            "optimum DMS: -0.63 tours (Solve_Succeeded)",
+            "optimum DMS bras 2: -0.63 tours (Solve_Succeeded)",
         )
     ]
 
@@ -2325,6 +2337,7 @@ def test_optimize_strategy_writes_cache_after_dms(monkeypatch, tmp_path: Path) -
     record = stored["records"]["optimize_dms"]
     assert record["values"] == {
         "contact_twist_turns_per_second": 0.0,
+        "first_arm_start": 0.0,
         "right_arm_start": 0.28,
         "left_plane_initial": 0.0,
         "left_plane_final": 0.0,
@@ -2523,6 +2536,7 @@ def test_optimize_strategy_resumes_dms_from_partial_checkpoint(
     assert applied == [
         (
             {
+                "first_arm_start": 0.0,
                 "right_arm_start": 0.14,
                 "left_plane_initial": 0.0,
                 "left_plane_final": 0.0,
@@ -2530,7 +2544,7 @@ def test_optimize_strategy_resumes_dms_from_partial_checkpoint(
                 "right_plane_final": 0.0,
             },
             "dms-motion-0.14",
-            "optimum DMS: -0.63 tours (Solve_Succeeded)",
+            "optimum DMS bras 2: -0.63 tours (Solve_Succeeded)",
         )
     ]
     stored = json.loads((tmp_path / "optimization_cache.json").read_text(encoding="utf-8"))

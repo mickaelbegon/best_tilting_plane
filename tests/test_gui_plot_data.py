@@ -437,7 +437,7 @@ def test_plot_data_can_return_twist_axis_angular_momentum_transfers() -> None:
         ),
     )
     assert x_label == "Temps (s)"
-    assert y_label == "H axe z global au CoM (kg.m2/s)"
+    assert y_label == "H axe principal vertical du corps au CoM (kg.m2/s)"
     assert title == "Moment cinetique vrille segments en fonction de temps"
     assert curve_labels == ("Bras gauche", "Bras droit", "Reste du corps")
 
@@ -456,8 +456,8 @@ def test_plot_data_can_return_shoulder_torques_and_decomposition() -> None:
     assert y_label == "Couples epaules detail (N.m)"
     assert title == "Couples epaules detail en fonction de temps"
     assert curve_labels[0] == "Plan bras gauche | Total"
-    assert curve_labels[3] == "Plan bras gauche | N(q,qdot)-N(q,0)"
-    assert curve_labels[-1] == "Elevation bras droit | N(q,qdot)-N(q,0)"
+    assert curve_labels[3] == "Plan bras gauche | G(q)"
+    assert curve_labels[-1] == "Elevation bras droit | G(q)"
 
 
 def test_plot_data_can_use_twist_as_the_horizontal_axis() -> None:

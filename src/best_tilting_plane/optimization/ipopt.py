@@ -411,6 +411,42 @@ class TwistStrategyOptimizer:
         )
         return self.evaluate(self.to_vector(variables))
 
+    def evaluate_second_arm_start_only(
+        self,
+        second_arm_start: float,
+        *,
+        fixed_first_arm: TwistOptimizationVariables,
+    ) -> tuple[float, AerialSimulationResult]:
+        """Evaluate the reduced second-arm timing sweep with a fixed first-arm strategy."""
+
+        variables = TwistOptimizationVariables(
+            right_arm_start=float(second_arm_start),
+            left_plane_initial=0.0,
+            left_plane_final=0.0,
+            right_plane_initial=float(fixed_first_arm.right_plane_initial),
+            right_plane_final=float(fixed_first_arm.right_plane_final),
+            contact_twist_rate=self._fixed_contact_twist_rate(),
+            first_arm_start=float(getattr(fixed_first_arm, "first_arm_start", 0.0)),
+        )
+        simulator = PredictiveAerialTwistSimulator(
+            self.model_path,
+            build_piecewise_constant_jerk_arm_motion(
+                variables,
+                total_time=self.configuration.final_time,
+                step=0.02,
+                first_arm_start=float(getattr(fixed_first_arm, "first_arm_start", 0.0)),
+            ),
+            configuration=self.configuration,
+            model=self.model,
+        )
+        result = simulator.simulate()
+        twist_rate_lagrange = float(
+            self.twist_rate_lagrange_weight
+            * np.trapz(np.asarray(result.qdot[:, 5], dtype=float), np.asarray(result.time, dtype=float))
+        )
+        objective = float(-(result.final_twist_angle + twist_rate_lagrange))
+        return objective, result
+
     def evaluate_first_arm_kinematics(
         self,
         *,
@@ -821,6 +857,56 @@ class TwistStrategyOptimizer:
             candidate_results=candidate_results_tuple,
         )
 
+    def sweep_second_arm_start_only(
+        self,
+        *,
+        fixed_first_arm: TwistOptimizationVariables,
+        bounds: IpoptBounds | None = None,
+        step: float = 0.02,
+    ) -> RightArmStartSweepResult:
+        """Evaluate every admissible second-arm start time with one fixed first-arm strategy."""
+
+        chosen_bounds = bounds or self.right_arm_start_only_bounds()
+        lower_bound = float(np.asarray(chosen_bounds.lower, dtype=float).reshape(-1)[0])
+        upper_bound = float(np.asarray(chosen_bounds.upper, dtype=float).reshape(-1)[0])
+        first_node = int(round(lower_bound / step))
+        last_node = int(round(upper_bound / step))
+        start_times = step * np.arange(first_node, last_node + 1, dtype=float)
+        candidate_results: list[TwistOptimizationResult] = []
+
+        for start_time in start_times:
+            variables = TwistOptimizationVariables(
+                right_arm_start=float(start_time),
+                left_plane_initial=0.0,
+                left_plane_final=0.0,
+                right_plane_initial=float(fixed_first_arm.right_plane_initial),
+                right_plane_final=float(fixed_first_arm.right_plane_final),
+                contact_twist_rate=self._fixed_contact_twist_rate(),
+                first_arm_start=float(getattr(fixed_first_arm, "first_arm_start", 0.0)),
+            )
+            objective, simulation = self.evaluate_second_arm_start_only(
+                float(start_time),
+                fixed_first_arm=fixed_first_arm,
+            )
+            candidate_results.append(
+                TwistOptimizationResult(
+                    variables=variables,
+                    final_twist_angle=simulation.final_twist_angle,
+                    final_twist_turns=simulation.final_twist_turns,
+                    objective=float(objective),
+                    solver_status="Discrete_Sweep",
+                    success=True,
+                    simulation=simulation,
+                )
+            )
+
+        candidate_results_tuple = tuple(candidate_results)
+        best_result = min(candidate_results_tuple, key=lambda result: result.objective)
+        return RightArmStartSweepResult(
+            best_result=best_result,
+            candidate_results=candidate_results_tuple,
+        )
+
     def sweep_first_arm_kinematics(
         self,
         *,
@@ -914,7 +1000,7 @@ def create_right_arm_start_sweep_figure(
         label="Meilleure solution",
     )
     axis.set_ylabel("Vrille finale (tours)")
-    axis.set_xlabel("Debut bras droit t1 (s)")
+    axis.set_xlabel("Debut bras gauche t1 (s)")
     axis.set_title("Balayage 1D sur les noeuds de t1")
     axis.grid(True, alpha=0.3)
     axis.legend(loc="best")
