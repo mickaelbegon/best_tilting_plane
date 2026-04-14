@@ -385,30 +385,13 @@ class BestTiltingPlaneApp:
             command=self._refresh_animation_scene,
         ).grid(row=scan_row + 2, column=0, columnspan=3, sticky="w", pady=(4, 4))
 
-        ttk.Label(controls, text="Repere animation").grid(
-            row=scan_row + 3, column=0, sticky="w", pady=(8, 4)
-        )
         self.root_initial_mode = tk.StringVar(value=ROOT_INITIAL_OPTIONS[1])
         self.animation_mode_var = tk.StringVar(value=ANIMATION_MODE_OPTIONS[0])
         self.animation_reference_var = tk.StringVar(value=ANIMATION_REFERENCE_OPTIONS[0])
-        animation_reference_box = ttk.Combobox(
-            controls,
-            textvariable=self.animation_reference_var,
-            values=ANIMATION_REFERENCE_OPTIONS,
-            state="readonly",
-            width=24,
-        )
-        animation_reference_box.grid(
-            row=scan_row + 3, column=1, columnspan=2, sticky="ew", pady=(8, 4)
-        )
-        animation_reference_box.bind(
-            "<<ComboboxSelected>>",
-            lambda _event: self._on_animation_reference_change(),
-        )
         self._apply_animation_reference(self.animation_reference_var.get())
 
         ttk.Label(controls, text="Mode figure").grid(
-            row=scan_row + 4, column=0, sticky="w", pady=4
+            row=scan_row + 3, column=0, sticky="w", pady=(8, 4)
         )
         self.plot_mode_var = tk.StringVar(value=PLOT_MODE_OPTIONS[0])
         plot_mode_box = ttk.Combobox(
@@ -419,12 +402,12 @@ class BestTiltingPlaneApp:
             width=24,
         )
         plot_mode_box.grid(
-            row=scan_row + 4, column=1, columnspan=2, sticky="ew", pady=4
+            row=scan_row + 3, column=1, columnspan=2, sticky="ew", pady=(8, 4)
         )
         plot_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Label(controls, text="Figure x").grid(
-            row=scan_row + 5, column=0, sticky="w", pady=4
+            row=scan_row + 4, column=0, sticky="w", pady=4
         )
         self.plot_x_var = tk.StringVar(value=PLOT_X_OPTIONS[0])
         plot_x_box = ttk.Combobox(
@@ -435,12 +418,12 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_x_box.grid(
-            row=scan_row + 5, column=1, columnspan=2, sticky="ew", pady=4
+            row=scan_row + 4, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_x_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Label(controls, text="Figure y").grid(
-            row=scan_row + 6, column=0, sticky="w", pady=4
+            row=scan_row + 5, column=0, sticky="w", pady=4
         )
         self.plot_y_var = tk.StringVar(value="Twist")
         plot_y_box = ttk.Combobox(
@@ -451,12 +434,12 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_y_box.grid(
-            row=scan_row + 6, column=1, columnspan=2, sticky="ew", pady=4
+            row=scan_row + 5, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_y_box.bind("<<ComboboxSelected>>", lambda _event: self._on_plot_choice_change())
 
         ttk.Label(controls, text="Courbes").grid(
-            row=scan_row + 7, column=0, sticky="nw", pady=(6, 0)
+            row=scan_row + 6, column=0, sticky="nw", pady=(6, 0)
         )
         self._curve_selector = tk.Listbox(
             controls,
@@ -465,22 +448,19 @@ class BestTiltingPlaneApp:
             height=6,
         )
         self._curve_selector.grid(
-            row=scan_row + 7, column=1, columnspan=2, sticky="ew", pady=(6, 0)
+            row=scan_row + 6, column=1, columnspan=2, sticky="ew", pady=(6, 0)
         )
         self._curve_selector.bind("<<ListboxSelect>>", lambda _event: self._on_curve_selection_change())
         self._curve_selection_by_plot: dict[str, tuple[str, ...]] = {}
         self._curve_selector_labels: tuple[str, ...] = ()
         self._updating_curve_selector = False
 
-        ttk.Button(controls, text="Simulate", command=self._run_simulation).grid(
-            row=scan_row + 8, column=0, sticky="w", pady=(10, 0)
-        )
         self.ignore_optimization_cache_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(
             controls,
             text="Ignorer le cache optimum",
             variable=self.ignore_optimization_cache_var,
-        ).grid(row=scan_row + 9, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        ).grid(row=scan_row + 7, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self.optimization_mode_var = tk.StringVar(value=OPTIMIZATION_MODE_OPTIONS[0])
         optimization_mode_box = ttk.Combobox(
             controls,
@@ -490,15 +470,15 @@ class BestTiltingPlaneApp:
             width=18,
         )
         optimization_mode_box.grid(
-            row=scan_row + 10, column=0, columnspan=2, sticky="ew", pady=(10, 0), padx=(0, 8)
+            row=scan_row + 8, column=0, columnspan=2, sticky="ew", pady=(10, 0), padx=(0, 8)
         )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=scan_row + 10, column=2, sticky="w", pady=(10, 0)
+            row=scan_row + 8, column=2, sticky="w", pady=(10, 0)
         )
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
-            row=scan_row + 11, column=0, columnspan=3, sticky="w", pady=(10, 0)
+            row=scan_row + 9, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.root.report_callback_exception = self._report_callback_exception
         self.sequence_var = tk.StringVar(
@@ -511,7 +491,7 @@ class BestTiltingPlaneApp:
             )
         )
         ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
-            row=scan_row + 12, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=scan_row + 10, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
         self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
@@ -522,6 +502,7 @@ class BestTiltingPlaneApp:
         playback_controls = ttk.Frame(display)
         playback_controls.grid(row=1, column=0, sticky="ew", pady=(8, 8))
         playback_controls.columnconfigure(1, weight=1)
+        playback_controls.columnconfigure(3, weight=0)
         self.play_pause_label = tk.StringVar(value="Pause")
         ttk.Button(
             playback_controls,
@@ -532,6 +513,19 @@ class BestTiltingPlaneApp:
         self.time_value_var = tk.StringVar(value="0.00 s")
         self.time_slider_var = tk.DoubleVar(value=0.0)
         ttk.Label(playback_controls, text="Temps animation").grid(row=0, column=1, sticky="w")
+        ttk.Label(playback_controls, text="Repere animation").grid(row=0, column=2, sticky="e", padx=(12, 6))
+        animation_reference_box = ttk.Combobox(
+            playback_controls,
+            textvariable=self.animation_reference_var,
+            values=ANIMATION_REFERENCE_OPTIONS,
+            state="readonly",
+            width=20,
+        )
+        animation_reference_box.grid(row=0, column=3, sticky="e")
+        animation_reference_box.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._on_animation_reference_change(),
+        )
         self.time_slider = ttk.Scale(
             playback_controls,
             orient=tk.HORIZONTAL,
@@ -540,9 +534,9 @@ class BestTiltingPlaneApp:
             variable=self.time_slider_var,
             command=self._on_time_slider_change,
         )
-        self.time_slider.grid(row=1, column=0, columnspan=2, sticky="ew", padx=(0, 8))
+        self.time_slider.grid(row=1, column=0, columnspan=3, sticky="ew", padx=(0, 8))
         ttk.Label(playback_controls, textvariable=self.time_value_var, width=10).grid(
-            row=1, column=2, sticky="e"
+            row=1, column=3, sticky="e"
         )
 
         self._plot_figure = Figure(figsize=(8.0, 3.8), tight_layout=True)
@@ -1010,8 +1004,9 @@ class BestTiltingPlaneApp:
             configuration=self._standard_optimization_configuration(),
         )
         if _is_first_arm_optimization_mode(mode) and hasattr(optimizer, "sweep_first_arm_kinematics"):
+            second_arm_frozen_start = float(self._standard_optimization_configuration().final_time + DMS_ACTIVE_DURATION)
             sweep = optimizer.sweep_first_arm_kinematics(
-                second_arm_start=float(self._standard_optimization_configuration().final_time),
+                second_arm_start=second_arm_frozen_start,
                 start_step=DMS_SHOOTING_STEP,
             )
             best_candidate = sweep.best_candidate
@@ -1071,10 +1066,13 @@ class BestTiltingPlaneApp:
         candidate_start_times: np.ndarray,
         use_cache: bool,
         report,
+        mode: str = "Optimize 3D",
     ) -> float | None:
         """Return the DMS node that should receive the dedicated multistart refinement."""
 
         if candidate_start_times.size == 0:
+            return None
+        if mode == "Optimize DMS":
             return None
 
         cached_two_d_values = self._load_cached_optimized_values(mode="Optimize 2D") if use_cache else None
@@ -2822,6 +2820,8 @@ class BestTiltingPlaneApp:
             mode for mode in SCAN_DATASET_MODES if mode != current_mode and not _is_first_arm_optimization_mode(mode)
         ]
         for mode in ordered_modes:
+            if mode == "Optimize 3D BTP":
+                continue
             if current_mode == "Optimize DMS" and mode == "Optimize 3D":
                 continue
             if mode in seen_modes:
@@ -2993,8 +2993,8 @@ class BestTiltingPlaneApp:
                         [start_times[selected_index]],
                         [final_twist_turns[selected_index]],
                         facecolors="none",
-                        edgecolors="black",
-                        linewidths=2.0,
+                        edgecolors="tab:purple",
+                        linewidths=2.4,
                         s=180,
                         zorder=4,
                     )
@@ -4017,6 +4017,7 @@ class BestTiltingPlaneApp:
                 candidate_start_times=candidate_start_times,
                 use_cache=use_cache,
                 report=report,
+                mode=effective_mode,
             )
 
             if cached_progress is not None:
