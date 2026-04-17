@@ -568,7 +568,7 @@ def test_optimize_strategy_applies_optimized_values_and_reruns_animation(
     refresh_calls: list[str] = []
     app._refresh_plot = lambda: refresh_calls.append("refresh")
     applied: list[tuple[dict[str, float], str | None]] = []
-    app._apply_optimized_values = lambda values, status_suffix=None: applied.append(
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: applied.append(
         (dict(values), status_suffix)
     )
 
@@ -1030,7 +1030,7 @@ def test_optimize_strategy_uses_cache_without_running_ipopt(monkeypatch, tmp_pat
         encoding="utf-8",
     )
     applied: list[tuple[dict[str, float], str | None]] = []
-    app._apply_optimized_values = lambda values, status_suffix=None: applied.append(
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: applied.append(
         (dict(values), status_suffix)
     )
 
@@ -1123,7 +1123,7 @@ def test_optimize_strategy_can_ignore_cached_ipopt_solution(monkeypatch, tmp_pat
         encoding="utf-8",
     )
     applied: list[tuple[dict[str, float], str | None]] = []
-    app._apply_optimized_values = lambda values, status_suffix=None: applied.append(
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: applied.append(
         (dict(values), status_suffix)
     )
 
@@ -1230,7 +1230,7 @@ def test_optimize_strategy_writes_cache_after_ipopt(monkeypatch, tmp_path: Path)
     }
     app._model_path = lambda: tmp_path / "reduced.bioMod"
     applied: list[tuple[dict[str, float], str | None]] = []
-    app._apply_optimized_values = lambda values, status_suffix=None: applied.append(
+    app._apply_optimized_values = lambda values, prescribed_motion=None, status_suffix=None: applied.append(
         (dict(values), status_suffix)
     )
 

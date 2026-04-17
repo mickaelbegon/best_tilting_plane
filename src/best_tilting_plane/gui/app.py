@@ -455,30 +455,30 @@ class BestTiltingPlaneApp:
         self._curve_selector_labels: tuple[str, ...] = ()
         self._updating_curve_selector = False
 
-        self.ignore_optimization_cache_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            controls,
-            text="Ignorer le cache optimum",
-            variable=self.ignore_optimization_cache_var,
-        ).grid(row=scan_row + 7, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self.optimization_mode_var = tk.StringVar(value=OPTIMIZATION_MODE_OPTIONS[0])
+        self.ignore_optimization_cache_var = tk.BooleanVar(value=False)
         optimization_mode_box = ttk.Combobox(
             controls,
             textvariable=self.optimization_mode_var,
             values=OPTIMIZATION_MODE_OPTIONS,
             state="readonly",
-            width=18,
+            width=16,
         )
         optimization_mode_box.grid(
-            row=scan_row + 8, column=0, columnspan=2, sticky="ew", pady=(10, 0), padx=(0, 8)
+            row=scan_row + 7, column=0, sticky="ew", pady=(10, 0), padx=(0, 8)
         )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=scan_row + 8, column=2, sticky="w", pady=(10, 0)
+            row=scan_row + 7, column=1, sticky="w", pady=(10, 0), padx=(0, 8)
         )
+        ttk.Checkbutton(
+            controls,
+            text="Ignorer le cache optimum",
+            variable=self.ignore_optimization_cache_var,
+        ).grid(row=scan_row + 7, column=2, sticky="w", pady=(10, 0))
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
-            row=scan_row + 9, column=0, columnspan=3, sticky="w", pady=(10, 0)
+            row=scan_row + 8, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.root.report_callback_exception = self._report_callback_exception
         self.sequence_var = tk.StringVar(
@@ -491,7 +491,7 @@ class BestTiltingPlaneApp:
             )
         )
         ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
-            row=scan_row + 10, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=scan_row + 9, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
         self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
@@ -1018,13 +1018,7 @@ class BestTiltingPlaneApp:
                     "right_arm_start": float(initial_guess.right_arm_start),
                 }
             )
-            prescribed_motion = build_piecewise_constant_jerk_arm_motion(
-                _variables_from_gui(optimized_values),
-                total_time=self._standard_optimization_configuration().final_time,
-                step=DMS_SHOOTING_STEP,
-                first_arm_start=float(best_candidate.first_arm_start),
-            )
-            setattr(prescribed_motion, "_cached_simulation_result", result.simulation)
+            prescribed_motion = SimpleNamespace(_cached_simulation_result=result.simulation)
             return sweep, result, optimized_values, prescribed_motion
         selected_first_arm_candidate = self._selected_first_arm_candidate_record()
         if selected_first_arm_candidate is not None and hasattr(optimizer, "sweep_second_arm_start_only"):

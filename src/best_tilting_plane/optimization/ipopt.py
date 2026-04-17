@@ -20,6 +20,7 @@ from best_tilting_plane.optimization.solver_options import build_ipopt_solver_op
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
     build_piecewise_constant_jerk_arm_motion,
+    PiecewiseConstantJerkTrajectory,
     PredictiveAerialTwistSimulator,
     SimulationConfiguration,
     TwistOptimizationVariables,
@@ -34,6 +35,7 @@ DEFAULT_TWIST_RATE_LAGRANGE_WEIGHT = 1e-3
 FIRST_ARM_START_BOUNDS = (0.0, 0.7)
 FIRST_ARM_PLANE_INITIAL = 0.0
 FIRST_ARM_PLANE_SWEEP_STEP_DEG = 5.0
+LEFT_ARM_ABDUCTION_ELEVATION = -np.pi
 
 
 @dataclass(frozen=True)
@@ -388,6 +390,23 @@ class TwistStrategyOptimizer:
         return float(self.configuration.contact_twist_rate)
 
     @staticmethod
+    def _constant_trajectory(*, value: float, total_time: float, step: float) -> PiecewiseConstantJerkTrajectory:
+        """Return one constant joint trajectory over the requested horizon."""
+
+        safe_total_time = max(float(step), float(total_time))
+        control_count = max(1, int(np.ceil(safe_total_time / float(step))))
+        return PiecewiseConstantJerkTrajectory(
+            q0=float(value),
+            qdot0=0.0,
+            qddot0=0.0,
+            step=float(step),
+            jerks=np.zeros(control_count, dtype=float),
+            active_start=0.0,
+            active_end=0.0,
+            total_duration=safe_total_time,
+        )
+
+    @staticmethod
     def right_arm_start_only_bounds() -> IpoptBounds:
         """Return the 1D bounds used by the reduced optimization mode."""
 
@@ -416,15 +435,18 @@ class TwistStrategyOptimizer:
         second_arm_start: float,
         *,
         fixed_first_arm: TwistOptimizationVariables,
+        first_arm_plane_final: float | None = None,
     ) -> tuple[float, AerialSimulationResult]:
-        """Evaluate the reduced second-arm timing sweep with a fixed first-arm strategy."""
+        """Evaluate the reduced second-arm timing sweep while reoptimizing the first-arm plane."""
 
         variables = TwistOptimizationVariables(
             right_arm_start=float(second_arm_start),
             left_plane_initial=0.0,
             left_plane_final=0.0,
-            right_plane_initial=float(fixed_first_arm.right_plane_initial),
-            right_plane_final=float(fixed_first_arm.right_plane_final),
+            right_plane_initial=FIRST_ARM_PLANE_INITIAL,
+            right_plane_final=float(
+                fixed_first_arm.right_plane_final if first_arm_plane_final is None else first_arm_plane_final
+            ),
             contact_twist_rate=self._fixed_contact_twist_rate(),
             first_arm_start=float(getattr(fixed_first_arm, "first_arm_start", 0.0)),
         )
@@ -464,14 +486,20 @@ class TwistStrategyOptimizer:
             right_plane_final=float(first_arm_plane_final),
             contact_twist_rate=self._fixed_contact_twist_rate(),
         )
+        motion = build_piecewise_constant_jerk_arm_motion(
+            variables,
+            total_time=self.configuration.final_time,
+            step=0.02,
+            first_arm_start=float(first_arm_start),
+        )
+        motion.left_elevation = self._constant_trajectory(
+            value=LEFT_ARM_ABDUCTION_ELEVATION,
+            total_time=max(0.02, float(self.configuration.final_time - second_arm_start)),
+            step=0.02,
+        )
         simulator = PredictiveAerialTwistSimulator(
             self.model_path,
-            build_piecewise_constant_jerk_arm_motion(
-                variables,
-                total_time=self.configuration.final_time,
-                step=0.02,
-                first_arm_start=float(first_arm_start),
-            ),
+            motion,
             configuration=self.configuration,
             model=self.model,
         )
@@ -864,7 +892,7 @@ class TwistStrategyOptimizer:
         bounds: IpoptBounds | None = None,
         step: float = 0.02,
     ) -> RightArmStartSweepResult:
-        """Evaluate every admissible second-arm start time with one fixed first-arm strategy."""
+        """Evaluate every admissible second-arm start time while resweeping the first-arm plane."""
 
         chosen_bounds = bounds or self.right_arm_start_only_bounds()
         lower_bound = float(np.asarray(chosen_bounds.lower, dtype=float).reshape(-1)[0])
@@ -872,24 +900,33 @@ class TwistStrategyOptimizer:
         first_node = int(round(lower_bound / step))
         last_node = int(round(upper_bound / step))
         start_times = step * np.arange(first_node, last_node + 1, dtype=float)
+        plane_values_deg = np.arange(
+            RIGHT_ARM_PLANE_BOUNDS_DEG[0],
+            RIGHT_ARM_PLANE_BOUNDS_DEG[1] + 0.5 * FIRST_ARM_PLANE_SWEEP_STEP_DEG,
+            FIRST_ARM_PLANE_SWEEP_STEP_DEG,
+            dtype=float,
+        )
+        plane_values = np.deg2rad(plane_values_deg)
         candidate_results: list[TwistOptimizationResult] = []
 
         for start_time in start_times:
-            variables = TwistOptimizationVariables(
-                right_arm_start=float(start_time),
-                left_plane_initial=0.0,
-                left_plane_final=0.0,
-                right_plane_initial=float(fixed_first_arm.right_plane_initial),
-                right_plane_final=float(fixed_first_arm.right_plane_final),
-                contact_twist_rate=self._fixed_contact_twist_rate(),
-                first_arm_start=float(getattr(fixed_first_arm, "first_arm_start", 0.0)),
-            )
-            objective, simulation = self.evaluate_second_arm_start_only(
-                float(start_time),
-                fixed_first_arm=fixed_first_arm,
-            )
-            candidate_results.append(
-                TwistOptimizationResult(
+            best_result_for_start: TwistOptimizationResult | None = None
+            for plane_final in plane_values:
+                variables = TwistOptimizationVariables(
+                    right_arm_start=float(start_time),
+                    left_plane_initial=0.0,
+                    left_plane_final=0.0,
+                    right_plane_initial=FIRST_ARM_PLANE_INITIAL,
+                    right_plane_final=float(plane_final),
+                    contact_twist_rate=self._fixed_contact_twist_rate(),
+                    first_arm_start=float(getattr(fixed_first_arm, "first_arm_start", 0.0)),
+                )
+                objective, simulation = self.evaluate_second_arm_start_only(
+                    float(start_time),
+                    fixed_first_arm=fixed_first_arm,
+                    first_arm_plane_final=float(plane_final),
+                )
+                candidate_result = TwistOptimizationResult(
                     variables=variables,
                     final_twist_angle=simulation.final_twist_angle,
                     final_twist_turns=simulation.final_twist_turns,
@@ -898,7 +935,10 @@ class TwistStrategyOptimizer:
                     success=True,
                     simulation=simulation,
                 )
-            )
+                if best_result_for_start is None or candidate_result.objective < best_result_for_start.objective:
+                    best_result_for_start = candidate_result
+            assert best_result_for_start is not None
+            candidate_results.append(best_result_for_start)
 
         candidate_results_tuple = tuple(candidate_results)
         best_result = min(candidate_results_tuple, key=lambda result: result.objective)
@@ -944,6 +984,7 @@ class TwistStrategyOptimizer:
                         right_plane_initial=FIRST_ARM_PLANE_INITIAL,
                         right_plane_final=float(plane_final),
                         contact_twist_rate=self._fixed_contact_twist_rate(),
+                        first_arm_start=float(first_arm_start),
                     ),
                     final_twist_angle=simulation.final_twist_angle,
                     final_twist_turns=simulation.final_twist_turns,
