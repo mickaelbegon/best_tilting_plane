@@ -355,6 +355,82 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     np.testing.assert_allclose(right_control_upper_bounds[optimizer.active_control_count :], 0.0)
 
 
+def test_direct_multiple_shooting_can_release_the_first_arm_terminal_plane_constraint(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The staged arm-1 3D solve should be able to leave the first-arm terminal plane unconstrained."""
+
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.4, steps=81, integrator="rk4", rk4_step=0.005),
+        shooting_step=0.02,
+    )
+    initial_guess = TwistOptimizationVariables(
+        right_arm_start=0.1,
+        left_plane_initial=0.0,
+        left_plane_final=0.0,
+        right_plane_initial=0.0,
+        right_plane_final=0.25,
+    )
+    initial_state = np.asarray(optimizer._symbolic_initial_root_state(initial_guess), dtype=float).reshape(-1)
+    state_history = np.tile(initial_state.reshape(-1, 1), (1, optimizer.interval_count + 1))
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        optimizer,
+        "_initial_guess_root_state_history",
+        lambda _variables, _motion: state_history,
+    )
+
+    class FakeSimulator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        @staticmethod
+        def simulate():
+            return type("SimulationResult", (), {"final_twist_angle": 0.0, "final_twist_turns": 0.0})()
+
+    class FakeSolver:
+        def __call__(self, **kwargs):
+            captured.update(kwargs)
+            return {"x": ca.DM(np.asarray(kwargs["x0"], dtype=float)), "f": ca.DM([[0.0]])}
+
+        @staticmethod
+        def stats():
+            return {"return_status": "Solve_Succeeded"}
+
+    monkeypatch.setattr(dms_module, "PredictiveAerialTwistSimulator", FakeSimulator)
+    monkeypatch.setattr(dms_module.ca, "nlpsol", lambda *_args, **_kwargs: FakeSolver())
+    monkeypatch.setattr(
+        solver_options_module,
+        "locate_ipopt_hsl_library",
+        lambda: "/tmp/libhsl.dylib",
+    )
+
+    optimizer.solve_fixed_start(
+        initial_guess,
+        right_arm_start=initial_guess.right_arm_start,
+        constrain_first_arm_terminal_plane=False,
+        max_iter=1,
+    )
+
+    lower_bounds = np.asarray(captured["lbx"], dtype=float)
+    upper_bounds = np.asarray(captured["ubx"], dtype=float)
+    right_plane_block_start = (
+        (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE
+        + (optimizer.interval_count + 1) * dms_module.PLANE_STATE_SIZE
+    )
+    right_terminal_node_index = optimizer.active_control_count
+    right_terminal_slice = slice(
+        right_plane_block_start + right_terminal_node_index * dms_module.PLANE_STATE_SIZE,
+        right_plane_block_start + (right_terminal_node_index + 1) * dms_module.PLANE_STATE_SIZE,
+    )
+    assert np.all(np.isneginf(lower_bounds[right_terminal_slice]))
+    assert np.all(np.isposinf(upper_bounds[right_terminal_slice]))
+
+
 def test_direct_multiple_shooting_sweep_keeps_the_best_successful_candidate(tmp_path: Path) -> None:
     """The discrete sweep should retain the best successful fixed-start solution."""
 

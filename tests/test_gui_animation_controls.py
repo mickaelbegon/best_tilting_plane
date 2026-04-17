@@ -14,6 +14,10 @@ from best_tilting_plane.gui.app import (
     ANIMATION_REFERENCE_OPTIONS,
     DEFAULT_CAMERA_AZIMUTH_DEG,
     DEFAULT_CAMERA_ELEVATION_DEG,
+    ALL_OPTIMIZATION_MODE_OPTIONS,
+    OPTIMIZATION_MODE_ARM1_3D,
+    OPTIMIZATION_MODE_ARM2_3D,
+    OPTIMIZATION_MODE_BOTH_3D,
     OPTIMIZATION_MODE_OPTIONS,
     ROOT_VIEW_CAMERA_AZIMUTH_DEG,
     ROOT_VIEW_CAMERA_ELEVATION_DEG,
@@ -93,6 +97,18 @@ class FakeScale:
 
     def configure(self, **kwargs) -> None:
         """Record the latest configuration values."""
+
+        self.options.update(kwargs)
+
+
+class FakeCombobox:
+    """Small combobox stub storing the last configured values."""
+
+    def __init__(self) -> None:
+        self.options: dict[str, object] = {}
+
+    def configure(self, **kwargs) -> None:
+        """Record the latest combobox configuration."""
 
         self.options.update(kwargs)
 
@@ -939,9 +955,33 @@ def test_draw_animation_frame_updates_secondary_overlay_from_selected_condition(
 
 
 def test_optimization_mode_options_hide_the_btp_mode_from_the_menu() -> None:
-    """The GUI menu should expose only the active 2D and 3D modes."""
+    """The GUI menu should expose the staged 3D modes only."""
 
-    assert OPTIMIZATION_MODE_OPTIONS == ("Optimize 2D", "Optimize 3D")
+    assert OPTIMIZATION_MODE_OPTIONS == (
+        OPTIMIZATION_MODE_ARM1_3D,
+        OPTIMIZATION_MODE_BOTH_3D,
+    )
+
+
+def test_refresh_optimization_mode_options_unlocks_arm2_after_one_arm1_scan() -> None:
+    """The staged workflow should expose the arm-2 mode only after one arm-1 result exists."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.optimization_mode_var = FakeVar(OPTIMIZATION_MODE_ARM2_3D)
+    app._optimization_mode_box = FakeCombobox()
+    app._selected_first_arm_scan_solution = None
+    app._load_cached_scan_bundle_for_mode = lambda mode: None
+
+    app._refresh_optimization_mode_options()
+
+    assert app._optimization_mode_box.options["values"] == OPTIMIZATION_MODE_OPTIONS
+    assert app.optimization_mode_var.get() == OPTIMIZATION_MODE_BOTH_3D
+
+    app._selected_first_arm_scan_solution = ("Arm1 3D", 0)
+
+    app._refresh_optimization_mode_options()
+
+    assert app._optimization_mode_box.options["values"] == ALL_OPTIMIZATION_MODE_OPTIONS
 
 
 def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> None:

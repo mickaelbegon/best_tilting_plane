@@ -104,16 +104,31 @@ GUI_FIXED_VALUES = {
 }
 GUI_VALUE_NAMES = tuple(definition.name for definition in SLIDER_DEFINITIONS) + tuple(GUI_FIXED_VALUES.keys())
 PLOT_X_OPTIONS = ("Temps", "Somersault", "Vrille")
-PLOT_MODE_OPTIONS = ("Courbe", "Bras hors BTP (dessus)")
+PLOT_MODE_OPTIONS = ("Courbe",)
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
 ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Racine (main)", "Best tilting plane")
-OPTIMIZATION_MODE_OPTIONS = ("Optimize 2D", "Optimize 3D")
+OPTIMIZATION_MODE_ARM1_3D = "Optimise 3D bras 1"
+OPTIMIZATION_MODE_ARM2_3D = "Optimise 3D bras 2"
+OPTIMIZATION_MODE_BOTH_3D = "Optimise bras 1 et 2"
+ALL_OPTIMIZATION_MODE_OPTIONS = (
+    OPTIMIZATION_MODE_ARM1_3D,
+    OPTIMIZATION_MODE_ARM2_3D,
+    OPTIMIZATION_MODE_BOTH_3D,
+)
+OPTIMIZATION_MODE_OPTIONS = (
+    OPTIMIZATION_MODE_ARM1_3D,
+    OPTIMIZATION_MODE_BOTH_3D,
+)
 SCAN_DATASET_MODES = (
+    OPTIMIZATION_MODE_ARM1_3D,
+    OPTIMIZATION_MODE_ARM2_3D,
+    OPTIMIZATION_MODE_BOTH_3D,
     "Arm1 2D",
     "Arm1 3D",
     "Optimize 2D",
     "Optimize 3D",
     "Optimize 3D BTP",
+    "Optimize DMS",
 )
 PLOT_Y_OPTIONS = (
     "Somersault",
@@ -142,7 +157,7 @@ ALL_FRAME_SEGMENTS = tuple(
 )
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
-OPTIMIZATION_CACHE_VERSION = 8
+OPTIMIZATION_CACHE_VERSION = 10
 DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.0
@@ -172,6 +187,21 @@ SHOULDER_TORQUE_DOF_LABELS = ARM_KINEMATICS_LABELS
 SECONDARY_AVATAR_COLOR = "0.65"
 PLOT_LEGEND_FONT_SIZE = 8.0
 SCAN_PLOT_STYLE_BY_MODE = {
+    OPTIMIZATION_MODE_ARM1_3D: {
+        "color": "tab:purple",
+        "marker": "D",
+        "label": OPTIMIZATION_MODE_ARM1_3D,
+    },
+    OPTIMIZATION_MODE_ARM2_3D: {
+        "color": "tab:orange",
+        "marker": "s",
+        "label": OPTIMIZATION_MODE_ARM2_3D,
+    },
+    OPTIMIZATION_MODE_BOTH_3D: {
+        "color": "tab:blue",
+        "marker": "o",
+        "label": OPTIMIZATION_MODE_BOTH_3D,
+    },
     "Optimize 2D": {"color": "tab:blue", "marker": "o", "label": "Optimize 2D"},
     "Arm1 2D": {"color": "tab:purple", "marker": "D", "label": "Bras 1 / 2D"},
     "Arm1 3D": {"color": "tab:brown", "marker": "P", "label": "Bras 1 / 3D"},
@@ -184,7 +214,16 @@ SCAN_PLOT_STYLE_BY_MODE = {
 def _is_three_d_optimization_mode(mode: str) -> bool:
     """Return whether one optimization mode uses the 3D DMS backend."""
 
-    return mode in {"Optimize DMS", "Optimize 3D", "Optimize 3D BTP"}
+    return mode in {
+        OPTIMIZATION_MODE_ARM1_3D,
+        OPTIMIZATION_MODE_ARM2_3D,
+        OPTIMIZATION_MODE_BOTH_3D,
+        "Arm1 3D",
+        "Arm2 3D",
+        "Optimize 3D",
+        "Optimize DMS",
+        "Optimize 3D BTP",
+    }
 
 
 def _three_d_objective_mode(mode: str) -> str:
@@ -198,25 +237,41 @@ def _three_d_objective_mode(mode: str) -> str:
 def _optimization_mode_label(mode: str) -> str:
     """Return one short user-facing optimization label."""
 
-    return "DMS" if mode == "Optimize DMS" else mode
+    if mode == "Optimize DMS":
+        return "DMS"
+    return mode
 
 
 def _first_arm_scan_mode_for_backend(mode: str) -> str:
     """Return the internal scan/cache mode associated with one first-arm optimization backend."""
 
-    return "Arm1 3D" if mode == "Optimize 3D" else "Arm1 2D"
+    if mode in {"Optimize 2D", "Arm1 2D"}:
+        return "Arm1 2D"
+    if mode in {"Optimize 3D", "Arm1 3D"}:
+        return "Arm1 3D"
+    return OPTIMIZATION_MODE_ARM1_3D
 
 
 def _second_arm_scan_mode_for_backend(mode: str) -> str:
     """Return the internal scan/cache mode associated with one second-arm optimization backend."""
 
-    return "Optimize 3D" if mode == "Optimize 3D" else "Optimize 2D"
+    if mode in {"Optimize 2D", "Optimize 3D", "Optimize DMS", "Optimize 3D BTP"}:
+        return mode
+    if mode == OPTIMIZATION_MODE_ARM2_3D:
+        return OPTIMIZATION_MODE_ARM2_3D
+    return OPTIMIZATION_MODE_BOTH_3D
 
 
 def _is_first_arm_optimization_mode(mode: str) -> bool:
     """Return whether one optimization mode targets the first-arm kinematics sweep."""
 
-    return mode in {"Optimize bras 1", "Arm1 2D", "Arm1 3D"}
+    return mode in {"Optimize bras 1", "Arm1 2D", "Arm1 3D", OPTIMIZATION_MODE_ARM1_3D}
+
+
+def _requires_selected_first_arm_solution(mode: str) -> bool:
+    """Return whether one optimization mode depends on a selected first-arm solution."""
+
+    return mode == OPTIMIZATION_MODE_ARM2_3D
 
 
 def _dms_result_is_better(candidate, reference) -> bool:
@@ -388,26 +443,11 @@ class BestTiltingPlaneApp:
         self.root_initial_mode = tk.StringVar(value=ROOT_INITIAL_OPTIONS[1])
         self.animation_mode_var = tk.StringVar(value=ANIMATION_MODE_OPTIONS[0])
         self.animation_reference_var = tk.StringVar(value=ANIMATION_REFERENCE_OPTIONS[0])
+        self.plot_mode_var = tk.StringVar(value=PLOT_MODE_OPTIONS[0])
         self._apply_animation_reference(self.animation_reference_var.get())
 
-        ttk.Label(controls, text="Mode figure").grid(
-            row=scan_row + 3, column=0, sticky="w", pady=(8, 4)
-        )
-        self.plot_mode_var = tk.StringVar(value=PLOT_MODE_OPTIONS[0])
-        plot_mode_box = ttk.Combobox(
-            controls,
-            textvariable=self.plot_mode_var,
-            values=PLOT_MODE_OPTIONS,
-            state="readonly",
-            width=24,
-        )
-        plot_mode_box.grid(
-            row=scan_row + 3, column=1, columnspan=2, sticky="ew", pady=(8, 4)
-        )
-        plot_mode_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
-
         ttk.Label(controls, text="Figure x").grid(
-            row=scan_row + 4, column=0, sticky="w", pady=4
+            row=scan_row + 3, column=0, sticky="w", pady=(8, 4)
         )
         self.plot_x_var = tk.StringVar(value=PLOT_X_OPTIONS[0])
         plot_x_box = ttk.Combobox(
@@ -418,12 +458,12 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_x_box.grid(
-            row=scan_row + 4, column=1, columnspan=2, sticky="ew", pady=4
+            row=scan_row + 3, column=1, columnspan=2, sticky="ew", pady=(8, 4)
         )
         plot_x_box.bind("<<ComboboxSelected>>", lambda _event: self._refresh_plot())
 
         ttk.Label(controls, text="Figure y").grid(
-            row=scan_row + 5, column=0, sticky="w", pady=4
+            row=scan_row + 4, column=0, sticky="w", pady=4
         )
         self.plot_y_var = tk.StringVar(value="Twist")
         plot_y_box = ttk.Combobox(
@@ -434,12 +474,12 @@ class BestTiltingPlaneApp:
             width=18,
         )
         plot_y_box.grid(
-            row=scan_row + 5, column=1, columnspan=2, sticky="ew", pady=4
+            row=scan_row + 4, column=1, columnspan=2, sticky="ew", pady=4
         )
         plot_y_box.bind("<<ComboboxSelected>>", lambda _event: self._on_plot_choice_change())
 
         ttk.Label(controls, text="Courbes").grid(
-            row=scan_row + 6, column=0, sticky="nw", pady=(6, 0)
+            row=scan_row + 5, column=0, sticky="nw", pady=(6, 0)
         )
         self._curve_selector = tk.Listbox(
             controls,
@@ -448,7 +488,7 @@ class BestTiltingPlaneApp:
             height=6,
         )
         self._curve_selector.grid(
-            row=scan_row + 6, column=1, columnspan=2, sticky="ew", pady=(6, 0)
+            row=scan_row + 5, column=1, columnspan=2, sticky="ew", pady=(6, 0)
         )
         self._curve_selector.bind("<<ListboxSelect>>", lambda _event: self._on_curve_selection_change())
         self._curve_selection_by_plot: dict[str, tuple[str, ...]] = {}
@@ -457,28 +497,28 @@ class BestTiltingPlaneApp:
 
         self.optimization_mode_var = tk.StringVar(value=OPTIMIZATION_MODE_OPTIONS[0])
         self.ignore_optimization_cache_var = tk.BooleanVar(value=False)
-        optimization_mode_box = ttk.Combobox(
+        self._optimization_mode_box = ttk.Combobox(
             controls,
             textvariable=self.optimization_mode_var,
             values=OPTIMIZATION_MODE_OPTIONS,
             state="readonly",
-            width=16,
+            width=20,
         )
-        optimization_mode_box.grid(
-            row=scan_row + 7, column=0, sticky="ew", pady=(10, 0), padx=(0, 8)
+        self._optimization_mode_box.grid(
+            row=scan_row + 6, column=0, sticky="ew", pady=(10, 0), padx=(0, 8)
         )
         ttk.Button(controls, text="Optimize", command=self._optimize_strategy).grid(
-            row=scan_row + 7, column=1, sticky="w", pady=(10, 0), padx=(0, 8)
+            row=scan_row + 6, column=1, sticky="w", pady=(10, 0), padx=(0, 8)
         )
         ttk.Checkbutton(
             controls,
             text="Ignorer le cache optimum",
             variable=self.ignore_optimization_cache_var,
-        ).grid(row=scan_row + 7, column=2, sticky="w", pady=(10, 0))
+        ).grid(row=scan_row + 6, column=2, sticky="w", pady=(10, 0))
 
         self.result_var = tk.StringVar(value="Aucune simulation lancée.")
         ttk.Label(controls, textvariable=self.result_var, wraplength=360, justify="left").grid(
-            row=scan_row + 8, column=0, columnspan=3, sticky="w", pady=(10, 0)
+            row=scan_row + 7, column=0, columnspan=3, sticky="w", pady=(10, 0)
         )
         self.root.report_callback_exception = self._report_callback_exception
         self.sequence_var = tk.StringVar(
@@ -491,7 +531,7 @@ class BestTiltingPlaneApp:
             )
         )
         ttk.Label(controls, textvariable=self.sequence_var, wraplength=360, justify="left").grid(
-            row=scan_row + 9, column=0, columnspan=3, sticky="w", pady=(8, 0)
+            row=scan_row + 8, column=0, columnspan=3, sticky="w", pady=(8, 0)
         )
 
         self._animation_figure = Figure(figsize=(8.0, 5.0), tight_layout=True)
@@ -561,6 +601,7 @@ class BestTiltingPlaneApp:
         self._dragging_plot_time_indicator = False
 
         self._update_curve_selector()
+        self._refresh_optimization_mode_options()
         self._run_simulation()
 
     def _on_slider_change(self, _name: str, variable: tk.StringVar, value: str) -> None:
@@ -587,6 +628,41 @@ class BestTiltingPlaneApp:
         entries = getattr(self, "_entries", {})
         values.update({name: float(variable.get()) for name, variable in entries.items()})
         return values
+
+    def _has_first_arm_scan_results(self) -> bool:
+        """Return whether at least one first-arm scan result is available for reuse."""
+
+        if getattr(self, "_selected_first_arm_scan_solution", None) is not None:
+            return True
+        bundle_loader = getattr(self, "_load_cached_scan_bundle_for_mode", None)
+        if callable(bundle_loader):
+            return bundle_loader(OPTIMIZATION_MODE_ARM1_3D) is not None
+        return False
+
+    def _available_optimization_mode_options(self) -> tuple[str, ...]:
+        """Return the optimization modes that should be exposed in the GUI."""
+
+        if self._has_first_arm_scan_results():
+            return ALL_OPTIMIZATION_MODE_OPTIONS
+        return OPTIMIZATION_MODE_OPTIONS
+
+    def _refresh_optimization_mode_options(self) -> None:
+        """Refresh the visible optimization-mode choices according to the current staged workflow."""
+
+        mode_box = getattr(self, "_optimization_mode_box", None)
+        mode_var = getattr(self, "optimization_mode_var", None)
+        if mode_box is None or mode_var is None:
+            return
+        available_modes = self._available_optimization_mode_options()
+        mode_box.configure(values=available_modes)
+        current_mode = str(mode_var.get())
+        if current_mode not in available_modes:
+            fallback_mode = (
+                OPTIMIZATION_MODE_BOTH_3D
+                if OPTIMIZATION_MODE_BOTH_3D in available_modes
+                else available_modes[0]
+            )
+            mode_var.set(fallback_mode)
 
     @staticmethod
     def _curve_filter_labels_for_choice(y_choice: str) -> tuple[str, ...]:
@@ -1066,8 +1142,6 @@ class BestTiltingPlaneApp:
 
         if candidate_start_times.size == 0:
             return None
-        if mode == "Optimize DMS":
-            return None
 
         cached_two_d_values = self._load_cached_optimized_values(mode="Optimize 2D") if use_cache else None
         if cached_two_d_values is not None:
@@ -1295,13 +1369,18 @@ class BestTiltingPlaneApp:
             "success_mask": np.asarray(success_mask, dtype=bool),
             "best_start_time": float(best_start_time),
         }
+        comparison_modes = (
+            "Optimize 2D",
+            OPTIMIZATION_MODE_ARM1_3D,
+            OPTIMIZATION_MODE_ARM2_3D,
+            OPTIMIZATION_MODE_BOTH_3D,
+            "Optimize 3D",
+            "Optimize 3D BTP",
+        )
         comparison_scans = [
             bundle
-            for bundle in (
-                self._load_cached_scan_bundle_for_mode("Optimize 2D"),
-                self._load_cached_scan_bundle_for_mode("Optimize 3D"),
-                self._load_cached_scan_bundle_for_mode("Optimize 3D BTP"),
-            )
+            for comparison_mode in comparison_modes
+            for bundle in (self._load_cached_scan_bundle_for_mode(comparison_mode),)
             if bundle is not None and bundle.get("mode") != mode
         ]
         if len(comparison_scans) == 1:
@@ -1353,6 +1432,7 @@ class BestTiltingPlaneApp:
     def _show_embedded_scan_plot(self) -> None:
         """Refresh the dedicated embedded `t1` scan figure."""
 
+        self._refresh_optimization_mode_options()
         if hasattr(self, "_first_arm_scan_axis"):
             self._refresh_first_arm_scan_plot()
         if hasattr(self, "_scan_axis"):
@@ -1378,10 +1458,15 @@ class BestTiltingPlaneApp:
         first_start_node_index = int(
             round(float(getattr(result.variables, "first_arm_start", 0.0)) / DMS_SHOOTING_STEP)
         )
-        left_lower_bounds, left_upper_bounds, right_lower_bounds, right_upper_bounds = optimizer._global_jerk_bounds(
-            first_start_node_index=int(first_start_node_index),
-            second_start_node_index=int(right_start_node_index),
-        )
+        try:
+            left_lower_bounds, left_upper_bounds, right_lower_bounds, right_upper_bounds = optimizer._global_jerk_bounds(
+                first_start_node_index=int(first_start_node_index),
+                second_start_node_index=int(right_start_node_index),
+            )
+        except TypeError:
+            left_lower_bounds, left_upper_bounds, right_lower_bounds, right_upper_bounds = optimizer._global_jerk_bounds(
+                right_start_node_index=int(right_start_node_index),
+            )
         left_jerk = np.zeros(optimizer.interval_count, dtype=float)
         right_jerk = np.zeros(optimizer.interval_count, dtype=float)
         left_start = int(right_start_node_index)
@@ -1417,20 +1502,26 @@ class BestTiltingPlaneApp:
         if len(start_times) == 0:
             return
         primary_scan = {
-            "mode": "Optimize 2D",
+            "mode": OPTIMIZATION_MODE_BOTH_3D,
             "start_times": np.asarray(start_times, dtype=float),
             "final_twist_turns": np.asarray(final_twist_turns, dtype=float),
             "objective_values": np.asarray(objective_values, dtype=float),
             "success_mask": np.ones(len(start_times), dtype=bool),
             "best_start_time": float(best_start_time),
         }
+        comparison_modes = (
+            "Optimize 2D",
+            OPTIMIZATION_MODE_ARM1_3D,
+            OPTIMIZATION_MODE_ARM2_3D,
+            OPTIMIZATION_MODE_BOTH_3D,
+            "Optimize 3D",
+            "Optimize 3D BTP",
+        )
         comparison_scans = [
             bundle
-            for bundle in (
-                self._load_cached_scan_bundle_for_mode("Optimize 3D"),
-                self._load_cached_scan_bundle_for_mode("Optimize 3D BTP"),
-            )
-            if bundle is not None
+            for comparison_mode in comparison_modes
+            for bundle in (self._load_cached_scan_bundle_for_mode(comparison_mode),)
+            if bundle is not None and bundle.get("mode") != primary_scan["mode"]
         ]
         if len(comparison_scans) == 1:
             self._show_scan_comparison_figure(primary_scan=primary_scan, comparison_scan=comparison_scans[0])
@@ -1585,14 +1676,17 @@ class BestTiltingPlaneApp:
                 }
             except (TypeError, ValueError):
                 scan_data = None
-        motion = self._rebuild_cached_dms_motion(
-            optimized_values,
-            left_plane_jerk=left_jerk_values,
-            right_plane_jerk=right_jerk_values,
-        )
         cached_simulation = self._cached_simulation_result_from_record(record)
-        if cached_simulation is not None:
-            setattr(motion, "_cached_simulation_result", cached_simulation)
+        if cached_simulation is not None and _is_first_arm_optimization_mode(mode):
+            motion = SimpleNamespace(_cached_simulation_result=cached_simulation)
+        else:
+            motion = self._rebuild_cached_dms_motion(
+                optimized_values,
+                left_plane_jerk=left_jerk_values,
+                right_plane_jerk=right_jerk_values,
+            )
+            if cached_simulation is not None:
+                setattr(motion, "_cached_simulation_result", cached_simulation)
         return optimized_values, motion, final_twist_turns, solver_status, scan_data
 
     def _load_cached_dms_solution(
@@ -2814,10 +2908,6 @@ class BestTiltingPlaneApp:
             mode for mode in SCAN_DATASET_MODES if mode != current_mode and not _is_first_arm_optimization_mode(mode)
         ]
         for mode in ordered_modes:
-            if mode == "Optimize 3D BTP":
-                continue
-            if current_mode == "Optimize DMS" and mode == "Optimize 3D":
-                continue
             if mode in seen_modes:
                 continue
             seen_modes.add(mode)
@@ -2835,9 +2925,7 @@ class BestTiltingPlaneApp:
         current_mode = _first_arm_scan_mode_for_backend(str(self.optimization_mode_var.get()))
         datasets: list[dict[str, object]] = []
         seen_modes: set[str] = set()
-        ordered_modes = [current_mode] + [
-            mode for mode in SCAN_DATASET_MODES if mode != current_mode and _is_first_arm_optimization_mode(mode)
-        ]
+        ordered_modes = [current_mode]
         for mode in ordered_modes:
             if mode in seen_modes:
                 continue
@@ -2916,6 +3004,7 @@ class BestTiltingPlaneApp:
         mode, index, candidate = nearest
         selection = (mode, index)
         self._selected_first_arm_scan_solution = None if selection == self._selected_first_arm_scan_solution else selection
+        self._refresh_optimization_mode_options()
         self._refresh_first_arm_scan_plot()
         selected_candidate = self._selected_first_arm_candidate_record()
         if selected_candidate is not None:
@@ -3000,10 +3089,13 @@ class BestTiltingPlaneApp:
 
         values = dict(candidate["values"])
         candidate_mode = str(candidate.get("mode", self.optimization_mode_var.get()))
-        if candidate_mode in {"Arm1 2D", "Optimize 2D"}:
-            self.optimization_mode_var.set("Optimize 2D")
-        elif candidate_mode in {"Arm1 3D", "Optimize 3D", "Optimize 3D BTP"}:
-            self.optimization_mode_var.set("Optimize 3D")
+        if candidate_mode == OPTIMIZATION_MODE_ARM1_3D:
+            self.optimization_mode_var.set(OPTIMIZATION_MODE_ARM1_3D)
+        elif candidate_mode == OPTIMIZATION_MODE_ARM2_3D:
+            self.optimization_mode_var.set(OPTIMIZATION_MODE_ARM2_3D)
+        elif candidate_mode == OPTIMIZATION_MODE_BOTH_3D:
+            self.optimization_mode_var.set(OPTIMIZATION_MODE_BOTH_3D)
+        self._refresh_optimization_mode_options()
 
         prescribed_motion = None
         simulation = candidate.get("simulation")
@@ -3289,7 +3381,7 @@ class BestTiltingPlaneApp:
     def _plot_requires_frame_sync(self) -> bool:
         """Return whether the current 2D figure depends on the animation frame."""
 
-        return self.plot_mode_var.get() == PLOT_MODE_OPTIONS[1]
+        return self.plot_mode_var.get() == "Bras hors BTP (dessus)"
 
     def _current_plot_frame_index(self) -> int:
         """Return the frame currently displayed to the user."""
@@ -3461,7 +3553,7 @@ class BestTiltingPlaneApp:
         if self._visualization_data is None:
             return
 
-        if self.plot_mode_var.get() == PLOT_MODE_OPTIONS[1]:
+        if self.plot_mode_var.get() == "Bras hors BTP (dessus)":
             self._refresh_top_view_plot()
             return
 
@@ -3903,16 +3995,20 @@ class BestTiltingPlaneApp:
         """Compute one optimization result without touching Tk widgets directly."""
 
         selected_first_arm_candidate = self._selected_first_arm_candidate_record()
-        if mode == "Optimize DMS":
-            effective_mode = "Optimize DMS"
-        else:
+        if mode in {"Optimize 2D", "Optimize 3D"}:
             effective_mode = (
                 _first_arm_scan_mode_for_backend(mode)
                 if selected_first_arm_candidate is None
                 else _second_arm_scan_mode_for_backend(mode)
             )
+        else:
+            effective_mode = str(mode)
         initial_guess_values = dict(current_values)
-        if selected_first_arm_candidate is not None:
+        if _requires_selected_first_arm_solution(effective_mode):
+            if selected_first_arm_candidate is None:
+                raise RuntimeError(
+                    "Choisissez d'abord une solution du bras 1 sur le graphique t0 avant d'optimiser le bras 2."
+                )
             initial_guess_values.update(
                 {
                     key: value
@@ -3921,11 +4017,14 @@ class BestTiltingPlaneApp:
                 }
             )
         initial_guess = _variables_from_gui(initial_guess_values)
-        mode_label = (
-            f"{_optimization_mode_label(mode)} bras 1"
-            if _is_first_arm_optimization_mode(effective_mode)
-            else f"{_optimization_mode_label(mode)} bras 2"
-        )
+        if mode in {"Optimize 2D", "Optimize 3D", "Optimize DMS", "Optimize 3D BTP"}:
+            mode_label = (
+                f"{_optimization_mode_label(mode)} bras 1"
+                if _is_first_arm_optimization_mode(effective_mode)
+                else f"{_optimization_mode_label(mode)} bras 2"
+            )
+        else:
+            mode_label = _optimization_mode_label(mode)
 
         def report(message: str) -> None:
             if progress_callback is not None:
@@ -3952,7 +4051,11 @@ class BestTiltingPlaneApp:
                             "final_twist_turns": cached_scan_data["final_twist_turns"],
                             "objective_values": cached_scan_data["objective_values"],
                             "success_mask": cached_scan_data["success_mask"],
-                            "best_start_time": cached_values["right_arm_start"],
+                            "best_start_time": (
+                                cached_values["first_arm_start"]
+                                if _is_first_arm_optimization_mode(effective_mode)
+                                else cached_values["right_arm_start"]
+                            ),
                             "mode": effective_mode,
                         }
                     ),
@@ -3984,6 +4087,81 @@ class BestTiltingPlaneApp:
                     "show_embedded_scan": cached_scan_data is not None,
                 }
 
+        if effective_mode == OPTIMIZATION_MODE_ARM1_3D:
+            optimizer = DirectMultipleShootingOptimizer.from_builder(
+                self._model_path(),
+                configuration=self._standard_optimization_configuration(),
+                shooting_step=DMS_SHOOTING_STEP,
+                jerk_regularization=DMS_JERK_REGULARIZATION,
+                objective_mode=OBJECTIVE_MODE_TWIST,
+                btp_deviation_weight=DMS_BTP_DEVIATION_WEIGHT,
+                twist_rate_lagrange_weight=DMS_TWIST_RATE_LAGRANGE_WEIGHT,
+            )
+            report(f"{mode_label} en cours... balayage t0")
+            sweep = optimizer.sweep_first_arm_kinematics_3d(
+                initial_guess,
+                second_arm_start=self._standard_optimization_configuration().final_time,
+                max_iter=50,
+                print_level=5,
+                print_time=True,
+                show_jerk_diagnostics=False,
+            )
+            result = sweep.best_result
+            optimized_values = self._values_with_current_fixed_parameters(
+                {
+                    **_gui_values_from_variables(result.variables),
+                    "first_arm_start": float(getattr(result.variables, "first_arm_start", 0.0)),
+                    "right_arm_start": float(current_values["right_arm_start"]),
+                }
+            )
+            scan_candidate_solutions = [
+                self._scan_candidate_record(
+                    optimized_values=self._values_with_current_fixed_parameters(
+                        {
+                            **_gui_values_from_variables(candidate_result.variables),
+                            "first_arm_start": float(getattr(candidate_result.variables, "first_arm_start", 0.0)),
+                            "right_arm_start": float(current_values["right_arm_start"]),
+                        }
+                    ),
+                    simulation_result=getattr(candidate_result, "simulation", None),
+                    mode=effective_mode,
+                    final_twist_turns=candidate_result.final_twist_turns,
+                    objective=candidate_result.objective,
+                    solver_status=candidate_result.solver_status,
+                    success=bool(candidate_result.success),
+                    left_plane_jerk=np.asarray(candidate_result.left_plane_jerk, dtype=float),
+                    right_plane_jerk=np.asarray(candidate_result.right_plane_jerk, dtype=float),
+                )
+                for candidate_result in sweep.candidate_results
+            ]
+            self._store_cached_dms_solution(
+                optimized_values,
+                left_plane_jerk=result.left_plane_jerk,
+                right_plane_jerk=result.right_plane_jerk,
+                simulation_result=getattr(result, "simulation", None),
+                scan_start_times=sweep.start_times,
+                scan_final_twist_turns=sweep.final_twist_turns,
+                scan_objective_values=sweep.objective_values,
+                scan_success_mask=sweep.success_mask,
+                scan_candidate_solutions=scan_candidate_solutions,
+                final_twist_turns=result.final_twist_turns,
+                solver_status=result.solver_status,
+            )
+            return {
+                "optimized_values": optimized_values,
+                "prescribed_motion": SimpleNamespace(_cached_simulation_result=result.simulation),
+                "status_suffix": f"optimum {mode_label}: {result.final_twist_turns:.2f} tours ({result.solver_status})",
+                "scan_figure": {
+                    "start_times": sweep.start_times,
+                    "final_twist_turns": sweep.final_twist_turns,
+                    "objective_values": sweep.objective_values,
+                    "success_mask": sweep.success_mask,
+                    "best_start_time": float(getattr(result.variables, "first_arm_start", 0.0)),
+                    "mode": effective_mode,
+                },
+                "show_embedded_scan": True,
+            }
+
         if _is_three_d_optimization_mode(effective_mode):
             optimizer = DirectMultipleShootingOptimizer.from_builder(
                 self._model_path(),
@@ -3994,6 +4172,15 @@ class BestTiltingPlaneApp:
                 btp_deviation_weight=DMS_BTP_DEVIATION_WEIGHT,
                 twist_rate_lagrange_weight=DMS_TWIST_RATE_LAGRANGE_WEIGHT,
             )
+            constrain_first_arm_terminal_plane = effective_mode not in {
+                OPTIMIZATION_MODE_ARM1_3D,
+                OPTIMIZATION_MODE_ARM2_3D,
+                OPTIMIZATION_MODE_BOTH_3D,
+            }
+            constrain_second_arm_terminal_plane = effective_mode not in {
+                OPTIMIZATION_MODE_ARM2_3D,
+                OPTIMIZATION_MODE_BOTH_3D,
+            }
             candidate_start_times = np.asarray(optimizer.candidate_start_times(), dtype=float)
             cached_progress = None if not use_cache else self._load_cached_dms_progress(mode=effective_mode)
             start_index = 0
@@ -4111,6 +4298,8 @@ class BestTiltingPlaneApp:
                         initial_guess,
                         right_arm_start=current_start_time,
                         start_count=MULTISTART_START_COUNT,
+                        constrain_first_arm_terminal_plane=constrain_first_arm_terminal_plane,
+                        constrain_second_arm_terminal_plane=constrain_second_arm_terminal_plane,
                         previous_result=warm_start_seed,
                         max_iter=50,
                         print_level=5,
@@ -4121,6 +4310,8 @@ class BestTiltingPlaneApp:
                     current_result = optimizer.solve_fixed_start(
                         initial_guess,
                         right_arm_start=current_start_time,
+                        constrain_first_arm_terminal_plane=constrain_first_arm_terminal_plane,
+                        constrain_second_arm_terminal_plane=constrain_second_arm_terminal_plane,
                         previous_result=warm_start_seed,
                         max_iter=50,
                         print_level=5,
@@ -4135,7 +4326,7 @@ class BestTiltingPlaneApp:
                     self._scan_candidate_record(
                         optimized_values=_gui_values_from_variables(current_result.variables),
                         simulation_result=getattr(current_result, "simulation", None),
-                        mode=mode,
+                        mode=effective_mode,
                         final_twist_turns=current_result.final_twist_turns,
                         objective=current_result.objective,
                         solver_status=current_result.solver_status,
@@ -4211,6 +4402,8 @@ class BestTiltingPlaneApp:
                         rerun = optimizer.solve_fixed_start(
                             initial_guess,
                             right_arm_start=float(scan_start_times[index]),
+                            constrain_first_arm_terminal_plane=constrain_first_arm_terminal_plane,
+                            constrain_second_arm_terminal_plane=constrain_second_arm_terminal_plane,
                             previous_result=better_neighbor,
                             max_iter=50,
                             print_level=5,
@@ -4284,7 +4477,7 @@ class BestTiltingPlaneApp:
                     "final_twist_turns": scan_data["final_twist_turns"],
                     "objective_values": scan_data["objective_values"],
                     "success_mask": scan_data["success_mask"],
-                    "best_start_time": result.variables.right_arm_start,
+                    "best_start_time": float(result.variables.right_arm_start),
                     "mode": effective_mode,
                 },
                 "jerk_diagnostic": {"optimizer": optimizer, "result": result},

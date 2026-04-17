@@ -130,6 +130,41 @@ class DirectMultipleShootingSweepResult:
         return tuple(result.solver_status for result in self.candidate_results)
 
 
+@dataclass(frozen=True)
+class FirstArmDirectMultipleShootingSweepResult:
+    """Result of the discrete sweep over admissible first-arm start nodes."""
+
+    best_result: DirectMultipleShootingResult
+    candidate_results: tuple[DirectMultipleShootingResult, ...]
+
+    @property
+    def start_times(self) -> np.ndarray:
+        """Return the scanned first-arm start times."""
+
+        return np.array(
+            [float(getattr(result.variables, "first_arm_start", 0.0)) for result in self.candidate_results],
+            dtype=float,
+        )
+
+    @property
+    def objective_values(self) -> np.ndarray:
+        """Return the objective value associated with every scanned first-arm start time."""
+
+        return np.array([result.objective for result in self.candidate_results], dtype=float)
+
+    @property
+    def final_twist_turns(self) -> np.ndarray:
+        """Return the final twist count associated with every scanned first-arm start time."""
+
+        return np.array([result.final_twist_turns for result in self.candidate_results], dtype=float)
+
+    @property
+    def success_mask(self) -> np.ndarray:
+        """Return whether each candidate solve reached a successful NLP status."""
+
+        return np.array([result.success for result in self.candidate_results], dtype=bool)
+
+
 class DirectMultipleShootingOptimizer:
     """Classical jerk-driven multiple shooting with one global graph and fixed known values."""
 
@@ -692,6 +727,14 @@ class DirectMultipleShootingOptimizer:
         last_node = int(round(upper_bound / self.shooting_step))
         return np.round(self.shooting_step * np.arange(first_node, last_node + 1, dtype=float), decimals=10)
 
+    def candidate_first_arm_start_times(self) -> np.ndarray:
+        """Return the admissible discrete first-arm start times on the shooting grid."""
+
+        upper_bound = min(RIGHT_ARM_START_BOUNDS[1], self.configuration.final_time - RIGHT_ARM_ACTIVE_DURATION)
+        first_node = int(round(RIGHT_ARM_START_BOUNDS[0] / self.shooting_step))
+        last_node = int(round(upper_bound / self.shooting_step))
+        return np.round(self.shooting_step * np.arange(first_node, last_node + 1, dtype=float), decimals=10)
+
     def _snap_start_time_to_grid(self, right_arm_start: float) -> float:
         """Project one start time onto the shooting grid while tolerating floating-point noise."""
 
@@ -923,6 +966,9 @@ class DirectMultipleShootingOptimizer:
         initial_guess: TwistOptimizationVariables,
         *,
         right_arm_start: float,
+        allow_frozen_second_arm: bool = False,
+        constrain_first_arm_terminal_plane: bool = True,
+        constrain_second_arm_terminal_plane: bool = True,
         previous_result: DirectMultipleShootingResult | None = None,
         warm_start_override: np.ndarray | None = None,
         max_iter: int = 100,
@@ -932,12 +978,18 @@ class DirectMultipleShootingOptimizer:
     ) -> DirectMultipleShootingResult:
         """Solve one direct multiple-shooting problem with a fixed second-arm start time."""
 
+        admissible_upper_bound = (
+            self.configuration.final_time if allow_frozen_second_arm else RIGHT_ARM_START_BOUNDS[1]
+        )
         if (
             right_arm_start < RIGHT_ARM_START_BOUNDS[0] - START_TIME_TOLERANCE
-            or right_arm_start > RIGHT_ARM_START_BOUNDS[1] + START_TIME_TOLERANCE
+            or right_arm_start > admissible_upper_bound + START_TIME_TOLERANCE
         ):
             raise ValueError("The fixed second-arm start time is outside the admissible bounds.")
-        right_arm_start = self._snap_start_time_to_grid(float(right_arm_start))
+        if allow_frozen_second_arm and right_arm_start >= self.configuration.final_time - START_TIME_TOLERANCE:
+            right_arm_start = float(np.round(self.configuration.final_time, decimals=10))
+        else:
+            right_arm_start = self._snap_start_time_to_grid(float(right_arm_start))
         first_arm_start = self._snap_start_time_to_grid(float(getattr(initial_guess, "first_arm_start", 0.0)))
 
         solver = self._build_solver(max_iter=max_iter, print_level=print_level, print_time=print_time)
@@ -993,7 +1045,7 @@ class DirectMultipleShootingOptimizer:
             if state_index == 0:
                 lbx.extend(initial_left_plane_state.tolist())
                 ubx.extend(initial_left_plane_state.tolist())
-            elif state_index == left_terminal_node_index:
+            elif constrain_second_arm_terminal_plane and state_index == left_terminal_node_index:
                 lbx.extend(terminal_left_plane_state.tolist())
                 ubx.extend(terminal_left_plane_state.tolist())
             else:
@@ -1006,7 +1058,7 @@ class DirectMultipleShootingOptimizer:
             if state_index == 0:
                 lbx.extend(initial_right_plane_state.tolist())
                 ubx.extend(initial_right_plane_state.tolist())
-            elif state_index == right_terminal_node_index:
+            elif constrain_first_arm_terminal_plane and state_index == right_terminal_node_index:
                 lbx.extend(terminal_right_plane_state.tolist())
                 ubx.extend(terminal_right_plane_state.tolist())
             else:
@@ -1207,6 +1259,56 @@ class DirectMultipleShootingOptimizer:
             ),
         )
 
+    def sweep_first_arm_kinematics_3d(
+        self,
+        initial_guess: TwistOptimizationVariables,
+        *,
+        second_arm_start: float,
+        previous_result: DirectMultipleShootingResult | None = None,
+        max_iter: int = 100,
+        print_level: int = 0,
+        print_time: bool = False,
+        show_jerk_diagnostics: bool = False,
+    ) -> FirstArmDirectMultipleShootingSweepResult:
+        """Scan the first-arm start time with a full 3D DMS while keeping the second arm fixed."""
+
+        candidate_results: list[DirectMultipleShootingResult] = []
+        best_result: DirectMultipleShootingResult | None = None
+        warm_start_result = previous_result
+
+        for first_arm_start in self.candidate_first_arm_start_times():
+            staged_initial_guess = TwistOptimizationVariables(
+                right_arm_start=0.0,
+                left_plane_initial=0.0,
+                left_plane_final=0.0,
+                right_plane_initial=initial_guess.right_plane_initial,
+                right_plane_final=initial_guess.right_plane_final,
+                contact_twist_rate=initial_guess.contact_twist_rate,
+                first_arm_start=float(first_arm_start),
+            )
+            current_result = self.solve_fixed_start(
+                staged_initial_guess,
+                right_arm_start=float(second_arm_start),
+                allow_frozen_second_arm=True,
+                constrain_first_arm_terminal_plane=False,
+                previous_result=warm_start_result,
+                max_iter=max_iter,
+                print_level=print_level,
+                print_time=print_time,
+                show_jerk_diagnostics=show_jerk_diagnostics,
+            )
+            candidate_results.append(current_result)
+            if _result_is_better(current_result, best_result):
+                best_result = current_result
+            if current_result.warm_start_primal is not None and _result_is_better(current_result, warm_start_result):
+                warm_start_result = current_result
+
+        assert best_result is not None
+        return FirstArmDirectMultipleShootingSweepResult(
+            best_result=best_result,
+            candidate_results=tuple(candidate_results),
+        )
+
     def _randomized_warm_start(
         self,
         base_primal: np.ndarray,
@@ -1251,6 +1353,8 @@ class DirectMultipleShootingOptimizer:
         *,
         right_arm_start: float,
         start_count: int = MULTISTART_START_COUNT,
+        constrain_first_arm_terminal_plane: bool = True,
+        constrain_second_arm_terminal_plane: bool = True,
         previous_result: DirectMultipleShootingResult | None = None,
         max_iter: int = 100,
         print_level: int = 0,
@@ -1259,10 +1363,25 @@ class DirectMultipleShootingOptimizer:
     ) -> DirectMultipleShootingResult:
         """Run several fixed-start solves and keep the best result for the requested `t1`."""
 
+        def _call_fixed_start(**kwargs) -> DirectMultipleShootingResult:
+            try:
+                return self.solve_fixed_start(initial_guess, **kwargs)
+            except TypeError as error:
+                if (
+                    "constrain_first_arm_terminal_plane" not in str(error)
+                    and "constrain_second_arm_terminal_plane" not in str(error)
+                ):
+                    raise
+                legacy_kwargs = dict(kwargs)
+                legacy_kwargs.pop("constrain_first_arm_terminal_plane", None)
+                legacy_kwargs.pop("constrain_second_arm_terminal_plane", None)
+                return self.solve_fixed_start(initial_guess, **legacy_kwargs)
+
         if start_count <= 1:
-            return self.solve_fixed_start(
-                initial_guess,
+            return _call_fixed_start(
                 right_arm_start=right_arm_start,
+                constrain_first_arm_terminal_plane=constrain_first_arm_terminal_plane,
+                constrain_second_arm_terminal_plane=constrain_second_arm_terminal_plane,
                 previous_result=previous_result,
                 max_iter=max_iter,
                 print_level=print_level,
@@ -1273,9 +1392,10 @@ class DirectMultipleShootingOptimizer:
         generator = np.random.default_rng(1234)
         second_start_node_index = int(round(right_arm_start / self.shooting_step))
         first_start_node_index = int(round(float(getattr(initial_guess, "first_arm_start", 0.0)) / self.shooting_step))
-        best_result = self.solve_fixed_start(
-            initial_guess,
+        best_result = _call_fixed_start(
             right_arm_start=right_arm_start,
+            constrain_first_arm_terminal_plane=constrain_first_arm_terminal_plane,
+            constrain_second_arm_terminal_plane=constrain_second_arm_terminal_plane,
             previous_result=previous_result,
             max_iter=max_iter,
             print_level=print_level,
@@ -1298,9 +1418,10 @@ class DirectMultipleShootingOptimizer:
                     second_start_node_index=second_start_node_index,
                     generator=generator,
                 )
-            current_result = self.solve_fixed_start(
-                initial_guess,
+            current_result = _call_fixed_start(
                 right_arm_start=right_arm_start,
+                constrain_first_arm_terminal_plane=constrain_first_arm_terminal_plane,
+                constrain_second_arm_terminal_plane=constrain_second_arm_terminal_plane,
                 warm_start_override=randomized_warm_start,
                 max_iter=max_iter,
                 print_level=print_level,
