@@ -845,6 +845,7 @@ class TwistStrategyOptimizer:
         *,
         bounds: IpoptBounds | None = None,
         step: float = 0.02,
+        progress_callback=None,
     ) -> RightArmStartSweepResult:
         """Evaluate every admissible 1D start-time node and keep the best result."""
 
@@ -856,7 +857,16 @@ class TwistStrategyOptimizer:
         start_times = step * np.arange(first_node, last_node + 1, dtype=float)
         candidate_results: list[TwistOptimizationResult] = []
 
-        for start_time in start_times:
+        total_evaluations = int(start_times.size)
+        for evaluation_index, start_time in enumerate(start_times, start=1):
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "message": f"Optimisation 2D bras 2... t1={float(start_time):.2f} s",
+                        "completed": evaluation_index,
+                        "total": total_evaluations,
+                    }
+                )
             variables = TwistOptimizationVariables(
                 right_arm_start=float(start_time),
                 left_plane_initial=0.0,
@@ -891,6 +901,7 @@ class TwistStrategyOptimizer:
         fixed_first_arm: TwistOptimizationVariables,
         bounds: IpoptBounds | None = None,
         step: float = 0.02,
+        progress_callback=None,
     ) -> RightArmStartSweepResult:
         """Evaluate every admissible second-arm start time while resweeping the first-arm plane."""
 
@@ -909,9 +920,23 @@ class TwistStrategyOptimizer:
         plane_values = np.deg2rad(plane_values_deg)
         candidate_results: list[TwistOptimizationResult] = []
 
+        total_evaluations = int(start_times.size * plane_values.size)
+        completed_evaluations = 0
         for start_time in start_times:
             best_result_for_start: TwistOptimizationResult | None = None
             for plane_final in plane_values:
+                completed_evaluations += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "message": (
+                                f"Optimisation 2D bras 2... t1={float(start_time):.2f} s, "
+                                f"plan={np.rad2deg(float(plane_final)):.1f} deg"
+                            ),
+                            "completed": completed_evaluations,
+                            "total": total_evaluations,
+                        }
+                    )
                 variables = TwistOptimizationVariables(
                     right_arm_start=float(start_time),
                     left_plane_initial=0.0,
@@ -953,6 +978,7 @@ class TwistStrategyOptimizer:
         second_arm_start: float,
         start_step: float = 0.02,
         plane_step_deg: float = FIRST_ARM_PLANE_SWEEP_STEP_DEG,
+        progress_callback=None,
     ) -> FirstArmKinematicsSweepResult:
         """Scan the first-arm start time and plane-final angle with direct simulations."""
 
@@ -968,9 +994,23 @@ class TwistStrategyOptimizer:
         plane_values = np.deg2rad(plane_values_deg)
         best_candidates: list[FirstArmSweepCandidate] = []
 
+        total_evaluations = int(start_times.size * plane_values.size)
+        completed_evaluations = 0
         for first_arm_start in start_times:
             best_candidate_for_start: FirstArmSweepCandidate | None = None
             for plane_final in plane_values:
+                completed_evaluations += 1
+                if progress_callback is not None:
+                    progress_callback(
+                        {
+                            "message": (
+                                f"Optimisation 2D bras 1... t0={float(first_arm_start):.2f} s, "
+                                f"plan={np.rad2deg(float(plane_final)):.1f} deg"
+                            ),
+                            "completed": completed_evaluations,
+                            "total": total_evaluations,
+                        }
+                    )
                 objective, simulation = self.evaluate_first_arm_kinematics(
                     first_arm_start=float(first_arm_start),
                     second_arm_start=float(second_arm_start),

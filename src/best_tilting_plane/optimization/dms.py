@@ -1269,14 +1269,25 @@ class DirectMultipleShootingOptimizer:
         print_level: int = 0,
         print_time: bool = False,
         show_jerk_diagnostics: bool = False,
+        progress_callback=None,
     ) -> FirstArmDirectMultipleShootingSweepResult:
         """Scan the first-arm start time with a full 3D DMS while keeping the second arm fixed."""
 
         candidate_results: list[DirectMultipleShootingResult] = []
         best_result: DirectMultipleShootingResult | None = None
         warm_start_result = previous_result
+        candidate_first_starts = self.candidate_first_arm_start_times()
+        total_candidates = int(candidate_first_starts.size)
 
-        for first_arm_start in self.candidate_first_arm_start_times():
+        for candidate_index, first_arm_start in enumerate(candidate_first_starts, start=1):
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "message": f"Optimisation 3D bras 1... t0={float(first_arm_start):.2f} s",
+                        "completed": candidate_index,
+                        "total": total_candidates,
+                    }
+                )
             staged_initial_guess = TwistOptimizationVariables(
                 right_arm_start=0.0,
                 left_plane_initial=0.0,

@@ -375,6 +375,9 @@ class BestTiltingPlaneApp:
         self._optimization_thread: threading.Thread | None = None
         self._optimization_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._optimization_poll_after_id: str | None = None
+        self._optimization_progress_window = None
+        self._optimization_progress_var = None
+        self._optimization_progress_bar = None
         self._fixed_values_state = dict(GUI_FIXED_VALUES)
         self._auto_runner = DebouncedRunner(self.root, self._run_simulation, delay_ms=250)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1098,6 +1101,7 @@ class BestTiltingPlaneApp:
         *,
         initial_guess: TwistOptimizationVariables,
         mode: str,
+        progress_callback=None,
     ) -> tuple[object, object, dict[str, float], object | None]:
         """Run the current non-3D discrete sweep and return its best result in GUI-friendly form."""
 
@@ -1110,6 +1114,7 @@ class BestTiltingPlaneApp:
             sweep = optimizer.sweep_first_arm_kinematics(
                 second_arm_start=second_arm_frozen_start,
                 start_step=DMS_SHOOTING_STEP,
+                progress_callback=progress_callback,
             )
             best_candidate = sweep.best_candidate
             result = best_candidate.result
@@ -1130,12 +1135,14 @@ class BestTiltingPlaneApp:
             sweep = optimizer.sweep_second_arm_start_only(
                 fixed_first_arm=fixed_first_arm,
                 step=DMS_SHOOTING_STEP,
+                progress_callback=progress_callback,
             )
             result = sweep.best_result
             return sweep, result, _gui_values_from_variables(result.variables), None
         if hasattr(optimizer, "sweep_right_arm_start_only"):
             sweep = optimizer.sweep_right_arm_start_only(
                 step=DMS_SHOOTING_STEP,
+                progress_callback=progress_callback,
             )
             result = sweep.best_result
         else:
@@ -1177,6 +1184,7 @@ class BestTiltingPlaneApp:
             two_d_sweep, two_d_result, two_d_values, _ = self._evaluate_two_d_sweep(
                 initial_guess=initial_guess,
                 mode="Optimize 2D",
+                progress_callback=report,
             )
             best_two_d_start = float(two_d_result.variables.right_arm_start)
             if use_cache:
@@ -2372,6 +2380,7 @@ class BestTiltingPlaneApp:
             except tk.TclError:
                 pass
             self._optimization_poll_after_id = None
+        self._close_optimization_progress_popup()
         try:
             self.root.destroy()
         except tk.TclError:
@@ -3926,10 +3935,80 @@ class BestTiltingPlaneApp:
             return
         self._show_kinematic_explorer_figure(payloads)
 
-    def _optimization_progress(self, message: str) -> None:
-        """Update the optimization status line from the Tk thread."""
+    def _close_optimization_progress_popup(self) -> None:
+        """Close the small optimization-progress popup when it is open."""
 
-        self.result_var.set(str(message))
+        window = getattr(self, "_optimization_progress_window", None)
+        if window is not None:
+            try:
+                window.destroy()
+            except Exception:
+                pass
+        self._optimization_progress_window = None
+        self._optimization_progress_var = None
+        self._optimization_progress_bar = None
+
+    def _ensure_optimization_progress_popup(self) -> None:
+        """Create the small popup used to display optimization progress."""
+
+        if getattr(self, "_optimization_progress_window", None) is not None:
+            return
+        try:
+            window = tk.Toplevel(self.root)
+            window.title("Progression optimisation")
+            window.resizable(False, False)
+            window.transient(self.root)
+            window.protocol("WM_DELETE_WINDOW", lambda: None)
+            frame = ttk.Frame(window, padding=12)
+            frame.grid(row=0, column=0, sticky="nsew")
+            progress_var = tk.StringVar(value="Optimisation en cours...")
+            ttk.Label(
+                frame,
+                textvariable=progress_var,
+                justify="left",
+                wraplength=280,
+            ).grid(row=0, column=0, sticky="w")
+            progress_bar = ttk.Progressbar(
+                frame,
+                orient=tk.HORIZONTAL,
+                mode="determinate",
+                maximum=1.0,
+                value=0.0,
+                length=280,
+            )
+            progress_bar.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+            self._optimization_progress_window = window
+            self._optimization_progress_var = progress_var
+            self._optimization_progress_bar = progress_bar
+        except Exception:
+            self._optimization_progress_window = None
+            self._optimization_progress_var = None
+            self._optimization_progress_bar = None
+
+    def _optimization_progress(self, payload) -> None:
+        """Update the optimization status line and optional progress popup."""
+
+        if isinstance(payload, dict):
+            message = str(payload.get("message", "Optimisation en cours..."))
+            completed = payload.get("completed")
+            total = payload.get("total")
+        else:
+            message = str(payload)
+            completed = None
+            total = None
+
+        self.result_var.set(message)
+        if completed is not None and total is not None:
+            self._ensure_optimization_progress_popup()
+            progress_var = getattr(self, "_optimization_progress_var", None)
+            progress_bar = getattr(self, "_optimization_progress_bar", None)
+            if progress_var is not None:
+                progress_var.set(f"{message} ({int(completed)}/{int(total)})")
+            if progress_bar is not None:
+                try:
+                    progress_bar.configure(maximum=max(float(total), 1.0), value=float(completed))
+                except Exception:
+                    pass
         self.root.update_idletasks()
 
     def _start_background_optimization(
@@ -3953,7 +4032,7 @@ class BestTiltingPlaneApp:
                     current_values=current_values,
                     mode=mode,
                     use_cache=use_cache,
-                    progress_callback=lambda message: self._optimization_queue.put(("progress", str(message))),
+                    progress_callback=lambda message: self._optimization_queue.put(("progress", message)),
                 )
             except Exception as error:  # pragma: no cover - exercised through GUI callback reporting
                 self._optimization_queue.put(("error", (error, traceback.format_exc())))
@@ -3978,13 +4057,15 @@ class BestTiltingPlaneApp:
                 break
 
             if message_type == "progress":
-                self._optimization_progress(str(payload))
+                self._optimization_progress(payload)
             elif message_type == "error":
                 error, formatted_traceback = payload
                 print(formatted_traceback, end="")
                 self.result_var.set(f"Erreur optimisation: {error}")
+                self._close_optimization_progress_popup()
                 self._optimization_thread = None
             elif message_type == "done":
+                self._close_optimization_progress_popup()
                 self._optimization_thread = None
                 self._handle_optimization_outcome(payload)
 
@@ -3996,6 +4077,7 @@ class BestTiltingPlaneApp:
     def _handle_optimization_outcome(self, outcome: dict[str, object]) -> None:
         """Apply one completed optimization result back onto the Tk widgets."""
 
+        self._close_optimization_progress_popup()
         scan_figure = outcome.get("scan_figure")
         if isinstance(scan_figure, dict):
             self._schedule_scan_figure(**scan_figure)
@@ -4063,6 +4145,16 @@ class BestTiltingPlaneApp:
         def report(message: str) -> None:
             if progress_callback is not None:
                 progress_callback(message)
+
+        def report_step(message: str, *, completed: int, total: int) -> None:
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "message": str(message),
+                        "completed": int(completed),
+                        "total": int(total),
+                    }
+                )
 
         if _is_three_d_optimization_mode(effective_mode) and use_cache:
             cached_dms_solution = self._load_cached_dms_solution_for_mode(mode=effective_mode)
@@ -4139,6 +4231,7 @@ class BestTiltingPlaneApp:
                 print_level=5,
                 print_time=True,
                 show_jerk_diagnostics=False,
+                progress_callback=progress_callback,
             )
             result = sweep.best_result
             optimized_values = self._values_with_current_fixed_parameters(
@@ -4318,9 +4411,10 @@ class BestTiltingPlaneApp:
 
             for index in range(start_index, len(candidate_start_times)):
                 current_start_time = float(candidate_start_times[index])
-                report(
-                    f"{mode_label} en cours... t1={current_start_time:.2f} s "
-                    f"({index + 1}/{len(candidate_start_times)})"
+                report_step(
+                    f"{mode_label}... t1={current_start_time:.2f} s",
+                    completed=index + 1,
+                    total=len(candidate_start_times),
                 )
                 warm_start_seed = best_warm_start_result if best_warm_start_result is not None else previous_result
                 if (
@@ -4520,6 +4614,7 @@ class BestTiltingPlaneApp:
         sweep, result, optimized_values, prescribed_motion = self._evaluate_two_d_sweep(
             initial_guess=initial_guess,
             mode=effective_mode,
+            progress_callback=report,
         )
         if _is_first_arm_optimization_mode(effective_mode):
             scan_candidate_solutions = [
@@ -4614,6 +4709,7 @@ class BestTiltingPlaneApp:
             self._handle_optimization_outcome(outcome)
         except Exception as error:
             traceback.print_exc()
+            self._close_optimization_progress_popup()
             self.result_var.set(f"Erreur optimisation: {error}")
 
 

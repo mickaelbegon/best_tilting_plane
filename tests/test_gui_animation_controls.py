@@ -115,6 +115,30 @@ class FakeCombobox:
         self.options.update(kwargs)
 
 
+class FakeProgressbar:
+    """Small progressbar stub storing its latest configuration."""
+
+    def __init__(self) -> None:
+        self.options: dict[str, float] = {}
+
+    def configure(self, **kwargs) -> None:
+        """Record the latest progressbar values."""
+
+        self.options.update(kwargs)
+
+
+class FakeWindow:
+    """Very small window stub that records whether it was destroyed."""
+
+    def __init__(self) -> None:
+        self.destroyed = False
+
+    def destroy(self) -> None:
+        """Mirror one popup close."""
+
+        self.destroyed = True
+
+
 class FakeRunner:
     """Minimal debounced-runner stub exposing `cancel`."""
 
@@ -986,6 +1010,30 @@ def test_refresh_optimization_mode_options_unlocks_arm2_after_one_arm1_scan() ->
 
     assert app._optimization_mode_box.options["values"] == ALL_OPTIMIZATION_MODE_OPTIONS
     assert OPTIMIZATION_MODE_ARM2_2D in app._optimization_mode_box.options["values"]
+
+
+def test_optimization_progress_updates_the_popup_with_completed_over_total() -> None:
+    """The progress popup should track completed evaluations against the total."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app._optimization_progress_window = FakeWindow()
+    app._optimization_progress_var = FakeVar("")
+    app._optimization_progress_bar = FakeProgressbar()
+
+    app._optimization_progress(
+        {
+            "message": "Optimisation 2D bras 1... t0=0.20 s",
+            "completed": 3,
+            "total": 12,
+        }
+    )
+
+    assert app.result_var.get() == "Optimisation 2D bras 1... t0=0.20 s"
+    assert app._optimization_progress_var.get() == "Optimisation 2D bras 1... t0=0.20 s (3/12)"
+    assert app._optimization_progress_bar.options["maximum"] == 12.0
+    assert app._optimization_progress_bar.options["value"] == 3.0
 
 
 def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> None:
