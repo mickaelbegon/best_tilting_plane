@@ -15,7 +15,9 @@ from best_tilting_plane.gui.app import (
     DEFAULT_CAMERA_AZIMUTH_DEG,
     DEFAULT_CAMERA_ELEVATION_DEG,
     ALL_OPTIMIZATION_MODE_OPTIONS,
+    OPTIMIZATION_MODE_ARM1_2D,
     OPTIMIZATION_MODE_ARM1_3D,
+    OPTIMIZATION_MODE_ARM2_2D,
     OPTIMIZATION_MODE_ARM2_3D,
     OPTIMIZATION_MODE_BOTH_3D,
     OPTIMIZATION_MODE_OPTIONS,
@@ -955,9 +957,10 @@ def test_draw_animation_frame_updates_secondary_overlay_from_selected_condition(
 
 
 def test_optimization_mode_options_hide_the_btp_mode_from_the_menu() -> None:
-    """The GUI menu should expose the staged 3D modes only."""
+    """The GUI menu should expose the staged 2D/3D modes without the BTP mode."""
 
     assert OPTIMIZATION_MODE_OPTIONS == (
+        OPTIMIZATION_MODE_ARM1_2D,
         OPTIMIZATION_MODE_ARM1_3D,
         OPTIMIZATION_MODE_BOTH_3D,
     )
@@ -982,6 +985,7 @@ def test_refresh_optimization_mode_options_unlocks_arm2_after_one_arm1_scan() ->
     app._refresh_optimization_mode_options()
 
     assert app._optimization_mode_box.options["values"] == ALL_OPTIMIZATION_MODE_OPTIONS
+    assert OPTIMIZATION_MODE_ARM2_2D in app._optimization_mode_box.options["values"]
 
 
 def test_load_cached_optimized_values_reads_matching_record(tmp_path: Path) -> None:

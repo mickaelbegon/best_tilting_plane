@@ -107,15 +107,20 @@ PLOT_X_OPTIONS = ("Temps", "Somersault", "Vrille")
 PLOT_MODE_OPTIONS = ("Courbe",)
 ANIMATION_MODE_OPTIONS = ("Animation 3D", "Bras / BTP")
 ANIMATION_REFERENCE_OPTIONS = ("Global", "Racine", "Racine (main)", "Best tilting plane")
+OPTIMIZATION_MODE_ARM1_2D = "Optimise 2D bras 1"
+OPTIMIZATION_MODE_ARM2_2D = "Optimise 2D bras 2"
 OPTIMIZATION_MODE_ARM1_3D = "Optimise 3D bras 1"
 OPTIMIZATION_MODE_ARM2_3D = "Optimise 3D bras 2"
 OPTIMIZATION_MODE_BOTH_3D = "Optimise bras 1 et 2"
 ALL_OPTIMIZATION_MODE_OPTIONS = (
+    OPTIMIZATION_MODE_ARM1_2D,
+    OPTIMIZATION_MODE_ARM2_2D,
     OPTIMIZATION_MODE_ARM1_3D,
     OPTIMIZATION_MODE_ARM2_3D,
     OPTIMIZATION_MODE_BOTH_3D,
 )
 OPTIMIZATION_MODE_OPTIONS = (
+    OPTIMIZATION_MODE_ARM1_2D,
     OPTIMIZATION_MODE_ARM1_3D,
     OPTIMIZATION_MODE_BOTH_3D,
 )
@@ -187,6 +192,16 @@ SHOULDER_TORQUE_DOF_LABELS = ARM_KINEMATICS_LABELS
 SECONDARY_AVATAR_COLOR = "0.65"
 PLOT_LEGEND_FONT_SIZE = 8.0
 SCAN_PLOT_STYLE_BY_MODE = {
+    OPTIMIZATION_MODE_ARM1_2D: {
+        "color": "tab:purple",
+        "marker": "D",
+        "label": OPTIMIZATION_MODE_ARM1_2D,
+    },
+    OPTIMIZATION_MODE_ARM2_2D: {
+        "color": "tab:blue",
+        "marker": "o",
+        "label": OPTIMIZATION_MODE_ARM2_2D,
+    },
     OPTIMIZATION_MODE_ARM1_3D: {
         "color": "tab:purple",
         "marker": "D",
@@ -245,7 +260,7 @@ def _optimization_mode_label(mode: str) -> str:
 def _first_arm_scan_mode_for_backend(mode: str) -> str:
     """Return the internal scan/cache mode associated with one first-arm optimization backend."""
 
-    if mode in {"Optimize 2D", "Arm1 2D"}:
+    if mode in {OPTIMIZATION_MODE_ARM1_2D, "Optimize 2D", "Arm1 2D"}:
         return "Arm1 2D"
     if mode in {"Optimize 3D", "Arm1 3D"}:
         return "Arm1 3D"
@@ -255,6 +270,8 @@ def _first_arm_scan_mode_for_backend(mode: str) -> str:
 def _second_arm_scan_mode_for_backend(mode: str) -> str:
     """Return the internal scan/cache mode associated with one second-arm optimization backend."""
 
+    if mode == OPTIMIZATION_MODE_ARM2_2D:
+        return "Optimize 2D"
     if mode in {"Optimize 2D", "Optimize 3D", "Optimize DMS", "Optimize 3D BTP"}:
         return mode
     if mode == OPTIMIZATION_MODE_ARM2_3D:
@@ -265,13 +282,19 @@ def _second_arm_scan_mode_for_backend(mode: str) -> str:
 def _is_first_arm_optimization_mode(mode: str) -> bool:
     """Return whether one optimization mode targets the first-arm kinematics sweep."""
 
-    return mode in {"Optimize bras 1", "Arm1 2D", "Arm1 3D", OPTIMIZATION_MODE_ARM1_3D}
+    return mode in {
+        "Optimize bras 1",
+        "Arm1 2D",
+        "Arm1 3D",
+        OPTIMIZATION_MODE_ARM1_2D,
+        OPTIMIZATION_MODE_ARM1_3D,
+    }
 
 
 def _requires_selected_first_arm_solution(mode: str) -> bool:
     """Return whether one optimization mode depends on a selected first-arm solution."""
 
-    return mode == OPTIMIZATION_MODE_ARM2_3D
+    return mode in {OPTIMIZATION_MODE_ARM2_2D, OPTIMIZATION_MODE_ARM2_3D}
 
 
 def _dms_result_is_better(candidate, reference) -> bool:
@@ -636,7 +659,10 @@ class BestTiltingPlaneApp:
             return True
         bundle_loader = getattr(self, "_load_cached_scan_bundle_for_mode", None)
         if callable(bundle_loader):
-            return bundle_loader(OPTIMIZATION_MODE_ARM1_3D) is not None
+            return any(
+                bundle_loader(mode) is not None
+                for mode in ("Arm1 2D", "Arm1 3D", OPTIMIZATION_MODE_ARM1_3D)
+            )
         return False
 
     def _available_optimization_mode_options(self) -> tuple[str, ...]:
@@ -3089,7 +3115,11 @@ class BestTiltingPlaneApp:
 
         values = dict(candidate["values"])
         candidate_mode = str(candidate.get("mode", self.optimization_mode_var.get()))
-        if candidate_mode == OPTIMIZATION_MODE_ARM1_3D:
+        if candidate_mode == "Arm1 2D":
+            self.optimization_mode_var.set(OPTIMIZATION_MODE_ARM1_2D)
+        elif candidate_mode == "Optimize 2D":
+            self.optimization_mode_var.set(OPTIMIZATION_MODE_ARM2_2D)
+        elif candidate_mode == OPTIMIZATION_MODE_ARM1_3D:
             self.optimization_mode_var.set(OPTIMIZATION_MODE_ARM1_3D)
         elif candidate_mode == OPTIMIZATION_MODE_ARM2_3D:
             self.optimization_mode_var.set(OPTIMIZATION_MODE_ARM2_3D)
@@ -4001,6 +4031,10 @@ class BestTiltingPlaneApp:
                 if selected_first_arm_candidate is None
                 else _second_arm_scan_mode_for_backend(mode)
             )
+        elif mode == OPTIMIZATION_MODE_ARM1_2D:
+            effective_mode = "Arm1 2D"
+        elif mode == OPTIMIZATION_MODE_ARM2_2D:
+            effective_mode = "Optimize 2D"
         else:
             effective_mode = str(mode)
         initial_guess_values = dict(current_values)
