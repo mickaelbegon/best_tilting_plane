@@ -122,7 +122,6 @@ ALL_OPTIMIZATION_MODE_OPTIONS = (
 OPTIMIZATION_MODE_OPTIONS = (
     OPTIMIZATION_MODE_ARM1_2D,
     OPTIMIZATION_MODE_ARM1_3D,
-    OPTIMIZATION_MODE_BOTH_3D,
 )
 SCAN_DATASET_MODES = (
     OPTIMIZATION_MODE_ARM1_3D,
@@ -668,12 +667,26 @@ class BestTiltingPlaneApp:
             )
         return False
 
+    def _has_second_arm_scan_results(self) -> bool:
+        """Return whether at least one staged second-arm optimization result is available."""
+
+        bundle_loader = getattr(self, "_load_cached_scan_bundle_for_mode", None)
+        if callable(bundle_loader):
+            return any(
+                bundle_loader(mode) is not None
+                for mode in ("Optimize 2D", "Optimize 3D", "Optimize DMS", OPTIMIZATION_MODE_ARM2_2D, OPTIMIZATION_MODE_ARM2_3D)
+            )
+        return False
+
     def _available_optimization_mode_options(self) -> tuple[str, ...]:
         """Return the optimization modes that should be exposed in the GUI."""
 
+        available_modes = [OPTIMIZATION_MODE_ARM1_2D, OPTIMIZATION_MODE_ARM1_3D]
         if self._has_first_arm_scan_results():
-            return ALL_OPTIMIZATION_MODE_OPTIONS
-        return OPTIMIZATION_MODE_OPTIONS
+            available_modes.extend((OPTIMIZATION_MODE_ARM2_2D, OPTIMIZATION_MODE_ARM2_3D))
+        if self._has_second_arm_scan_results():
+            available_modes.append(OPTIMIZATION_MODE_BOTH_3D)
+        return tuple(available_modes)
 
     def _refresh_optimization_mode_options(self) -> None:
         """Refresh the visible optimization-mode choices according to the current staged workflow."""
@@ -4119,6 +4132,10 @@ class BestTiltingPlaneApp:
             effective_mode = "Optimize 2D"
         else:
             effective_mode = str(mode)
+        if effective_mode == OPTIMIZATION_MODE_BOTH_3D and not self._has_second_arm_scan_results():
+            raise RuntimeError(
+                "Optimisez d'abord le bras 1 puis le bras 2 avant de lancer l'optimisation combinee."
+            )
         initial_guess_values = dict(current_values)
         if _requires_selected_first_arm_solution(effective_mode):
             if selected_first_arm_candidate is None:

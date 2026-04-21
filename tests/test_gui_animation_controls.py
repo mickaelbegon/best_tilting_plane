@@ -986,12 +986,11 @@ def test_optimization_mode_options_hide_the_btp_mode_from_the_menu() -> None:
     assert OPTIMIZATION_MODE_OPTIONS == (
         OPTIMIZATION_MODE_ARM1_2D,
         OPTIMIZATION_MODE_ARM1_3D,
-        OPTIMIZATION_MODE_BOTH_3D,
     )
 
 
 def test_refresh_optimization_mode_options_unlocks_arm2_after_one_arm1_scan() -> None:
-    """The staged workflow should expose the arm-2 mode only after one arm-1 result exists."""
+    """The staged workflow should unlock arm-2, then the combined mode, in sequence."""
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
     app.optimization_mode_var = FakeVar(OPTIMIZATION_MODE_ARM2_3D)
@@ -1002,14 +1001,34 @@ def test_refresh_optimization_mode_options_unlocks_arm2_after_one_arm1_scan() ->
     app._refresh_optimization_mode_options()
 
     assert app._optimization_mode_box.options["values"] == OPTIMIZATION_MODE_OPTIONS
-    assert app.optimization_mode_var.get() == OPTIMIZATION_MODE_BOTH_3D
+    assert app.optimization_mode_var.get() == OPTIMIZATION_MODE_ARM1_2D
 
     app._selected_first_arm_scan_solution = ("Arm1 3D", 0)
 
     app._refresh_optimization_mode_options()
 
-    assert app._optimization_mode_box.options["values"] == ALL_OPTIMIZATION_MODE_OPTIONS
+    assert app._optimization_mode_box.options["values"] == (
+        OPTIMIZATION_MODE_ARM1_2D,
+        OPTIMIZATION_MODE_ARM1_3D,
+        OPTIMIZATION_MODE_ARM2_2D,
+        OPTIMIZATION_MODE_ARM2_3D,
+    )
     assert OPTIMIZATION_MODE_ARM2_2D in app._optimization_mode_box.options["values"]
+    assert OPTIMIZATION_MODE_BOTH_3D not in app._optimization_mode_box.options["values"]
+
+    app._load_cached_scan_bundle_for_mode = (
+        lambda mode: {"mode": mode} if mode == OPTIMIZATION_MODE_ARM2_3D else None
+    )
+
+    app._refresh_optimization_mode_options()
+
+    assert app._optimization_mode_box.options["values"] == (
+        OPTIMIZATION_MODE_ARM1_2D,
+        OPTIMIZATION_MODE_ARM1_3D,
+        OPTIMIZATION_MODE_ARM2_2D,
+        OPTIMIZATION_MODE_ARM2_3D,
+        OPTIMIZATION_MODE_BOTH_3D,
+    )
 
 
 def test_optimization_progress_updates_the_popup_with_completed_over_total() -> None:
