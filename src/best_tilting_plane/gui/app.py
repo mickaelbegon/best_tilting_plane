@@ -133,6 +133,19 @@ SCAN_DATASET_MODES = (
     "Optimize 3D BTP",
     "Optimize DMS",
 )
+FIRST_ARM_SCAN_DATASET_MODES = (
+    "Arm1 2D",
+    OPTIMIZATION_MODE_ARM1_3D,
+    "Arm1 3D",
+)
+SECOND_ARM_SCAN_DATASET_MODES = (
+    "Optimize 2D",
+    OPTIMIZATION_MODE_ARM2_3D,
+    OPTIMIZATION_MODE_BOTH_3D,
+    "Optimize 3D",
+    "Optimize 3D BTP",
+    "Optimize DMS",
+)
 PLOT_Y_OPTIONS = (
     "Somersault",
     "Tilt",
@@ -2054,6 +2067,15 @@ class BestTiltingPlaneApp:
     def _visualization_payload_for_result(self, result) -> dict[str, object]:
         """Build the cached visualization payload associated with one simulation result."""
 
+        cache = getattr(self, "_simulation_visualization_cache", None)
+        if cache is None:
+            cache = {}
+            self._simulation_visualization_cache = cache
+        cache_key = (id(result), str(self._last_model_path), self._animation_reference())
+        cached_payload = cache.get(cache_key)
+        if cached_payload is not None:
+            return cached_payload
+
         display_q = self._display_q_history(result)
         display_qdot = self._display_qdot_history(result)
         trajectories = marker_trajectories(self._last_model_path, display_q)
@@ -2070,7 +2092,7 @@ class BestTiltingPlaneApp:
         )
         deviations = arm_deviation_from_frames(frame_trajectories, display_q[:, 3])
         btp_trajectories = arm_btp_reference_trajectories(trajectories, display_q[:, 3])
-        return {
+        payload = {
             "result": result,
             "display_q": display_q,
             "display_qdot": display_qdot,
@@ -2080,6 +2102,8 @@ class BestTiltingPlaneApp:
             "observables": observables,
             "deviations": deviations,
         }
+        cache[cache_key] = payload
+        return payload
 
     def _secondary_animation_visualization_data(self) -> dict[str, object] | None:
         """Return the comparison solution that should be overlaid in the animation."""
@@ -2942,7 +2966,7 @@ class BestTiltingPlaneApp:
         datasets: list[dict[str, object]] = []
         seen_modes: set[str] = set()
         ordered_modes = [current_mode] + [
-            mode for mode in SCAN_DATASET_MODES if mode != current_mode and not _is_first_arm_optimization_mode(mode)
+            mode for mode in SECOND_ARM_SCAN_DATASET_MODES if mode != current_mode
         ]
         for mode in ordered_modes:
             if mode in seen_modes:
@@ -2962,7 +2986,9 @@ class BestTiltingPlaneApp:
         current_mode = _first_arm_scan_mode_for_backend(str(self.optimization_mode_var.get()))
         datasets: list[dict[str, object]] = []
         seen_modes: set[str] = set()
-        ordered_modes = [current_mode]
+        ordered_modes = [current_mode] + [
+            mode for mode in FIRST_ARM_SCAN_DATASET_MODES if mode != current_mode
+        ]
         for mode in ordered_modes:
             if mode in seen_modes:
                 continue

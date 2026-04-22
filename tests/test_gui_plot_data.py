@@ -6,7 +6,12 @@ import json
 
 import numpy as np
 
-from best_tilting_plane.gui.app import BestTiltingPlaneApp, ROOT_INITIAL_OPTIONS
+from best_tilting_plane.gui.app import (
+    BestTiltingPlaneApp,
+    OPTIMIZATION_MODE_ARM1_3D,
+    OPTIMIZATION_MODE_ARM2_2D,
+    ROOT_INITIAL_OPTIONS,
+)
 from best_tilting_plane.simulation import SimulationConfiguration
 
 
@@ -643,6 +648,63 @@ def test_scan_plot_datasets_can_include_optimize_3d_btp(tmp_path) -> None:
 
     assert [dataset["mode"] for dataset in datasets] == ["Optimize 2D", "Optimize 3D", "Optimize 3D BTP"]
     assert datasets[2]["best_start_time"] == 0.30
+
+
+def test_first_arm_scan_plot_datasets_keep_cached_arm1_curves_visible_during_arm2_mode(tmp_path) -> None:
+    """The dedicated `t0` figure should keep both arm-1 scans visible even while the GUI is in an arm-2 mode."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.optimization_mode_var = _FakeVar(OPTIMIZATION_MODE_ARM2_2D)
+    app._model_path = lambda: tmp_path / "reduced.bioMod"
+    app._standard_optimization_configuration = lambda: SimulationConfiguration(
+        final_time=1.0,
+        integrator="rk4",
+        rk4_step=0.005,
+    )
+    (tmp_path / "optimization_cache.json").write_text(
+        json.dumps(
+            {
+                "records": {
+                    "arm1_2d": {
+                        "signature": app._optimization_cache_signature_for_mode("Arm1 2D"),
+                        "values": {
+                            "first_arm_start": 0.18,
+                            "right_arm_start": 0.10,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                            "contact_twist_turns_per_second": 0.0,
+                        },
+                        "scan_start_times": [0.10, 0.18],
+                        "scan_final_twist_turns": [-0.25, -0.42],
+                        "scan_objective_values": [-0.24, -0.41],
+                    },
+                    "optimise_3d_bras_1": {
+                        "signature": app._optimization_cache_signature_for_mode(OPTIMIZATION_MODE_ARM1_3D),
+                        "values": {
+                            "first_arm_start": 0.22,
+                            "right_arm_start": 0.10,
+                            "left_plane_initial": 0.0,
+                            "left_plane_final": 0.0,
+                            "right_plane_initial": 0.0,
+                            "right_plane_final": 0.0,
+                            "contact_twist_turns_per_second": 0.0,
+                        },
+                        "scan_start_times": [0.14, 0.22],
+                        "scan_final_twist_turns": [-0.33, -0.57],
+                        "scan_objective_values": [-0.32, -0.56],
+                        "scan_success_mask": [True, True],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    datasets = app._first_arm_scan_plot_datasets()
+
+    assert [dataset["mode"] for dataset in datasets] == [OPTIMIZATION_MODE_ARM1_3D, "Arm1 2D"]
 
 
 def test_refresh_plot_adds_arm_angle_bounds_when_plotting_arm_kinematics() -> None:
