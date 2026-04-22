@@ -222,3 +222,45 @@ def test_twist_strategy_optimizer_evaluate_right_arm_start_only_matches_zero_pla
     full_objective, _ = optimizer.evaluate(optimizer.to_vector(variables))
 
     assert reduced_objective == pytest.approx(full_objective)
+
+
+def test_first_arm_kinematics_sweep_keeps_the_plane_fixed_at_zero(tmp_path: Path) -> None:
+    """The staged 2D first-arm sweep should only scan `t0` in the frontal plane."""
+
+    optimizer = TwistStrategyOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.08, steps=9, integrator="rk4", rk4_step=0.01),
+    )
+
+    sweep = optimizer.sweep_first_arm_kinematics(second_arm_start=0.1, start_step=0.02)
+
+    np.testing.assert_allclose(sweep.start_times, np.arange(0.0, 0.7 + 0.001, 0.02))
+    assert all(candidate.plane_final == pytest.approx(0.0) for candidate in sweep.candidate_results)
+    assert all(candidate.result.variables.right_plane_initial == pytest.approx(0.0) for candidate in sweep.candidate_results)
+    assert all(candidate.result.variables.right_plane_final == pytest.approx(0.0) for candidate in sweep.candidate_results)
+
+
+def test_second_arm_sweep_keeps_both_planes_fixed_at_zero(tmp_path: Path) -> None:
+    """The staged 2D second-arm sweep should only scan `t1` once `t0` is fixed."""
+
+    optimizer = TwistStrategyOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.08, steps=9, integrator="rk4", rk4_step=0.01),
+    )
+
+    fixed_first_arm = TwistOptimizationVariables(
+        right_arm_start=0.1,
+        left_plane_initial=0.0,
+        left_plane_final=0.0,
+        right_plane_initial=0.0,
+        right_plane_final=0.0,
+        first_arm_start=0.22,
+    )
+    sweep = optimizer.sweep_second_arm_start_only(fixed_first_arm=fixed_first_arm, step=0.02)
+
+    np.testing.assert_allclose(sweep.start_times, np.arange(0.0, 0.7 + 0.001, 0.02))
+    assert all(result.variables.right_plane_initial == pytest.approx(0.0) for result in sweep.candidate_results)
+    assert all(result.variables.right_plane_final == pytest.approx(0.0) for result in sweep.candidate_results)
+    assert all(result.variables.first_arm_start == pytest.approx(0.22) for result in sweep.candidate_results)

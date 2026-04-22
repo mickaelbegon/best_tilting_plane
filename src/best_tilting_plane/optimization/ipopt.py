@@ -34,7 +34,6 @@ SYMBOLIC_RK4_TOLERANCE = 1e-12
 DEFAULT_TWIST_RATE_LAGRANGE_WEIGHT = 1e-3
 FIRST_ARM_START_BOUNDS = (0.0, 0.7)
 FIRST_ARM_PLANE_INITIAL = 0.0
-FIRST_ARM_PLANE_SWEEP_STEP_DEG = 5.0
 LEFT_ARM_ABDUCTION_ELEVATION = -np.pi
 
 
@@ -435,18 +434,15 @@ class TwistStrategyOptimizer:
         second_arm_start: float,
         *,
         fixed_first_arm: TwistOptimizationVariables,
-        first_arm_plane_final: float | None = None,
     ) -> tuple[float, AerialSimulationResult]:
-        """Evaluate the reduced second-arm timing sweep while reoptimizing the first-arm plane."""
+        """Evaluate the reduced second-arm timing sweep with both arm planes fixed to zero."""
 
         variables = TwistOptimizationVariables(
             right_arm_start=float(second_arm_start),
             left_plane_initial=0.0,
             left_plane_final=0.0,
-            right_plane_initial=FIRST_ARM_PLANE_INITIAL,
-            right_plane_final=float(
-                fixed_first_arm.right_plane_final if first_arm_plane_final is None else first_arm_plane_final
-            ),
+            right_plane_initial=0.0,
+            right_plane_final=0.0,
             contact_twist_rate=self._fixed_contact_twist_rate(),
             first_arm_start=float(getattr(fixed_first_arm, "first_arm_start", 0.0)),
         )
@@ -474,16 +470,15 @@ class TwistStrategyOptimizer:
         *,
         first_arm_start: float,
         second_arm_start: float,
-        first_arm_plane_final: float,
     ) -> tuple[float, AerialSimulationResult]:
-        """Evaluate one strategy where only the first-arm plan motion is optimized."""
+        """Evaluate one strategy where only the first-arm timing is optimized in the frontal plane."""
 
         variables = TwistOptimizationVariables(
             right_arm_start=float(second_arm_start),
             left_plane_initial=0.0,
             left_plane_final=0.0,
-            right_plane_initial=FIRST_ARM_PLANE_INITIAL,
-            right_plane_final=float(first_arm_plane_final),
+            right_plane_initial=0.0,
+            right_plane_final=0.0,
             contact_twist_rate=self._fixed_contact_twist_rate(),
         )
         motion = build_piecewise_constant_jerk_arm_motion(
@@ -903,7 +898,7 @@ class TwistStrategyOptimizer:
         step: float = 0.02,
         progress_callback=None,
     ) -> RightArmStartSweepResult:
-        """Evaluate every admissible second-arm start time while resweeping the first-arm plane."""
+        """Evaluate every admissible second-arm start time with both arm planes fixed to zero."""
 
         chosen_bounds = bounds or self.right_arm_start_only_bounds()
         lower_bound = float(np.asarray(chosen_bounds.lower, dtype=float).reshape(-1)[0])
@@ -911,47 +906,33 @@ class TwistStrategyOptimizer:
         first_node = int(round(lower_bound / step))
         last_node = int(round(upper_bound / step))
         start_times = step * np.arange(first_node, last_node + 1, dtype=float)
-        plane_values_deg = np.arange(
-            RIGHT_ARM_PLANE_BOUNDS_DEG[0],
-            RIGHT_ARM_PLANE_BOUNDS_DEG[1] + 0.5 * FIRST_ARM_PLANE_SWEEP_STEP_DEG,
-            FIRST_ARM_PLANE_SWEEP_STEP_DEG,
-            dtype=float,
-        )
-        plane_values = np.deg2rad(plane_values_deg)
         candidate_results: list[TwistOptimizationResult] = []
 
-        total_evaluations = int(start_times.size * plane_values.size)
-        completed_evaluations = 0
-        for start_time in start_times:
-            best_result_for_start: TwistOptimizationResult | None = None
-            for plane_final in plane_values:
-                completed_evaluations += 1
-                if progress_callback is not None:
-                    progress_callback(
-                        {
-                            "message": (
-                                f"Optimisation 2D bras 2... t1={float(start_time):.2f} s, "
-                                f"plan={np.rad2deg(float(plane_final)):.1f} deg"
-                            ),
-                            "completed": completed_evaluations,
-                            "total": total_evaluations,
-                        }
-                    )
-                variables = TwistOptimizationVariables(
-                    right_arm_start=float(start_time),
-                    left_plane_initial=0.0,
-                    left_plane_final=0.0,
-                    right_plane_initial=FIRST_ARM_PLANE_INITIAL,
-                    right_plane_final=float(plane_final),
-                    contact_twist_rate=self._fixed_contact_twist_rate(),
-                    first_arm_start=float(getattr(fixed_first_arm, "first_arm_start", 0.0)),
+        total_evaluations = int(start_times.size)
+        for completed_evaluations, start_time in enumerate(start_times, start=1):
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "message": f"Optimisation 2D bras 2... t1={float(start_time):.2f} s",
+                        "completed": completed_evaluations,
+                        "total": total_evaluations,
+                    }
                 )
-                objective, simulation = self.evaluate_second_arm_start_only(
-                    float(start_time),
-                    fixed_first_arm=fixed_first_arm,
-                    first_arm_plane_final=float(plane_final),
-                )
-                candidate_result = TwistOptimizationResult(
+            variables = TwistOptimizationVariables(
+                right_arm_start=float(start_time),
+                left_plane_initial=0.0,
+                left_plane_final=0.0,
+                right_plane_initial=0.0,
+                right_plane_final=0.0,
+                contact_twist_rate=self._fixed_contact_twist_rate(),
+                first_arm_start=float(getattr(fixed_first_arm, "first_arm_start", 0.0)),
+            )
+            objective, simulation = self.evaluate_second_arm_start_only(
+                float(start_time),
+                fixed_first_arm=fixed_first_arm,
+            )
+            candidate_results.append(
+                TwistOptimizationResult(
                     variables=variables,
                     final_twist_angle=simulation.final_twist_angle,
                     final_twist_turns=simulation.final_twist_turns,
@@ -960,10 +941,7 @@ class TwistStrategyOptimizer:
                     success=True,
                     simulation=simulation,
                 )
-                if best_result_for_start is None or candidate_result.objective < best_result_for_start.objective:
-                    best_result_for_start = candidate_result
-            assert best_result_for_start is not None
-            candidate_results.append(best_result_for_start)
+            )
 
         candidate_results_tuple = tuple(candidate_results)
         best_result = min(candidate_results_tuple, key=lambda result: result.objective)
@@ -977,74 +955,53 @@ class TwistStrategyOptimizer:
         *,
         second_arm_start: float,
         start_step: float = 0.02,
-        plane_step_deg: float = FIRST_ARM_PLANE_SWEEP_STEP_DEG,
         progress_callback=None,
     ) -> FirstArmKinematicsSweepResult:
-        """Scan the first-arm start time and plane-final angle with direct simulations."""
+        """Scan the first-arm start time with direct simulations in the frontal plane."""
 
         first_node = int(round(FIRST_ARM_START_BOUNDS[0] / start_step))
         last_node = int(round(FIRST_ARM_START_BOUNDS[1] / start_step))
         start_times = start_step * np.arange(first_node, last_node + 1, dtype=float)
-        plane_values_deg = np.arange(
-            RIGHT_ARM_PLANE_BOUNDS_DEG[0],
-            RIGHT_ARM_PLANE_BOUNDS_DEG[1] + 0.5 * plane_step_deg,
-            plane_step_deg,
-            dtype=float,
-        )
-        plane_values = np.deg2rad(plane_values_deg)
         best_candidates: list[FirstArmSweepCandidate] = []
 
-        total_evaluations = int(start_times.size * plane_values.size)
-        completed_evaluations = 0
-        for first_arm_start in start_times:
-            best_candidate_for_start: FirstArmSweepCandidate | None = None
-            for plane_final in plane_values:
-                completed_evaluations += 1
-                if progress_callback is not None:
-                    progress_callback(
-                        {
-                            "message": (
-                                f"Optimisation 2D bras 1... t0={float(first_arm_start):.2f} s, "
-                                f"plan={np.rad2deg(float(plane_final)):.1f} deg"
-                            ),
-                            "completed": completed_evaluations,
-                            "total": total_evaluations,
-                        }
-                    )
-                objective, simulation = self.evaluate_first_arm_kinematics(
-                    first_arm_start=float(first_arm_start),
-                    second_arm_start=float(second_arm_start),
-                    first_arm_plane_final=float(plane_final),
+        total_evaluations = int(start_times.size)
+        for completed_evaluations, first_arm_start in enumerate(start_times, start=1):
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "message": f"Optimisation 2D bras 1... t0={float(first_arm_start):.2f} s",
+                        "completed": completed_evaluations,
+                        "total": total_evaluations,
+                    }
                 )
-                candidate_result = TwistOptimizationResult(
-                    variables=TwistOptimizationVariables(
-                        right_arm_start=float(second_arm_start),
-                        left_plane_initial=0.0,
-                        left_plane_final=0.0,
-                        right_plane_initial=FIRST_ARM_PLANE_INITIAL,
-                        right_plane_final=float(plane_final),
-                        contact_twist_rate=self._fixed_contact_twist_rate(),
-                        first_arm_start=float(first_arm_start),
-                    ),
-                    final_twist_angle=simulation.final_twist_angle,
-                    final_twist_turns=simulation.final_twist_turns,
-                    objective=float(objective),
-                    solver_status="Discrete_Sweep",
-                    success=True,
-                    simulation=simulation,
-                )
-                candidate = FirstArmSweepCandidate(
+            objective, simulation = self.evaluate_first_arm_kinematics(
+                first_arm_start=float(first_arm_start),
+                second_arm_start=float(second_arm_start),
+            )
+            candidate_result = TwistOptimizationResult(
+                variables=TwistOptimizationVariables(
+                    right_arm_start=float(second_arm_start),
+                    left_plane_initial=0.0,
+                    left_plane_final=0.0,
+                    right_plane_initial=0.0,
+                    right_plane_final=0.0,
+                    contact_twist_rate=self._fixed_contact_twist_rate(),
                     first_arm_start=float(first_arm_start),
-                    plane_final=float(plane_final),
+                ),
+                final_twist_angle=simulation.final_twist_angle,
+                final_twist_turns=simulation.final_twist_turns,
+                objective=float(objective),
+                solver_status="Discrete_Sweep",
+                success=True,
+                simulation=simulation,
+            )
+            best_candidates.append(
+                FirstArmSweepCandidate(
+                    first_arm_start=float(first_arm_start),
+                    plane_final=0.0,
                     result=candidate_result,
                 )
-                if (
-                    best_candidate_for_start is None
-                    or candidate.result.objective < best_candidate_for_start.result.objective
-                ):
-                    best_candidate_for_start = candidate
-            assert best_candidate_for_start is not None
-            best_candidates.append(best_candidate_for_start)
+            )
 
         candidate_results = tuple(best_candidates)
         best_candidate = min(candidate_results, key=lambda candidate: candidate.result.objective)

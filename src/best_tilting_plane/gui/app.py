@@ -49,7 +49,6 @@ from best_tilting_plane.optimization.dms import (
     show_dms_jerk_bounds_figure,
 )
 from best_tilting_plane.optimization.ipopt import DEFAULT_TWIST_RATE_LAGRANGE_WEIGHT
-from best_tilting_plane.optimization.ipopt import FIRST_ARM_PLANE_SWEEP_STEP_DEG
 from best_tilting_plane.simulation import (
     AerialSimulationResult,
     build_piecewise_constant_jerk_arm_motion,
@@ -161,7 +160,7 @@ ALL_FRAME_SEGMENTS = tuple(
 )
 ANIMATION_INTERVAL_MS = 35
 STANDARD_RK4_STEP = 0.005
-OPTIMIZATION_CACHE_VERSION = 10
+OPTIMIZATION_CACHE_VERSION = 11
 DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.0
@@ -855,16 +854,11 @@ class BestTiltingPlaneApp:
         if not _is_first_arm_optimization_mode(mode):
             current_values = self._current_values()
             first_arm_start = float(current_values.get("first_arm_start", 0.0))
-            first_arm_plane_initial = float(current_values.get("right_plane_initial", 0.0))
-            first_arm_plane_final = float(current_values.get("right_plane_final", 0.0))
             if (
                 getattr(self, "_selected_first_arm_scan_solution", None) is not None
                 or not np.isclose(first_arm_start, 0.0)
-                or not np.isclose(first_arm_plane_initial, 0.0)
-                or not np.isclose(first_arm_plane_final, 0.0)
             ):
                 key_parts.append(f"t0_{first_arm_start:.2f}".replace(".", "p"))
-                key_parts.append(f"phi0_{first_arm_plane_final:.1f}".replace(".", "p"))
         return "__".join(key_parts)
 
     def _should_ignore_optimization_cache(self) -> bool:
@@ -915,21 +909,16 @@ class BestTiltingPlaneApp:
         else:
             signature["twist_rate_lagrange_weight"] = TWIST_RATE_LAGRANGE_WEIGHT
             if _is_first_arm_optimization_mode(mode):
-                signature["first_arm_plane_sweep_step_deg"] = float(FIRST_ARM_PLANE_SWEEP_STEP_DEG)
+                signature["two_d_arm_plane_fixed_deg"] = 0.0
             else:
                 current_values = self._current_values()
                 first_arm_start = float(current_values.get("first_arm_start", 0.0))
-                first_arm_plane_initial = float(current_values.get("right_plane_initial", 0.0))
-                first_arm_plane_final = float(current_values.get("right_plane_final", 0.0))
                 if (
                     getattr(self, "_selected_first_arm_scan_solution", None) is not None
                     or not np.isclose(first_arm_start, 0.0)
-                    or not np.isclose(first_arm_plane_initial, 0.0)
-                    or not np.isclose(first_arm_plane_final, 0.0)
                 ):
                     signature["fixed_first_arm_start"] = first_arm_start
-                    signature["fixed_first_arm_plane_initial_deg"] = first_arm_plane_initial
-                    signature["fixed_first_arm_plane_final_deg"] = first_arm_plane_final
+                    signature["fixed_first_arm_plane_deg"] = 0.0
         return signature
 
     def _read_optimization_cache_file(self) -> dict[str, object]:
