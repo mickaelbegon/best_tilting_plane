@@ -178,6 +178,7 @@ DMS_SHOOTING_STEP = 0.02
 DMS_ACTIVE_DURATION = 0.3
 DMS_SCAN_START = 0.0
 DMS_SCAN_END = 0.7
+DMS_IPOPT_MAX_ITER = 200
 DMS_MULTISTART_OFFSET_FROM_2D = 0.2
 DMS_JERK_REGULARIZATION = DEFAULT_DMS_JERK_REGULARIZATION
 DMS_BTP_DEVIATION_WEIGHT = DEFAULT_DMS_BTP_DEVIATION_WEIGHT
@@ -4259,7 +4260,7 @@ class BestTiltingPlaneApp:
             sweep = optimizer.sweep_first_arm_kinematics_3d(
                 initial_guess,
                 second_arm_start=self._standard_optimization_configuration().final_time,
-                max_iter=50,
+                max_iter=DMS_IPOPT_MAX_ITER,
                 print_level=5,
                 print_time=True,
                 show_jerk_diagnostics=False,
@@ -4461,7 +4462,7 @@ class BestTiltingPlaneApp:
                         constrain_first_arm_terminal_plane=constrain_first_arm_terminal_plane,
                         constrain_second_arm_terminal_plane=constrain_second_arm_terminal_plane,
                         previous_result=warm_start_seed,
-                        max_iter=50,
+                        max_iter=DMS_IPOPT_MAX_ITER,
                         print_level=5,
                         print_time=True,
                         show_jerk_diagnostics=False,
@@ -4473,7 +4474,7 @@ class BestTiltingPlaneApp:
                         constrain_first_arm_terminal_plane=constrain_first_arm_terminal_plane,
                         constrain_second_arm_terminal_plane=constrain_second_arm_terminal_plane,
                         previous_result=warm_start_seed,
-                        max_iter=50,
+                        max_iter=DMS_IPOPT_MAX_ITER,
                         print_level=5,
                         print_time=True,
                         show_jerk_diagnostics=False,
@@ -4565,7 +4566,7 @@ class BestTiltingPlaneApp:
                             constrain_first_arm_terminal_plane=constrain_first_arm_terminal_plane,
                             constrain_second_arm_terminal_plane=constrain_second_arm_terminal_plane,
                             previous_result=better_neighbor,
-                            max_iter=50,
+                            max_iter=DMS_IPOPT_MAX_ITER,
                             print_level=5,
                             print_time=True,
                             show_jerk_diagnostics=False,
