@@ -355,6 +355,106 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     np.testing.assert_allclose(right_control_upper_bounds[optimizer.active_control_count :], 0.0)
 
 
+def test_direct_multiple_shooting_solve_fixed_start_can_freeze_the_second_arm_beyond_the_horizon(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Freezing the second arm outside the horizon should not build a zero-duration jerk trajectory."""
+
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.4, steps=81, integrator="rk4", rk4_step=0.005),
+        shooting_step=0.02,
+    )
+    initial_guess = TwistOptimizationVariables(
+        right_arm_start=0.1,
+        left_plane_initial=0.0,
+        left_plane_final=0.0,
+        right_plane_initial=0.0,
+        right_plane_final=0.0,
+        first_arm_start=0.08,
+    )
+    warm_start_motion = PiecewiseConstantJerkArmMotion(
+        left_plane=PiecewiseConstantJerkTrajectory(
+            q0=0.0,
+            qdot0=0.0,
+            qddot0=0.0,
+            step=optimizer.shooting_step,
+            jerks=np.zeros(optimizer.active_control_count, dtype=float),
+            active_start=0.0,
+            active_end=dms_module.LEFT_ARM_ACTIVE_DURATION,
+            total_duration=optimizer.configuration.final_time,
+        ),
+        right_plane=PiecewiseConstantJerkTrajectory(
+            q0=0.0,
+            qdot0=0.0,
+            qddot0=0.0,
+            step=optimizer.shooting_step,
+            jerks=np.zeros(optimizer.active_control_count, dtype=float),
+            active_start=0.0,
+            active_end=dms_module.RIGHT_ARM_ACTIVE_DURATION,
+            total_duration=optimizer.configuration.final_time,
+        ),
+        left_arm_start=optimizer.configuration.final_time,
+        right_arm_start=initial_guess.first_arm_start,
+    )
+    initial_state = np.asarray(optimizer._symbolic_initial_root_state(initial_guess), dtype=float).reshape(-1)
+    state_history = np.tile(initial_state.reshape(-1, 1), (1, optimizer.interval_count + 1))
+
+    monkeypatch.setattr(
+        optimizer,
+        "_initial_guess_motion",
+        lambda _variables, **_kwargs: warm_start_motion,
+    )
+    monkeypatch.setattr(
+        optimizer,
+        "_initial_guess_root_state_history",
+        lambda _variables, _motion: state_history,
+    )
+
+    class FakeSimulator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        @staticmethod
+        def simulate():
+            return type(
+                "SimulationResult",
+                (),
+                {
+                    "final_twist_angle": -0.5,
+                    "final_twist_turns": -0.08,
+                },
+            )()
+
+    class FakeSolver:
+        def __call__(self, **kwargs):
+            return {"x": ca.DM(np.asarray(kwargs["x0"], dtype=float)), "f": ca.DM([[-0.5]])}
+
+        @staticmethod
+        def stats():
+            return {"return_status": "Solve_Succeeded"}
+
+    monkeypatch.setattr(dms_module, "PredictiveAerialTwistSimulator", FakeSimulator)
+    monkeypatch.setattr(optimizer, "_build_solver", lambda **_kwargs: FakeSolver())
+
+    result = optimizer.solve_fixed_start(
+        initial_guess,
+        right_arm_start=float(optimizer.configuration.final_time),
+        allow_frozen_second_arm=True,
+        constrain_first_arm_terminal_plane=False,
+    )
+
+    assert result.success
+    assert result.left_plane_jerk.shape == (optimizer.active_control_count,)
+    assert result.left_plane_state_nodes.shape == (dms_module.PLANE_STATE_SIZE, optimizer.active_control_count + 1)
+    assert result.prescribed_motion.left_plane.duration == pytest.approx(
+        optimizer.active_control_count * optimizer.shooting_step
+    )
+    np.testing.assert_allclose(result.left_plane_jerk, 0.0)
+
+
 def test_direct_multiple_shooting_can_release_the_first_arm_terminal_plane_constraint(
     monkeypatch,
     tmp_path: Path,

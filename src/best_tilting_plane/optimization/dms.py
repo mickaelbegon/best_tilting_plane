@@ -961,6 +961,31 @@ class DirectMultipleShootingOptimizer:
         projected[finite_upper] = np.minimum(projected[finite_upper], upper_bounds[finite_upper])
         return projected
 
+    def _pad_active_control_window(self, values: np.ndarray) -> np.ndarray:
+        """Return one active-control window padded with zeros up to `active_control_count`."""
+
+        window = np.asarray(values, dtype=float).reshape(-1)
+        if window.size >= self.active_control_count:
+            return window[: self.active_control_count].copy()
+        padded = np.zeros(self.active_control_count, dtype=float)
+        padded[: window.size] = window
+        return padded
+
+    def _pad_plane_state_window(self, values: np.ndarray) -> np.ndarray:
+        """Return one plane-state window padded to the expected active-node width."""
+
+        window = np.asarray(values, dtype=float)
+        target_width = self.active_control_count + 1
+        if window.ndim != 2:
+            raise ValueError("Plane-state windows must remain two-dimensional.")
+        if window.shape[1] >= target_width:
+            return window[:, :target_width].copy()
+        if window.shape[1] == 0:
+            return np.zeros((window.shape[0], target_width), dtype=float)
+        padded = np.repeat(window[:, -1:], target_width, axis=1)
+        padded[:, : window.shape[1]] = window
+        return padded
+
     def solve_fixed_start(
         self,
         initial_guess: TwistOptimizationVariables,
@@ -1156,12 +1181,25 @@ class DirectMultipleShootingOptimizer:
                 right_arm_start=right_arm_start,
             )
 
-        left_control_values = left_control_global_values[
-            second_start_node_index : second_start_node_index + self.active_control_count
-        ]
-        right_control_values = right_control_global_values[
-            first_start_node_index : first_start_node_index + self.active_control_count
-        ]
+        left_control_values = self._pad_active_control_window(
+            left_control_global_values[
+                second_start_node_index : second_start_node_index + self.active_control_count
+            ]
+        )
+        right_control_values = self._pad_active_control_window(
+            right_control_global_values[
+                first_start_node_index : first_start_node_index + self.active_control_count
+            ]
+        )
+        minimum_control_duration = float(self.active_control_count * self.shooting_step)
+        left_total_duration = max(
+            minimum_control_duration,
+            float(self.configuration.final_time - right_arm_start),
+        )
+        right_total_duration = max(
+            minimum_control_duration,
+            float(self.configuration.final_time - first_arm_start),
+        )
         left_plane = PiecewiseConstantJerkTrajectory(
             q0=fixed_variables.left_plane_initial,
             qdot0=0.0,
@@ -1170,7 +1208,7 @@ class DirectMultipleShootingOptimizer:
             jerks=left_control_values,
             active_start=0.0,
             active_end=LEFT_ARM_ACTIVE_DURATION,
-            total_duration=self.configuration.final_time - right_arm_start,
+            total_duration=left_total_duration,
         )
         right_plane = PiecewiseConstantJerkTrajectory(
             q0=fixed_variables.right_plane_initial,
@@ -1180,7 +1218,7 @@ class DirectMultipleShootingOptimizer:
             jerks=right_control_values,
             active_start=0.0,
             active_end=RIGHT_ARM_ACTIVE_DURATION,
-            total_duration=self.configuration.final_time - first_arm_start,
+            total_duration=right_total_duration,
         )
         motion = PiecewiseConstantJerkArmMotion(
             left_plane=left_plane,
@@ -1228,14 +1266,18 @@ class DirectMultipleShootingOptimizer:
             node_times=self.node_times.copy(),
             arm_node_times=self.arm_node_times.copy(),
             root_state_nodes=root_state_nodes,
-            left_plane_state_nodes=left_plane_global_states[
-                :,
-                second_start_node_index : left_terminal_node_index + 1,
-            ].copy(),
-            right_plane_state_nodes=right_plane_global_states[
-                :,
-                first_start_node_index : right_terminal_node_index + 1,
-            ].copy(),
+            left_plane_state_nodes=self._pad_plane_state_window(
+                left_plane_global_states[
+                    :,
+                    second_start_node_index : left_terminal_node_index + 1,
+                ]
+            ),
+            right_plane_state_nodes=self._pad_plane_state_window(
+                right_plane_global_states[
+                    :,
+                    first_start_node_index : right_terminal_node_index + 1,
+                ]
+            ),
             prescribed_motion=motion,
             simulation=simulation,
             objective=float(solution["f"]),
