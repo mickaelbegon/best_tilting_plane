@@ -425,6 +425,22 @@ def test_on_close_cancels_pending_matplotlib_idle_draws() -> None:
     assert app._plot_canvas._idle_draw_id is None
 
 
+def test_on_close_closes_external_matplotlib_figures(monkeypatch) -> None:
+    """Closing the GUI should also close any external matplotlib windows opened from the app."""
+
+    app, _drawn_frames, _scheduler = _build_app_for_animation()
+    closed: list[str] = []
+
+    monkeypatch.setattr(
+        "best_tilting_plane.gui.app.close_external_figures",
+        lambda: closed.append("closed"),
+    )
+
+    app._on_close()
+
+    assert closed == ["closed"]
+
+
 def test_configure_time_slider_uses_simulation_time_bounds() -> None:
     """The time slider range should match the current simulation span."""
 

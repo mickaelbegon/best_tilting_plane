@@ -101,3 +101,16 @@ def present_external_figure(figure) -> None:
         plt.pause(0.001)
     except Exception:
         pass
+
+
+def close_external_figures() -> None:
+    """Close every external matplotlib figure previously opened by the GUI."""
+
+    import matplotlib.pyplot as plt
+
+    while _OPEN_EXTERNAL_FIGURES:
+        figure = _OPEN_EXTERNAL_FIGURES.pop()
+        try:
+            plt.close(figure)
+        except Exception:
+            pass

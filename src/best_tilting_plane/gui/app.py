@@ -64,6 +64,7 @@ from best_tilting_plane.visualization import (
     arm_deviation_from_frames,
     arm_top_view_trajectories,
     best_tilting_plane_corners,
+    close_external_figures,
     marker_trajectories,
     present_external_figure,
     segment_frame_trajectories,
@@ -2408,6 +2409,7 @@ class BestTiltingPlaneApp:
                 pass
             self._optimization_poll_after_id = None
         self._close_optimization_progress_popup()
+        close_external_figures()
         try:
             self.root.destroy()
         except tk.TclError:
