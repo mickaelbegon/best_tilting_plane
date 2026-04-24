@@ -39,7 +39,7 @@ OBJECTIVE_MODE_TWIST_BTP = "twist_btp"
 PLANE_STATE_SIZE = 3
 ROOT_STATE_SIZE = 12
 ELEVATION_STAGE_BLOCK_SIZE = 18
-FIRST_ARM_ELEVATION_STAGE_BLOCK_SIZE = 10
+FIRST_ARM_ELEVATION_STAGE_BLOCK_SIZE = 12
 DEFAULT_DMS_JERK_REGULARIZATION = 1e-9
 DEFAULT_DMS_BTP_DEVIATION_WEIGHT = 10.0
 DEFAULT_DMS_TWIST_RATE_LAGRANGE_WEIGHT = 1e-3
@@ -843,21 +843,20 @@ class DirectMultipleShootingOptimizer:
             active_jerk,
             self.shooting_step,
         )
-        frozen_second_plane_q = elevation_block[0]
         root_state_prediction = self._integrate_root_interval_first_arm_only(
             root_state,
             active_plane_state,
             active_jerk,
-            frozen_second_plane_q,
+            elevation_block[0],
             elevation_block[1],
             elevation_block[2],
             elevation_block[3],
-            elevation_block[4],
             elevation_block[5],
             elevation_block[6],
             elevation_block[7],
-            elevation_block[8],
             elevation_block[9],
+            elevation_block[10],
+            elevation_block[11],
         )
         defect = ca.vertcat(
             root_state_next - root_state_prediction,
@@ -867,14 +866,14 @@ class DirectMultipleShootingOptimizer:
             self._symbolic_btp_deviation_cost_first_arm_only(
                 root_state,
                 active_plane_state,
-                frozen_second_plane_q,
+                elevation_block[0],
                 elevation_block[1],
             )
             + self._symbolic_btp_deviation_cost_first_arm_only(
                 root_state_prediction,
                 active_plane_prediction,
-                frozen_second_plane_q,
-                elevation_block[7],
+                elevation_block[8],
+                elevation_block[9],
             )
         )
         return ca.Function(
