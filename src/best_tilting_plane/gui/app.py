@@ -3052,10 +3052,21 @@ class BestTiltingPlaneApp:
         return best_match
 
     def _apply_first_arm_candidate_solution(self, candidate: dict[str, object]) -> None:
-        """Apply one selected first-arm solution and clear second-arm comparisons."""
+        """Apply one selected first-arm solution without replaying the full visualization."""
 
         self._selected_scan_solutions = []
-        self._apply_scan_candidate_solution(candidate)
+        values = dict(candidate["values"])
+        self._set_values(values)
+        if hasattr(self, "root") and hasattr(self.root, "update_idletasks"):
+            self.root.update_idletasks()
+        self._stop_animation_loop()
+        self._secondary_visualization_data = None
+        if hasattr(self, "_scan_axis"):
+            self._refresh_scan_plot()
+        self.result_var.set(
+            "Solution bras 1 selectionnee pour preparer l'optimisation du bras 2: "
+            f"{float(candidate['final_twist_turns']):.2f} tours ({candidate['solver_status']})"
+        )
 
     def _on_first_arm_scan_plot_click(self, event) -> None:
         """Select one `t0` candidate from the first-arm scan figure."""
@@ -3076,7 +3087,7 @@ class BestTiltingPlaneApp:
         if selected_candidate is not None:
             self._apply_first_arm_candidate_solution(selected_candidate)
         else:
-            self._apply_first_arm_candidate_solution(candidate)
+            self.result_var.set("Selection bras 1 retiree.")
 
     def _refresh_first_arm_scan_plot(self) -> None:
         """Draw the dedicated `t0` scan figure used to pick the first-arm solution."""

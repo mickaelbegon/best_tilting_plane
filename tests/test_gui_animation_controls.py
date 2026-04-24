@@ -1047,6 +1047,55 @@ def test_refresh_optimization_mode_options_unlocks_arm2_after_one_arm1_scan() ->
     )
 
 
+def test_first_arm_scan_click_only_selects_solution_without_replaying_simulation() -> None:
+    """Clicking the arm-1 scan should prepare arm-2 optimization without replaying the full animation."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app._first_arm_scan_axis = object()
+    app._selected_first_arm_scan_solution = None
+    app._selected_scan_solutions = [("Optimize 2D", 0)]
+    app._secondary_visualization_data = {"dummy": True}
+    app._scan_axis = object()
+
+    selected_values: list[dict[str, float]] = []
+    stopped = {"count": 0}
+    refreshed = {"modes": 0, "first_plot": 0, "scan_plot": 0}
+
+    candidate = {
+        "mode": "Arm1 3D",
+        "values": {"first_arm_start": 0.24, "right_arm_start": 0.52},
+        "final_twist_turns": -1.23,
+        "solver_status": "Solve_Succeeded",
+    }
+    app._first_arm_scan_plot_datasets = lambda: [
+        {
+            "mode": "Arm1 3D",
+            "start_times": np.asarray([0.24], dtype=float),
+            "final_twist_turns": np.asarray([-1.23], dtype=float),
+            "candidate_solutions": [candidate],
+        }
+    ]
+    app._set_values = lambda values: selected_values.append(dict(values))
+    app._stop_animation_loop = lambda: stopped.__setitem__("count", stopped["count"] + 1)
+    app._refresh_optimization_mode_options = lambda: refreshed.__setitem__("modes", refreshed["modes"] + 1)
+    app._refresh_first_arm_scan_plot = lambda: refreshed.__setitem__("first_plot", refreshed["first_plot"] + 1)
+    app._refresh_scan_plot = lambda: refreshed.__setitem__("scan_plot", refreshed["scan_plot"] + 1)
+
+    event = SimpleNamespace(inaxes=app._first_arm_scan_axis, xdata=0.24, ydata=-1.23)
+
+    app._on_first_arm_scan_plot_click(event)
+
+    assert app._selected_first_arm_scan_solution == ("Arm1 3D", 0)
+    assert selected_values == [candidate["values"]]
+    assert stopped["count"] == 1
+    assert app._secondary_visualization_data is None
+    assert app._selected_scan_solutions == []
+    assert refreshed == {"modes": 1, "first_plot": 1, "scan_plot": 1}
+    assert "Solution bras 1 selectionnee" in app.result_var.get()
+
+
 def test_optimization_progress_updates_the_popup_with_completed_over_total() -> None:
     """The progress popup should track completed evaluations against the total."""
 
