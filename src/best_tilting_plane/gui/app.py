@@ -4022,10 +4022,49 @@ class BestTiltingPlaneApp:
             self._optimization_progress_window = window
             self._optimization_progress_var = progress_var
             self._optimization_progress_bar = progress_bar
+            self._center_optimization_progress_popup()
         except Exception:
             self._optimization_progress_window = None
             self._optimization_progress_var = None
             self._optimization_progress_bar = None
+
+    def _center_optimization_progress_popup(self) -> None:
+        """Place the optimization-progress popup at the center of the main GUI window."""
+
+        window = getattr(self, "_optimization_progress_window", None)
+        root = getattr(self, "root", None)
+        if window is None or root is None:
+            return
+        required_methods = (
+            "update_idletasks",
+            "winfo_rootx",
+            "winfo_rooty",
+            "winfo_width",
+            "winfo_height",
+            "winfo_width",
+            "winfo_height",
+            "geometry",
+        )
+        if not all(hasattr(root, method) for method in required_methods[:4]) or not all(
+            hasattr(window, method) for method in required_methods[4:]
+        ):
+            return
+        try:
+            root.update_idletasks()
+            window.update_idletasks()
+            root_x = int(root.winfo_rootx())
+            root_y = int(root.winfo_rooty())
+            root_width = int(root.winfo_width())
+            root_height = int(root.winfo_height())
+            window_width = int(window.winfo_width())
+            window_height = int(window.winfo_height())
+            if root_width <= 1 or root_height <= 1 or window_width <= 1 or window_height <= 1:
+                return
+            position_x = root_x + max((root_width - window_width) // 2, 0)
+            position_y = root_y + max((root_height - window_height) // 2, 0)
+            window.geometry(f"+{position_x}+{position_y}")
+        except Exception:
+            return
 
     def _optimization_progress(self, payload) -> None:
         """Update the optimization status line and optional progress popup."""
