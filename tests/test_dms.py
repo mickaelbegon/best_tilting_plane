@@ -355,6 +355,85 @@ def test_direct_multiple_shooting_solve_fixed_start_builds_float_bounds_and_retu
     np.testing.assert_allclose(right_control_upper_bounds[optimizer.active_control_count :], 0.0)
 
 
+def test_direct_multiple_shooting_first_arm_only_uses_a_reduced_nlp(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The staged 3D arm-1 solve should only optimize root + first-arm plane + first-arm jerk."""
+
+    optimizer = DirectMultipleShootingOptimizer.from_builder(
+        tmp_path / "reduced.bioMod",
+        model_builder=ReducedAerialBiomod(),
+        configuration=SimulationConfiguration(final_time=0.4, steps=81, integrator="rk4", rk4_step=0.005),
+        shooting_step=0.02,
+    )
+    initial_guess = TwistOptimizationVariables(
+        right_arm_start=0.0,
+        left_plane_initial=0.15,
+        left_plane_final=0.0,
+        right_plane_initial=0.0,
+        right_plane_final=0.2,
+        first_arm_start=0.08,
+    )
+    initial_state = np.asarray(optimizer._symbolic_initial_root_state(initial_guess), dtype=float).reshape(-1)
+    state_history = np.tile(initial_state.reshape(-1, 1), (1, optimizer.interval_count + 1))
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        optimizer,
+        "_initial_guess_root_state_history",
+        lambda _variables, _motion: state_history,
+    )
+
+    class FakeSimulator:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        @staticmethod
+        def simulate():
+            return type("SimulationResult", (), {"final_twist_angle": 0.0, "final_twist_turns": 0.0})()
+
+    class FakeSolver:
+        def __call__(self, **kwargs):
+            captured.update(kwargs)
+            return {"x": ca.DM(np.asarray(kwargs["x0"], dtype=float)), "f": ca.DM([[0.0]])}
+
+        @staticmethod
+        def stats():
+            return {"return_status": "Solve_Succeeded"}
+
+    monkeypatch.setattr(dms_module, "PredictiveAerialTwistSimulator", FakeSimulator)
+    monkeypatch.setattr(dms_module.ca, "nlpsol", lambda *_args, **_kwargs: FakeSolver())
+    monkeypatch.setattr(
+        solver_options_module,
+        "locate_ipopt_hsl_library",
+        lambda: "/tmp/libhsl.dylib",
+    )
+
+    result = optimizer.solve_first_arm_only_fixed_start(
+        initial_guess,
+        first_arm_start=initial_guess.first_arm_start,
+        max_iter=1,
+    )
+
+    assert result.success
+    assert optimizer._first_arm_constraint_count == optimizer.interval_count * (
+        dms_module.ROOT_STATE_SIZE + dms_module.PLANE_STATE_SIZE
+    )
+    assert np.asarray(captured["lbg"], dtype=float).shape == (optimizer._first_arm_constraint_count,)
+    assert np.asarray(captured["x0"], dtype=float).shape == (
+        (optimizer.interval_count + 1) * dms_module.ROOT_STATE_SIZE
+        + (optimizer.interval_count + 1) * dms_module.PLANE_STATE_SIZE
+        + optimizer.interval_count,
+    )
+    assert result.left_plane_jerk.shape == (optimizer.active_control_count,)
+    np.testing.assert_allclose(result.left_plane_jerk, 0.0)
+    np.testing.assert_allclose(result.left_plane_state_nodes[0], initial_guess.left_plane_initial)
+    np.testing.assert_allclose(result.left_plane_state_nodes[1:], 0.0)
+    assert result.prescribed_motion.left_arm_start == pytest.approx(optimizer.configuration.final_time)
+    assert result.prescribed_motion.right_arm_start == pytest.approx(initial_guess.first_arm_start)
+
+
 def test_direct_multiple_shooting_solve_fixed_start_can_freeze_the_second_arm_beyond_the_horizon(
     monkeypatch,
     tmp_path: Path,

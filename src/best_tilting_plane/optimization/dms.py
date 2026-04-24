@@ -39,6 +39,7 @@ OBJECTIVE_MODE_TWIST_BTP = "twist_btp"
 PLANE_STATE_SIZE = 3
 ROOT_STATE_SIZE = 12
 ELEVATION_STAGE_BLOCK_SIZE = 18
+FIRST_ARM_ELEVATION_STAGE_BLOCK_SIZE = 10
 DEFAULT_DMS_JERK_REGULARIZATION = 1e-9
 DEFAULT_DMS_BTP_DEVIATION_WEIGHT = 10.0
 DEFAULT_DMS_TWIST_RATE_LAGRANGE_WEIGHT = 1e-3
@@ -195,11 +196,16 @@ class DirectMultipleShootingOptimizer:
         self._solver_options_key: tuple[int, int, bool, str, float, float] | None = None
         self._constraint_count = 0
         self._interval_parallelization = "serial"
+        self._first_arm_solver = None
+        self._first_arm_solver_options_key: tuple[int, int, bool, str, float, float] | None = None
+        self._first_arm_constraint_count = 0
+        self._first_arm_interval_parallelization = "serial"
         self._nlpsol_expand = True
         self._elevation_trajectory_cache: dict[
             tuple[float, float],
             tuple[PiecewiseConstantJerkTrajectory, PiecewiseConstantJerkTrajectory],
         ] = {}
+        self._first_arm_elevation_trajectory_cache: dict[float, PiecewiseConstantJerkTrajectory] = {}
         self._segment_index_by_name = self._build_segment_index_by_name()
 
         if self.shooting_step <= 0.0:
@@ -387,6 +393,47 @@ class DirectMultipleShootingOptimizer:
                 values.extend(qddot.tolist())
         return np.asarray(values, dtype=float)
 
+    def _first_arm_only_elevation_parameter_values(
+        self,
+        *,
+        first_arm_start: float,
+        frozen_second_plane_q: float,
+    ) -> np.ndarray:
+        """Return the right-arm elevation values injected into the reduced arm-1 dynamics."""
+
+        right_trajectory = self._first_arm_elevation_trajectory(first_arm_start=first_arm_start)
+        values: list[float] = []
+        for interval_index in range(self.interval_count):
+            interval_start = float(self.node_times[interval_index])
+            for stage_time in (
+                interval_start,
+                interval_start + 0.5 * self.shooting_step,
+                interval_start + self.shooting_step,
+            ):
+                local_time = max(0.0, stage_time - float(first_arm_start))
+                right_q, right_qdot, right_qddot = right_trajectory.state(local_time)
+                values.append(float(frozen_second_plane_q))
+                values.extend((float(right_q), float(right_qdot), float(right_qddot)))
+        return np.asarray(values, dtype=float)
+
+    def _first_arm_elevation_trajectory(self, *, first_arm_start: float) -> PiecewiseConstantJerkTrajectory:
+        """Return the jerk-driven elevation trajectory used by the reduced arm-1 OCP."""
+
+        cache_key = round(float(first_arm_start), 10)
+        cached = self._first_arm_elevation_trajectory_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        trajectory = approximate_quintic_segment_with_piecewise_constant_jerk(
+            total_time=max(float(self.shooting_step), float(self.configuration.final_time - first_arm_start)),
+            step=self.shooting_step,
+            active_start=0.0,
+            active_duration=RIGHT_ARM_ACTIVE_DURATION,
+            q0=np.pi,
+            q1=0.0,
+        )
+        self._first_arm_elevation_trajectory_cache[cache_key] = trajectory
+        return trajectory
+
     def _symbolic_initial_root_state(self, variables: TwistOptimizationVariables) -> np.ndarray:
         """Return the initial root state."""
 
@@ -469,6 +516,51 @@ class DirectMultipleShootingOptimizer:
         ).to_mx()
         return ca.vertcat(qdot_root, qddot_root)
 
+    def _symbolic_root_dynamics_first_arm_only(
+        self,
+        root_state: ca.MX,
+        active_plane_state: ca.MX,
+        frozen_second_plane_q: ca.MX,
+        active_elevation_q: ca.MX,
+        active_elevation_qdot: ca.MX,
+        active_elevation_qddot: ca.MX,
+    ) -> ca.MX:
+        """Return the root-state derivative when only the first arm is optimized."""
+
+        q_root = root_state[:6]
+        qdot_root = root_state[6:12]
+        active_q, active_qdot, active_qddot = (
+            active_plane_state[0],
+            active_plane_state[1],
+            active_plane_state[2],
+        )
+        q_joint = ca.vertcat(
+            frozen_second_plane_q,
+            -np.pi,
+            active_q,
+            active_elevation_q,
+        )
+        qdot_joint = ca.vertcat(
+            0.0,
+            0.0,
+            active_qdot,
+            active_elevation_qdot,
+        )
+        qddot_joint = ca.vertcat(
+            0.0,
+            0.0,
+            active_qddot,
+            active_elevation_qddot,
+        )
+        q_full = ca.vertcat(q_root, q_joint)
+        qdot_full = ca.vertcat(qdot_root, qdot_joint)
+        qddot_root = self.symbolic_model.ForwardDynamicsFreeFloatingBase(
+            q_full,
+            qdot_full,
+            qddot_joint,
+        ).to_mx()
+        return ca.vertcat(qdot_root, qddot_root)
+
     def _symbolic_segment_origin(self, q_full: ca.MX, segment_name: str) -> ca.MX:
         """Return the symbolic origin of one segment."""
 
@@ -501,6 +593,37 @@ class DirectMultipleShootingOptimizer:
                 elevation_q[0],
                 right_plane_state[0],
                 elevation_q[1],
+            ),
+        )
+        left_vector = self._symbolic_segment_origin(q_full, "forearm_left") - self._symbolic_segment_origin(
+            q_full,
+            "upper_arm_left",
+        )
+        right_vector = self._symbolic_segment_origin(q_full, "forearm_right") - self._symbolic_segment_origin(
+            q_full,
+            "upper_arm_right",
+        )
+        somersault_angle = root_state[3]
+        left_deviation = self._symbolic_signed_plane_deviation(left_vector, somersault_angle)
+        right_deviation = self._symbolic_signed_plane_deviation(right_vector, somersault_angle)
+        return left_deviation * left_deviation + right_deviation * right_deviation
+
+    def _symbolic_btp_deviation_cost_first_arm_only(
+        self,
+        root_state: ca.MX,
+        active_plane_state: ca.MX,
+        frozen_second_plane_q: ca.MX,
+        active_elevation_q: ca.MX,
+    ) -> ca.MX:
+        """Return the squared BTP deviation when only the first arm plane is optimized."""
+
+        q_full = ca.vertcat(
+            root_state[:6],
+            ca.vertcat(
+                frozen_second_plane_q,
+                -np.pi,
+                active_plane_state[0],
+                active_elevation_q,
             ),
         )
         left_vector = self._symbolic_segment_origin(q_full, "forearm_left") - self._symbolic_segment_origin(
@@ -575,6 +698,62 @@ class DirectMultipleShootingOptimizer:
         )
         return root_state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
+    def _integrate_root_interval_first_arm_only(
+        self,
+        root_state: ca.MX,
+        active_plane_state: ca.MX,
+        active_jerk: ca.MX,
+        frozen_second_plane_q: ca.MX,
+        active_elevation_start_q: ca.MX,
+        active_elevation_start_qdot: ca.MX,
+        active_elevation_start_qddot: ca.MX,
+        active_elevation_mid_q: ca.MX,
+        active_elevation_mid_qdot: ca.MX,
+        active_elevation_mid_qddot: ca.MX,
+        active_elevation_end_q: ca.MX,
+        active_elevation_end_qdot: ca.MX,
+        active_elevation_end_qddot: ca.MX,
+    ) -> ca.MX:
+        """Integrate one root interval when only the first arm plane is optimized."""
+
+        dt = self.shooting_step
+        active_mid = self._advance_symbolic_constant_jerk(active_plane_state, active_jerk, 0.5 * dt)
+        active_end = self._advance_symbolic_constant_jerk(active_plane_state, active_jerk, dt)
+
+        k1 = self._symbolic_root_dynamics_first_arm_only(
+            root_state,
+            active_plane_state,
+            frozen_second_plane_q,
+            active_elevation_start_q,
+            active_elevation_start_qdot,
+            active_elevation_start_qddot,
+        )
+        k2 = self._symbolic_root_dynamics_first_arm_only(
+            root_state + 0.5 * dt * k1,
+            active_mid,
+            frozen_second_plane_q,
+            active_elevation_mid_q,
+            active_elevation_mid_qdot,
+            active_elevation_mid_qddot,
+        )
+        k3 = self._symbolic_root_dynamics_first_arm_only(
+            root_state + 0.5 * dt * k2,
+            active_mid,
+            frozen_second_plane_q,
+            active_elevation_mid_q,
+            active_elevation_mid_qdot,
+            active_elevation_mid_qddot,
+        )
+        k4 = self._symbolic_root_dynamics_first_arm_only(
+            root_state + dt * k3,
+            active_end,
+            frozen_second_plane_q,
+            active_elevation_end_q,
+            active_elevation_end_qdot,
+            active_elevation_end_qddot,
+        )
+        return root_state + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
     def _build_interval_defect_function(self) -> ca.Function:
         """Build one interval defect function that CasADi can map over all shooting nodes."""
 
@@ -644,6 +823,68 @@ class DirectMultipleShootingOptimizer:
                 right_plane_state_next,
                 left_jerk,
                 right_jerk,
+                elevation_block,
+            ],
+            [defect, running_cost],
+        )
+
+    def _build_first_arm_interval_defect_function(self) -> ca.Function:
+        """Build one interval defect function for the reduced arm-1-only DMS."""
+
+        root_state = ca.MX.sym("xk", ROOT_STATE_SIZE, 1)
+        root_state_next = ca.MX.sym("xk_next", ROOT_STATE_SIZE, 1)
+        active_plane_state = ca.MX.sym("xpk", PLANE_STATE_SIZE, 1)
+        active_plane_state_next = ca.MX.sym("xpk_next", PLANE_STATE_SIZE, 1)
+        active_jerk = ca.MX.sym("upk")
+        elevation_block = ca.MX.sym("pk", FIRST_ARM_ELEVATION_STAGE_BLOCK_SIZE, 1)
+
+        active_plane_prediction = self._advance_symbolic_constant_jerk(
+            active_plane_state,
+            active_jerk,
+            self.shooting_step,
+        )
+        frozen_second_plane_q = elevation_block[0]
+        root_state_prediction = self._integrate_root_interval_first_arm_only(
+            root_state,
+            active_plane_state,
+            active_jerk,
+            frozen_second_plane_q,
+            elevation_block[1],
+            elevation_block[2],
+            elevation_block[3],
+            elevation_block[4],
+            elevation_block[5],
+            elevation_block[6],
+            elevation_block[7],
+            elevation_block[8],
+            elevation_block[9],
+        )
+        defect = ca.vertcat(
+            root_state_next - root_state_prediction,
+            active_plane_state_next - active_plane_prediction,
+        )
+        running_cost = 0.5 * (
+            self._symbolic_btp_deviation_cost_first_arm_only(
+                root_state,
+                active_plane_state,
+                frozen_second_plane_q,
+                elevation_block[1],
+            )
+            + self._symbolic_btp_deviation_cost_first_arm_only(
+                root_state_prediction,
+                active_plane_prediction,
+                frozen_second_plane_q,
+                elevation_block[7],
+            )
+        )
+        return ca.Function(
+            "dms_first_arm_interval_defect",
+            [
+                root_state,
+                root_state_next,
+                active_plane_state,
+                active_plane_state_next,
+                active_jerk,
                 elevation_block,
             ],
             [defect, running_cost],
@@ -874,6 +1115,91 @@ class DirectMultipleShootingOptimizer:
         self._solver_options_key = options_key
         return self._solver
 
+    def _build_first_arm_solver(
+        self,
+        *,
+        max_iter: int,
+        print_level: int,
+        print_time: bool,
+    ):
+        """Build and cache the reduced DMS solver used for the first arm only."""
+
+        options_key = (
+            int(max_iter),
+            int(print_level),
+            bool(print_time),
+            self.objective_mode,
+            float(self.btp_deviation_weight),
+            float(self.twist_rate_lagrange_weight),
+        )
+        if self._first_arm_solver is not None and self._first_arm_solver_options_key == options_key:
+            return self._first_arm_solver
+
+        configure_optimization_threads()
+        parameters = ca.MX.sym("p", FIRST_ARM_ELEVATION_STAGE_BLOCK_SIZE * self.interval_count, 1)
+        root_state_symbols = [
+            ca.MX.sym(f"X_root_arm1_{index}", ROOT_STATE_SIZE, 1) for index in range(self.interval_count + 1)
+        ]
+        active_plane_state_symbols = [
+            ca.MX.sym(f"X_right_arm1_{index}", PLANE_STATE_SIZE, 1) for index in range(self.interval_count + 1)
+        ]
+        active_control_symbols = ca.MX.sym("U_right_arm1", self.interval_count, 1)
+
+        twist_rate_lagrange = ca.MX(0.0)
+        for interval_index in range(self.interval_count):
+            twist_rate_lagrange += 0.5 * (
+                root_state_symbols[interval_index][11] + root_state_symbols[interval_index + 1][11]
+            )
+        objective = -(root_state_symbols[-1][5] / (2.0 * np.pi))
+        objective -= self.twist_rate_lagrange_weight * self.shooting_step * twist_rate_lagrange
+        objective += self.jerk_regularization * self.shooting_step * ca.sumsqr(active_control_symbols)
+
+        interval_defect = self._build_first_arm_interval_defect_function()
+        parallelization = "openmp" if self.interval_count > 1 else "serial"
+        try:
+            mapped_interval_defect = interval_defect.map(self.interval_count, parallelization)
+        except RuntimeError:
+            parallelization = "serial"
+            mapped_interval_defect = interval_defect.map(self.interval_count, parallelization)
+        self._first_arm_interval_parallelization = parallelization
+
+        mapped_defects, mapped_running_costs = mapped_interval_defect(
+            ca.horzcat(*root_state_symbols[:-1]),
+            ca.horzcat(*root_state_symbols[1:]),
+            ca.horzcat(*active_plane_state_symbols[:-1]),
+            ca.horzcat(*active_plane_state_symbols[1:]),
+            ca.reshape(active_control_symbols, 1, self.interval_count),
+            ca.reshape(parameters, FIRST_ARM_ELEVATION_STAGE_BLOCK_SIZE, self.interval_count),
+        )
+        if self.objective_mode == OBJECTIVE_MODE_TWIST_BTP:
+            objective += self.btp_deviation_weight * self.shooting_step * ca.sum2(mapped_running_costs)
+        constraints = [ca.reshape(mapped_defects, -1, 1)]
+        decision_vector = ca.vertcat(
+            *root_state_symbols,
+            *active_plane_state_symbols,
+            active_control_symbols,
+        )
+        self._first_arm_constraint_count = int(sum(component.shape[0] for component in constraints))
+        self._first_arm_solver = ca.nlpsol(
+            f"dms_first_arm_solver_{self.objective_mode}",
+            "ipopt",
+            {
+                "x": decision_vector,
+                "p": parameters,
+                "f": objective,
+                "g": ca.vertcat(*constraints),
+            },
+            build_ipopt_solver_options(
+                max_iter=max_iter,
+                print_level=print_level,
+                print_time=print_time,
+                expand=self._nlpsol_expand,
+                warm_start=True,
+            ),
+        )
+        self._first_arm_solver_options_key = options_key
+        return self._first_arm_solver
+
     def _numeric_segment_origin(self, q_full: np.ndarray, segment_name: str) -> np.ndarray:
         """Return the numeric origin of one segment."""
 
@@ -985,6 +1311,284 @@ class DirectMultipleShootingOptimizer:
         padded = np.repeat(window[:, -1:], target_width, axis=1)
         padded[:, : window.shape[1]] = window
         return padded
+
+    def solve_first_arm_only_fixed_start(
+        self,
+        initial_guess: TwistOptimizationVariables,
+        *,
+        first_arm_start: float,
+        previous_result: DirectMultipleShootingResult | None = None,
+        warm_start_override: np.ndarray | None = None,
+        max_iter: int = 100,
+        print_level: int = 0,
+        print_time: bool = False,
+    ) -> DirectMultipleShootingResult:
+        """Solve the reduced 3D OCP where only the first arm carries states and controls."""
+
+        first_arm_start = self._snap_start_time_to_grid(float(first_arm_start))
+        solver = self._build_first_arm_solver(
+            max_iter=max_iter,
+            print_level=print_level,
+            print_time=print_time,
+        )
+        fixed_second_arm_start = float(np.round(self.configuration.final_time, decimals=10))
+        fixed_variables = TwistOptimizationVariables(
+            right_arm_start=fixed_second_arm_start,
+            left_plane_initial=initial_guess.left_plane_initial,
+            left_plane_final=initial_guess.left_plane_initial,
+            right_plane_initial=initial_guess.right_plane_initial,
+            right_plane_final=initial_guess.right_plane_final,
+            contact_twist_rate=initial_guess.contact_twist_rate,
+            first_arm_start=first_arm_start,
+        )
+        first_start_node_index = int(round(first_arm_start / self.shooting_step))
+        right_terminal_node_index = first_start_node_index + self.active_control_count
+
+        initial_motion = self._initial_guess_motion(fixed_variables, second_arm_start=fixed_second_arm_start)
+        initial_root_states = self._initial_guess_root_state_history(fixed_variables, initial_motion)
+        right_local_times = np.maximum(0.0, self.node_times - first_arm_start)
+        initial_right_states = self._plane_state_history(initial_motion.right_plane, right_local_times)
+
+        initial_root_state = self._symbolic_initial_root_state(fixed_variables)
+        initial_left_plane_state = self._plane_state_vector(fixed_variables.left_plane_initial)
+        initial_right_plane_state = self._plane_state_vector(fixed_variables.right_plane_initial)
+        right_lower_bounds = np.zeros(self.interval_count, dtype=float)
+        right_upper_bounds = np.zeros(self.interval_count, dtype=float)
+        right_lower_bounds[
+            first_start_node_index:right_terminal_node_index
+        ] = -self.jerk_bound
+        right_upper_bounds[
+            first_start_node_index:right_terminal_node_index
+        ] = self.jerk_bound
+
+        x0: list[float] = []
+        lbx: list[float] = []
+        ubx: list[float] = []
+        for state_index in range(self.interval_count + 1):
+            root_guess = initial_root_states[:, state_index]
+            x0.extend(root_guess.tolist())
+            if state_index == 0:
+                lbx.extend(initial_root_state.tolist())
+                ubx.extend(initial_root_state.tolist())
+            else:
+                lbx.extend([-float("inf")] * ROOT_STATE_SIZE)
+                ubx.extend([float("inf")] * ROOT_STATE_SIZE)
+
+        for state_index in range(self.interval_count + 1):
+            right_guess = initial_right_states[:, state_index]
+            x0.extend(right_guess.tolist())
+            if state_index == 0:
+                lbx.extend(initial_right_plane_state.tolist())
+                ubx.extend(initial_right_plane_state.tolist())
+            else:
+                lbx.extend([-float("inf")] * PLANE_STATE_SIZE)
+                ubx.extend([float("inf")] * PLANE_STATE_SIZE)
+
+        for control_index in range(self.interval_count):
+            jerk_guess = (
+                initial_motion.right_plane.jerks[control_index - first_start_node_index]
+                if first_start_node_index <= control_index < right_terminal_node_index
+                else 0.0
+            )
+            x0.append(float(jerk_guess))
+            lbx.append(float(right_lower_bounds[control_index]))
+            ubx.append(float(right_upper_bounds[control_index]))
+
+        x0_array = np.asarray(x0, dtype=float)
+        lbx_array = np.asarray(lbx, dtype=float)
+        ubx_array = np.asarray(ubx, dtype=float)
+        solver_inputs = {
+            "x0": x0_array,
+            "lbx": lbx_array,
+            "ubx": ubx_array,
+            "lbg": np.zeros(self._first_arm_constraint_count, dtype=float),
+            "ubg": np.zeros(self._first_arm_constraint_count, dtype=float),
+            "p": self._first_arm_only_elevation_parameter_values(
+                first_arm_start=first_arm_start,
+                frozen_second_plane_q=fixed_variables.left_plane_initial,
+            ),
+        }
+        if warm_start_override is not None:
+            override = np.asarray(warm_start_override, dtype=float)
+            if override.shape == x0_array.shape:
+                solver_inputs["x0"] = self._project_initial_guess_to_bounds(override, lbx_array, ubx_array)
+        elif previous_result is not None and previous_result.warm_start_primal is not None:
+            warm_primal = np.asarray(previous_result.warm_start_primal, dtype=float)
+            if warm_primal.shape == x0_array.shape:
+                solver_inputs["x0"] = self._project_initial_guess_to_bounds(warm_primal, lbx_array, ubx_array)
+                if previous_result.warm_start_lam_x is not None:
+                    warm_lam_x = np.asarray(previous_result.warm_start_lam_x, dtype=float)
+                    if warm_lam_x.shape == x0_array.shape:
+                        solver_inputs["lam_x0"] = warm_lam_x
+                if previous_result.warm_start_lam_g is not None:
+                    warm_lam_g = np.asarray(previous_result.warm_start_lam_g, dtype=float)
+                    if warm_lam_g.shape == (self._first_arm_constraint_count,):
+                        solver_inputs["lam_g0"] = warm_lam_g
+
+        print(f"DMS bras1 solve: t0={first_arm_start:.2f} s (node {first_start_node_index}/{self.interval_count})")
+        solution = solver(**solver_inputs)
+        status = solver.stats()["return_status"]
+        raw_solution = np.asarray(solution["x"].full(), dtype=float).reshape(-1)
+        offset = 0
+        root_state_values = raw_solution[offset : offset + ROOT_STATE_SIZE * (self.interval_count + 1)]
+        offset += ROOT_STATE_SIZE * (self.interval_count + 1)
+        right_plane_global_values = raw_solution[offset : offset + PLANE_STATE_SIZE * (self.interval_count + 1)]
+        offset += PLANE_STATE_SIZE * (self.interval_count + 1)
+        right_control_global_values = raw_solution[offset : offset + self.interval_count]
+
+        root_state_nodes = root_state_values.reshape(self.interval_count + 1, ROOT_STATE_SIZE).T
+        right_plane_global_states = right_plane_global_values.reshape(self.interval_count + 1, PLANE_STATE_SIZE).T
+        twist_objective_value = float(-(root_state_nodes[5, -1] / (2.0 * np.pi)))
+        twist_rate_lagrange_value = self._twist_rate_lagrange_from_state_nodes(root_state_nodes=root_state_nodes)
+        jerk_regularization_value = float(
+            self.jerk_regularization * self.shooting_step * np.sum(right_control_global_values**2)
+        )
+
+        right_control_values = self._pad_active_control_window(
+            right_control_global_values[first_start_node_index : first_start_node_index + self.active_control_count]
+        )
+        right_total_duration = max(
+            float(self.active_control_count * self.shooting_step),
+            float(self.configuration.final_time - first_arm_start),
+        )
+        right_plane = PiecewiseConstantJerkTrajectory(
+            q0=fixed_variables.right_plane_initial,
+            qdot0=0.0,
+            qddot0=0.0,
+            step=self.shooting_step,
+            jerks=right_control_values,
+            active_start=0.0,
+            active_end=RIGHT_ARM_ACTIVE_DURATION,
+            total_duration=right_total_duration,
+        )
+        frozen_left_plane = PiecewiseConstantJerkTrajectory(
+            q0=fixed_variables.left_plane_initial,
+            qdot0=0.0,
+            qddot0=0.0,
+            step=self.shooting_step,
+            jerks=np.zeros(1, dtype=float),
+            active_start=0.0,
+            active_end=0.0,
+            total_duration=float(self.shooting_step),
+        )
+        frozen_left_elevation = PiecewiseConstantJerkTrajectory(
+            q0=-np.pi,
+            qdot0=0.0,
+            qddot0=0.0,
+            step=self.shooting_step,
+            jerks=np.zeros(1, dtype=float),
+            active_start=0.0,
+            active_end=0.0,
+            total_duration=float(self.shooting_step),
+        )
+        right_elevation = self._first_arm_elevation_trajectory(first_arm_start=first_arm_start)
+        motion = PiecewiseConstantJerkArmMotion(
+            left_plane=frozen_left_plane,
+            right_plane=right_plane,
+            left_arm_start=fixed_second_arm_start,
+            right_arm_start=first_arm_start,
+            left_elevation=frozen_left_elevation,
+            right_elevation=right_elevation,
+        )
+        simulation = PredictiveAerialTwistSimulator(
+            self.model_path,
+            motion,
+            configuration=self.configuration,
+            model=self.model,
+        ).simulate()
+        left_plane_state_nodes = np.repeat(
+            initial_left_plane_state.reshape(-1, 1),
+            self.active_control_count + 1,
+            axis=1,
+        )
+        btp_deviation_lagrange_value = 0.0
+        if self.objective_mode == OBJECTIVE_MODE_TWIST_BTP:
+            deviation_costs = np.zeros(self.interval_count, dtype=float)
+            for interval_index in range(self.interval_count):
+                node_time = float(self.node_times[interval_index])
+                local_time = max(0.0, node_time - first_arm_start)
+                active_elevation_q, _, _ = right_elevation.state(local_time)
+                q_full = np.array(
+                    [
+                        *root_state_nodes[:6, interval_index],
+                        fixed_variables.left_plane_initial,
+                        -np.pi,
+                        right_plane_global_states[0, interval_index],
+                        active_elevation_q,
+                    ],
+                    dtype=float,
+                )
+                left_vector = self._numeric_segment_origin(q_full, "forearm_left") - self._numeric_segment_origin(
+                    q_full,
+                    "upper_arm_left",
+                )
+                right_vector = self._numeric_segment_origin(q_full, "forearm_right") - self._numeric_segment_origin(
+                    q_full,
+                    "upper_arm_right",
+                )
+                somersault_angle = float(root_state_nodes[3, interval_index])
+                left_deviation = float(
+                    self._symbolic_signed_plane_deviation(ca.DM(left_vector), ca.DM(somersault_angle))
+                )
+                right_deviation = float(
+                    self._symbolic_signed_plane_deviation(ca.DM(right_vector), ca.DM(somersault_angle))
+                )
+                deviation_costs[interval_index] = left_deviation * left_deviation + right_deviation * right_deviation
+            btp_deviation_lagrange_value = float(self.btp_deviation_weight * self.shooting_step * np.sum(deviation_costs))
+        total_objective_value = (
+            twist_objective_value
+            + twist_rate_lagrange_value
+            + jerk_regularization_value
+            + btp_deviation_lagrange_value
+        )
+        print(
+            "DMS bras1 objective terms: "
+            f"twist={twist_objective_value:.6f}, "
+            f"twist_rate_lagrange={twist_rate_lagrange_value:.6e}, "
+            f"jerk_reg={jerk_regularization_value:.6e}, "
+            f"btp_lagrange={btp_deviation_lagrange_value:.6e}, "
+            f"total={total_objective_value:.6f}, "
+            f"ipopt_f={float(solution['f']):.6f}"
+        )
+
+        normalized_status = status.lower().replace("_", " ")
+        return DirectMultipleShootingResult(
+            variables=fixed_variables,
+            right_arm_start_node_index=int(round(fixed_second_arm_start / self.shooting_step)),
+            left_plane_jerk=np.zeros(self.active_control_count, dtype=float),
+            right_plane_jerk=right_control_values.copy(),
+            node_times=self.node_times.copy(),
+            arm_node_times=self.arm_node_times.copy(),
+            root_state_nodes=root_state_nodes,
+            left_plane_state_nodes=left_plane_state_nodes,
+            right_plane_state_nodes=self._pad_plane_state_window(
+                right_plane_global_states[
+                    :,
+                    first_start_node_index : right_terminal_node_index + 1,
+                ]
+            ),
+            prescribed_motion=motion,
+            simulation=simulation,
+            objective=float(solution["f"]),
+            btp_deviation_lagrange=btp_deviation_lagrange_value,
+            solver_status=status,
+            success=(
+                "success" in normalized_status
+                or "succeeded" in normalized_status
+                or "solved" in normalized_status
+            ),
+            warm_start_primal=raw_solution.copy(),
+            warm_start_lam_x=(
+                np.asarray(solution["lam_x"].full(), dtype=float).reshape(-1)
+                if "lam_x" in solution
+                else None
+            ),
+            warm_start_lam_g=(
+                np.asarray(solution["lam_g"].full(), dtype=float).reshape(-1)
+                if "lam_g" in solution
+                else None
+            ),
+        )
 
     def solve_fixed_start(
         self,
@@ -1339,16 +1943,13 @@ class DirectMultipleShootingOptimizer:
                 contact_twist_rate=initial_guess.contact_twist_rate,
                 first_arm_start=float(first_arm_start),
             )
-            current_result = self.solve_fixed_start(
+            current_result = self.solve_first_arm_only_fixed_start(
                 staged_initial_guess,
-                right_arm_start=float(second_arm_start),
-                allow_frozen_second_arm=True,
-                constrain_first_arm_terminal_plane=False,
+                first_arm_start=float(first_arm_start),
                 previous_result=warm_start_result,
                 max_iter=max_iter,
                 print_level=print_level,
                 print_time=print_time,
-                show_jerk_diagnostics=show_jerk_diagnostics,
             )
             candidate_results.append(current_result)
             if _result_is_better(current_result, best_result):
