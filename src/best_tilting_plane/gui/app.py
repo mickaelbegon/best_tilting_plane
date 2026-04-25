@@ -421,30 +421,14 @@ class BestTiltingPlaneApp:
             )
             scale.set(definition.default)
             scale.grid(row=row, column=1, sticky="ew", pady=4)
-            entry_var = tk.StringVar(value=f"{definition.default:.2f}")
-            entry = ttk.Entry(controls, textvariable=entry_var, width=10)
-            entry.grid(row=row, column=2, sticky="e", pady=4)
             controls.columnconfigure(1, weight=1)
 
             scale.configure(
-                command=lambda value, name=definition.name, var=entry_var: self._on_slider_change(
-                    name, var, value
+                command=lambda value, name=definition.name: self._on_slider_change(
+                    name, value
                 )
             )
-            entry.bind(
-                "<Return>",
-                lambda _event, name=definition.name, var=entry_var: self._sync_scale_from_entry(
-                    name, var
-                ),
-            )
-            entry.bind(
-                "<FocusOut>",
-                lambda _event, name=definition.name, var=entry_var: self._sync_scale_from_entry(
-                    name, var
-                ),
-            )
 
-            self._entries[definition.name] = entry_var
             self._scales[definition.name] = scale
 
         scan_row = len(SLIDER_DEFINITIONS)
@@ -643,29 +627,26 @@ class BestTiltingPlaneApp:
         self._refresh_optimization_mode_options()
         self._run_simulation()
 
-    def _on_slider_change(self, _name: str, variable: tk.StringVar, value: str) -> None:
-        """Update the entry field and trigger a debounced simulation."""
+    def _on_slider_change(self, _name: str, _value: str) -> None:
+        """Trigger a debounced simulation after one slider change."""
 
-        variable.set(f"{float(value):.2f}")
         if not self._auto_simulation_suspended:
             self.result_var.set("Simulation automatique...")
             self._auto_runner.schedule()
-
-    def _sync_scale_from_entry(self, name: str, variable: tk.StringVar) -> None:
-        """Update the slider when the entry content changes."""
-
-        try:
-            self._scales[name].set(float(variable.get()))
-        except ValueError:
-            variable.set(f"{float(self._scales[name].get()):.2f}")
 
     def _current_values(self) -> dict[str, float]:
         """Return the current GUI values as a plain dictionary."""
 
         values = {definition.name: float(definition.default) for definition in SLIDER_DEFINITIONS}
         values.update(dict(getattr(self, "_fixed_values_state", GUI_FIXED_VALUES)))
-        entries = getattr(self, "_entries", {})
-        values.update({name: float(variable.get()) for name, variable in entries.items()})
+        scales = getattr(self, "_scales", {})
+        values.update(
+            {
+                name: float(scale.get())
+                for name, scale in scales.items()
+                if name in values
+            }
+        )
         return values
 
     def _has_first_arm_scan_results(self) -> bool:
@@ -800,7 +781,7 @@ class BestTiltingPlaneApp:
         return tuple(index for index, label in enumerate(curve_labels) if label in selected_set)
 
     def _set_values(self, values: dict[str, float]) -> None:
-        """Write a new set of values back to the sliders and entry boxes."""
+        """Write a new set of values back to the sliders."""
 
         self._auto_simulation_suspended = True
         for name, value in values.items():
@@ -808,10 +789,9 @@ class BestTiltingPlaneApp:
                 self._fixed_values_state = dict(GUI_FIXED_VALUES)
             if name in self._fixed_values_state:
                 self._fixed_values_state[name] = float(value)
-            if name not in self._scales or name not in self._entries:
+            if name not in self._scales:
                 continue
             self._scales[name].set(float(value))
-            self._entries[name].set(f"{float(value):.2f}")
         self._auto_simulation_suspended = False
 
     def _model_path(self) -> Path:
@@ -832,10 +812,10 @@ class BestTiltingPlaneApp:
     def _current_contact_twist_turns_per_second(self) -> float:
         """Return the discrete contact twist rate selected in the GUI."""
 
-        entry = getattr(self, "_entries", {}).get("contact_twist_turns_per_second")
-        if entry is not None:
+        scale = getattr(self, "_scales", {}).get("contact_twist_turns_per_second")
+        if scale is not None:
             try:
-                return float(entry.get())
+                return float(scale.get())
             except (TypeError, ValueError):
                 return 0.0
         current_values = getattr(self, "_current_values", None)
@@ -3201,6 +3181,20 @@ class BestTiltingPlaneApp:
             ),
         )
 
+    def _select_scan_candidate_solution_lightweight(self, candidate: dict[str, object]) -> None:
+        """Select one second-arm candidate without replaying its full animation immediately."""
+
+        values = dict(candidate["values"])
+        self._set_values(values)
+        if hasattr(self, "root") and hasattr(self.root, "update_idletasks"):
+            self.root.update_idletasks()
+        self._stop_animation_loop()
+        self._secondary_visualization_data = self._secondary_animation_visualization_data()
+        self.result_var.set(
+            "Solution selectionnee pour comparaison: "
+            f"{float(candidate['final_twist_turns']):.2f} tours ({candidate['solver_status']})"
+        )
+
     def _nearest_scan_candidate(
         self,
         x_value: float,
@@ -3257,9 +3251,9 @@ class BestTiltingPlaneApp:
         self._refresh_plot()
         selected_candidates = self._selected_scan_candidate_records()
         if selected_candidates:
-            self._apply_scan_candidate_solution(selected_candidates[0])
+            self._select_scan_candidate_solution_lightweight(selected_candidates[0])
         else:
-            self._apply_scan_candidate_solution(candidate)
+            self.result_var.set("Selection retiree.")
 
     def _refresh_scan_plot(self) -> None:
         """Draw the embedded scan figure showing the final twist count as a function of `t1`."""

@@ -1096,6 +1096,52 @@ def test_first_arm_scan_click_only_selects_solution_without_replaying_simulation
     assert "Solution bras 1 selectionnee" in app.result_var.get()
 
 
+def test_second_arm_scan_click_only_selects_solution_without_replaying_simulation() -> None:
+    """Clicking the arm-2 scan should update the selection without replaying the full simulation."""
+
+    app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
+    app.root = FakeScheduler()
+    app.result_var = FakeVar("")
+    app._scan_axis = object()
+    app._selected_scan_solutions = []
+    app._secondary_visualization_data = {"dummy": True}
+
+    selected_values: list[dict[str, float]] = []
+    stopped = {"count": 0}
+    refreshed = {"scan_plot": 0, "plot": 0}
+
+    candidate = {
+        "mode": OPTIMIZATION_MODE_ARM2_3D,
+        "values": {"first_arm_start": 0.24, "right_arm_start": 0.52},
+        "final_twist_turns": -1.45,
+        "solver_status": "Solve_Succeeded",
+    }
+    app._scan_plot_datasets = lambda: [
+        {
+            "mode": OPTIMIZATION_MODE_ARM2_3D,
+            "start_times": np.asarray([0.52], dtype=float),
+            "final_twist_turns": np.asarray([-1.45], dtype=float),
+            "candidate_solutions": [candidate],
+        }
+    ]
+    app._set_values = lambda values: selected_values.append(dict(values))
+    app._stop_animation_loop = lambda: stopped.__setitem__("count", stopped["count"] + 1)
+    app._secondary_animation_visualization_data = lambda: {"secondary": True}
+    app._refresh_scan_plot = lambda: refreshed.__setitem__("scan_plot", refreshed["scan_plot"] + 1)
+    app._refresh_plot = lambda: refreshed.__setitem__("plot", refreshed["plot"] + 1)
+
+    event = SimpleNamespace(inaxes=app._scan_axis, xdata=0.52, ydata=-1.45)
+
+    app._on_scan_plot_click(event)
+
+    assert app._selected_scan_solutions == [(OPTIMIZATION_MODE_ARM2_3D, 0)]
+    assert selected_values == [candidate["values"]]
+    assert stopped["count"] == 1
+    assert app._secondary_visualization_data == {"secondary": True}
+    assert refreshed == {"scan_plot": 1, "plot": 1}
+    assert "Solution selectionnee pour comparaison" in app.result_var.get()
+
+
 def test_optimization_progress_updates_the_popup_with_completed_over_total() -> None:
     """The progress popup should track completed evaluations against the total."""
 
@@ -1525,7 +1571,7 @@ def test_optimization_cache_key_changes_with_contact_twist_slider() -> None:
     """Different contact-twist slider values should map to distinct cache entries."""
 
     app = BestTiltingPlaneApp.__new__(BestTiltingPlaneApp)
-    app._entries = {"contact_twist_turns_per_second": FakeVar(-0.4)}
+    app._scales = {"contact_twist_turns_per_second": FakeVar(-0.4)}
 
     assert app._optimization_cache_key_for_mode("Optimize 3D") == "optimize_3d__contact_twist_m0p4"
 
